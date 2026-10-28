@@ -683,7 +683,7 @@ pub(crate) enum AppEvent {
     /// Request app-server account logout, then exit after it succeeds.
     Logout,
 
-    /// Stage an account-pool credential profile into `CODEX_HOME/auth.json`.
+    /// Select an account-pool credential profile for this app-server connection.
     SwitchAuthProfile {
         name: String,
     },

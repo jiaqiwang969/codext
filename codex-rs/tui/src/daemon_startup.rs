@@ -155,7 +155,7 @@ pub(super) async fn compatibility_warning(
         })
         .collect();
     // Codext-only capability marker: a daemon that does not report this feature
-    // cannot serve `account/reload`, so auth.json account switches would be
+    // cannot serve `account/reload`, so external auth.json changes would be
     // silently ignored. Treat such daemons as incompatible.
     if config.features.enabled(Feature::CodextAuthReload) {
         requested
