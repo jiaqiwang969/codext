@@ -224,10 +224,34 @@ impl AccountRequestProcessor {
         params: SwitchAuthProfileParams,
         session: &ConnectionSessionState,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.account_profiles
-            .select(&params.name)
-            .await
-            .map_err(invalid_params)?;
+        let auth_manager = self
+            .auth_manager_for_profile(Some(&params.name))
+            .await?;
+        {
+            let _auth_transition_guard = self.auth_transition_lock.lock().await;
+            if *self
+                .thread_watch_manager
+                .subscribe_running_turn_count()
+                .borrow()
+                == 0
+            {
+                if matches!(
+                    auth_manager.reload_with_status().await,
+                    codex_login::AuthReloadStatus::Failed
+                ) {
+                    return Err(invalid_params(format!(
+                        "failed to reload authentication profile `{}` from storage",
+                        params.name
+                    )));
+                }
+                if auth_manager.auth_cached().is_none() {
+                    return Err(invalid_params(format!(
+                        "authentication profile `{}` has no usable credentials",
+                        params.name
+                    )));
+                }
+            }
+        }
         let previous = session.auth_profile_id().await;
         let changed = previous.as_deref() != Some(params.name.as_str());
         session
@@ -240,6 +264,19 @@ impl AccountRequestProcessor {
             }
             .into(),
         ))
+    }
+
+    pub(crate) fn ensure_default_auth_scope(
+        &self,
+        auth_profile_id: Option<String>,
+        operation: &str,
+    ) -> Result<(), JSONRPCErrorError> {
+        if auth_profile_id.is_some() {
+            return Err(invalid_request(format!(
+                "{operation} cannot change authentication while an account profile is selected"
+            )));
+        }
+        Ok(())
     }
 
     pub(super) async fn auth_manager_for_profile(
@@ -273,7 +310,11 @@ impl AccountRequestProcessor {
     /// running the reload is skipped and `auth_changed` reports `false`.
     pub(crate) async fn reload_account(
         &self,
+        auth_profile_id: Option<String>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let auth_manager = self
+            .auth_manager_for_profile(auth_profile_id.as_deref())
+            .await?;
         let mut auth_changed = false;
         let mut auth_reload_skipped = false;
         {
@@ -284,16 +325,21 @@ impl AccountRequestProcessor {
                 .borrow()
                 == 0
             {
-                let status = self.auth_manager.reload_with_status().await;
+                let status = auth_manager.reload_with_status().await;
                 match handle_auth_reload_status(
                     status,
-                    &self.auth_manager,
+                    &auth_manager,
                     &self.thread_manager,
                     &self.config_manager,
                     &self.outgoing,
                     &self.config.chatgpt_base_url,
                     self.config.http_client_factory(),
                     "account/reload",
+                    if auth_profile_id.is_some() {
+                        AuthReloadScope::Thread
+                    } else {
+                        AuthReloadScope::Default
+                    },
                 )
                 .await
                 {
@@ -311,7 +357,7 @@ impl AccountRequestProcessor {
         }
 
         let read = self
-            .read_account(/*request*/ None)
+            .read_account_with_auth(auth_manager, /*request*/ None)
             .await
             .map_err(|error| match error {
                 workspace_routing::AccountReadError::InvalidAccount(error) => {
@@ -335,8 +381,12 @@ impl AccountRequestProcessor {
     pub(crate) async fn get_auth_status(
         &self,
         params: GetAuthStatusParams,
+        auth_profile_id: Option<String>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.get_auth_status_response(params)
+        let auth_manager = self
+            .auth_manager_for_profile(auth_profile_id.as_deref())
+            .await?;
+        self.get_auth_status_response(params, auth_manager)
             .await
             .map(|response| Some(response.into()))
     }
@@ -386,8 +436,12 @@ impl AccountRequestProcessor {
 
     pub(crate) async fn get_workspace_messages(
         &self,
+        auth_profile_id: Option<String>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.get_workspace_messages_response()
+        let auth_manager = self
+            .auth_manager_for_profile(auth_profile_id.as_deref())
+            .await?;
+        self.get_workspace_messages_response(auth_manager)
             .await
             .map(|response| Some(response.into()))
     }
@@ -395,8 +449,12 @@ impl AccountRequestProcessor {
     pub(crate) async fn send_add_credits_nudge_email(
         &self,
         params: SendAddCreditsNudgeEmailParams,
+        auth_profile_id: Option<String>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.send_add_credits_nudge_email_response(params)
+        let auth_manager = self
+            .auth_manager_for_profile(auth_profile_id.as_deref())
+            .await?;
+        self.send_add_credits_nudge_email_response(params, auth_manager)
             .await
             .map(|response| Some(response.into()))
     }
@@ -1230,11 +1288,27 @@ impl AccountRequestProcessor {
         Ok(())
     }
 
-    async fn refresh_token_if_requested(&self, do_refresh: bool) -> RefreshTokenRequestOutcome {
-        if self.auth_manager.is_external_chatgpt_auth_active() {
+    async fn refresh_token_if_requested(
+        &self,
+        auth_manager: &Arc<AuthManager>,
+        do_refresh: bool,
+    ) -> RefreshTokenRequestOutcome {
+        if auth_manager.is_external_chatgpt_auth_active() {
             return RefreshTokenRequestOutcome::NotAttemptedOrSucceeded;
         }
-        if do_refresh && let Err(err) = self.auth_manager.refresh_token().await {
+        if !do_refresh {
+            return RefreshTokenRequestOutcome::NotAttemptedOrSucceeded;
+        }
+        let _auth_transition_guard = self.auth_transition_lock.lock().await;
+        if *self
+            .thread_watch_manager
+            .subscribe_running_turn_count()
+            .borrow()
+            != 0
+        {
+            return RefreshTokenRequestOutcome::NotAttemptedOrSucceeded;
+        }
+        if let Err(err) = auth_manager.refresh_token().await {
             let failed_reason = err.failed_reason();
             if failed_reason.is_none() {
                 tracing::warn!("failed to refresh token while getting account: {err}");
@@ -1248,11 +1322,13 @@ impl AccountRequestProcessor {
     async fn get_auth_status_response(
         &self,
         params: GetAuthStatusParams,
+        auth_manager: Arc<AuthManager>,
     ) -> Result<GetAuthStatusResponse, JSONRPCErrorError> {
         let include_token = params.include_token.unwrap_or(false);
         let do_refresh = params.refresh_token.unwrap_or(false);
 
-        self.refresh_token_if_requested(do_refresh).await;
+        self.refresh_token_if_requested(&auth_manager, do_refresh)
+            .await;
 
         // Determine whether auth is required based on the active model provider.
         // If a custom provider is configured with `requires_openai_auth == false`,
@@ -1268,17 +1344,17 @@ impl AccountRequestProcessor {
             }
         } else {
             let auth = if do_refresh {
-                self.auth_manager.auth_cached()
+                auth_manager.auth_cached()
             } else {
-                self.auth_manager.auth().await
+                auth_manager.auth().await
             };
             match auth {
                 Some(auth) => {
                     let permanent_refresh_failure =
-                        self.auth_manager.refresh_failure_for_auth(&auth).is_some();
+                        auth_manager.refresh_failure_for_auth(&auth).is_some();
                     let auth_mode = auth_mode_to_api(auth.api_auth_mode());
                     let (reported_auth_method, token_opt) =
-                        if self.auth_manager.is_workload_identity_selected()
+                        if auth_manager.is_workload_identity_selected()
                             || matches!(
                                 auth,
                                 CodexAuth::Headers(_)
@@ -1528,9 +1604,9 @@ impl AccountRequestProcessor {
 
     async fn get_workspace_messages_response(
         &self,
+        auth_manager: Arc<AuthManager>,
     ) -> Result<GetWorkspaceMessagesResponse, JSONRPCErrorError> {
-        let Some((auth, http_client_factory)) =
-            self.auth_manager.auth_with_http_client_factory().await
+        let Some((auth, http_client_factory)) = auth_manager.auth_with_http_client_factory().await
         else {
             return Err(invalid_request(
                 "codex account authentication required to read workspace messages",
@@ -1613,8 +1689,9 @@ impl AccountRequestProcessor {
     async fn send_add_credits_nudge_email_response(
         &self,
         params: SendAddCreditsNudgeEmailParams,
+        auth_manager: Arc<AuthManager>,
     ) -> Result<SendAddCreditsNudgeEmailResponse, JSONRPCErrorError> {
-        self.send_add_credits_nudge_email_inner(params)
+        self.send_add_credits_nudge_email_inner(params, auth_manager)
             .await
             .map(|status| SendAddCreditsNudgeEmailResponse { status })
     }
@@ -1622,9 +1699,9 @@ impl AccountRequestProcessor {
     async fn send_add_credits_nudge_email_inner(
         &self,
         params: SendAddCreditsNudgeEmailParams,
+        auth_manager: Arc<AuthManager>,
     ) -> Result<AddCreditsNudgeEmailStatus, JSONRPCErrorError> {
-        let Some((auth, http_client_factory)) =
-            self.auth_manager.auth_with_http_client_factory().await
+        let Some((auth, http_client_factory)) = auth_manager.auth_with_http_client_factory().await
         else {
             return Err(invalid_request(
                 "codex account authentication required to notify workspace owner",

@@ -549,7 +549,7 @@ pub(crate) struct App {
     pub(crate) app_event_tx: AppEventSender,
     pub(crate) chat_widget: ChatWidget,
     workspace_command_runner: Option<WorkspaceCommandRunner>,
-    /// Watches `CODEX_HOME/auth.json` and emits reload events while the TUI runs.
+    /// Watches the selected account auth file and emits reload events while the TUI runs.
     /// Kept alive for the lifetime of `App`; the watcher stops on drop.
     _auth_watch: Option<AuthWatch>,
     /// Legacy bootstrap and server-setting inputs; local preferences live in `local_settings`.

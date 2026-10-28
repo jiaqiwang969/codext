@@ -548,7 +548,15 @@ use codex_app_server_protocol::ServerRequest;
 /// hot-swapping auth in the middle of an active turn. When the reloaded snapshot
 /// changes, loaded threads invalidate their cached model-transport state so a
 /// WebSocket session created under the previous account is not reused for the
-/// next turn, and an `AccountUpdated` notification is emitted.
+/// next turn. The default auth scope also refreshes process-wide policy and
+/// emits the legacy `AccountUpdated` notification; profile scopes stay local to
+/// their captured runtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AuthReloadScope {
+    Default,
+    Thread,
+}
+
 async fn reload_auth_from_storage_if_idle(
     auth_manager: &Arc<AuthManager>,
     thread_manager: &Arc<ThreadManager>,
@@ -564,6 +572,11 @@ async fn reload_auth_from_storage_if_idle(
     }
 
     let status = auth_manager.reload_with_status().await;
+    let scope = if Arc::ptr_eq(auth_manager, &thread_manager.auth_manager()) {
+        AuthReloadScope::Default
+    } else {
+        AuthReloadScope::Thread
+    };
     match handle_auth_reload_status(
         status,
         auth_manager,
@@ -573,6 +586,7 @@ async fn reload_auth_from_storage_if_idle(
         chatgpt_base_url,
         http_client_factory,
         reason,
+        scope,
     )
     .await
     {
@@ -593,36 +607,39 @@ async fn handle_auth_reload_status(
     chatgpt_base_url: &str,
     http_client_factory: codex_http_client::HttpClientFactory,
     reason: &str,
+    scope: AuthReloadScope,
 ) -> AuthReloadStatus {
     match status {
         AuthReloadStatus::Reloaded { changed } => {
             if changed {
                 let invalidated_thread_count = thread_manager
-                    .invalidate_model_transport_caches()
+                    .invalidate_model_transport_caches_for_auth(auth_manager)
                     .await;
                 info!(
                     "auth reloaded from storage before {reason}; invalidated model transport caches for {invalidated_thread_count} tracked thread(s)"
                 );
-                config_manager.replace_cloud_config_bundle_loader(
-                    Arc::clone(auth_manager),
-                    chatgpt_base_url.to_string(),
-                    http_client_factory,
-                );
-                config_manager
-                    .sync_default_client_residency_requirement()
-                    .await;
-                let auth = auth_manager.auth_cached();
-                outgoing
-                    .send_server_notification(ServerNotification::AccountUpdated(
-                        AccountUpdatedNotification {
-                            auth_mode: auth
-                                .as_ref()
-                                .map(CodexAuth::api_auth_mode)
-                                .map(auth_mode_to_api),
-                            plan_type: auth.as_ref().and_then(CodexAuth::account_plan_type),
-                        },
-                    ))
-                    .await;
+                if scope == AuthReloadScope::Default {
+                    config_manager.replace_cloud_config_bundle_loader(
+                        Arc::clone(auth_manager),
+                        chatgpt_base_url.to_string(),
+                        http_client_factory,
+                    );
+                    config_manager
+                        .sync_default_client_residency_requirement()
+                        .await;
+                    let auth = auth_manager.auth_cached();
+                    outgoing
+                        .send_server_notification(ServerNotification::AccountUpdated(
+                            AccountUpdatedNotification {
+                                auth_mode: auth
+                                    .as_ref()
+                                    .map(CodexAuth::api_auth_mode)
+                                    .map(auth_mode_to_api),
+                                plan_type: auth.as_ref().and_then(CodexAuth::account_plan_type),
+                            },
+                        ))
+                        .await;
+                }
             }
             AuthReloadStatus::Reloaded { changed }
         }

@@ -5,7 +5,11 @@ daemon, while allowing each connection to select an account-pool entry with
 `account/profile/switch` and `{ "name": "profile" }`. A new thread captures
 that profile's authentication, model, plugin, MCP, and workspace-routing
 runtime. Switching a connection never changes an existing thread, and cold
-resume/fork restores the profile recorded in the thread history.
+resume/fork resolves the creator account recorded in the thread history before
+falling back to the connection's selected profile for older or account-less
+histories. Profile-scoped connections may read and use their selected account,
+but account login/logout and Bedrock credential mutation remain restricted to
+the default auth context so one profile cannot rewrite another profile's files.
 
 # Thread memory summary (experimental)
 

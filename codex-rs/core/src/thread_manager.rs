@@ -1056,6 +1056,26 @@ impl ThreadManager {
         invalidated_thread_count
     }
 
+    /// Invalidate cached model transports only for threads using one auth manager.
+    ///
+    /// Account-specific auth reloads use this narrower scope so a profile refresh
+    /// cannot disturb model sessions that belong to another account.
+    pub async fn invalidate_model_transport_caches_for_auth(
+        &self,
+        auth_manager: &Arc<AuthManager>,
+    ) -> usize {
+        let threads: Vec<Arc<CodexThread>> =
+            self.state.threads.read().await.values().cloned().collect();
+        let mut invalidated_thread_count = 0;
+        for thread in threads {
+            if Arc::ptr_eq(auth_manager, &thread.session.services.auth_manager) {
+                thread.invalidate_model_transport_cache();
+                invalidated_thread_count += 1;
+            }
+        }
+        invalidated_thread_count
+    }
+
     pub fn subscribe_thread_created(&self) -> broadcast::Receiver<ThreadId> {
         self.state.thread_created_tx.subscribe()
     }

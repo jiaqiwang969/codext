@@ -548,26 +548,17 @@ impl TurnRequestProcessor {
             .auth_manager_for_thread(thread_id)
             .await
             .unwrap_or_else(|| Arc::clone(&self.auth_manager));
-        if Arc::ptr_eq(&auth_manager, &self.auth_manager) {
-            reload_auth_from_storage_if_idle(
-                &auth_manager,
-                &self.thread_manager,
-                &self.config_manager,
-                &self.outgoing,
-                &self.thread_watch_manager,
-                &self.config.chatgpt_base_url,
-                self.config.http_client_factory(),
-                "turn/start",
-            )
-            .await;
-        } else if *self
-            .thread_watch_manager
-            .subscribe_running_turn_count()
-            .borrow()
-            == 0
-        {
-            let _ = auth_manager.reload_with_status().await;
-        }
+        reload_auth_from_storage_if_idle(
+            &auth_manager,
+            &self.thread_manager,
+            &self.config_manager,
+            &self.outgoing,
+            &self.thread_watch_manager,
+            &self.config.chatgpt_base_url,
+            self.config.http_client_factory(),
+            "turn/start",
+        )
+        .await;
         self.config_manager
             .check_thread_model_provider(thread.config().await.as_ref())
             .await

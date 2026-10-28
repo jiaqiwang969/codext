@@ -12,6 +12,7 @@ use crate::app_event::RecapTrigger;
 use crate::app_event::ThreadTitleDestination;
 use crate::app_server_session::ForkGoalContinuation;
 use crate::app_server_session::UnsupportedLegacyPermissionProfile;
+use crate::app_server_session::account_state_from_account;
 use crate::app_server_session::turn_permissions_overrides;
 use crate::config_update::format_config_error;
 use crate::external_agent_config_migration::flow::ExternalAgentConfigMigrationFlowOutcome;
@@ -1074,6 +1075,33 @@ impl App {
             AppEvent::SwitchAuthProfile { name } => {
                 match app_server.switch_auth_profile(name.clone()).await {
                     Ok(response) => {
+                        if let Some(auth_watch) = self._auth_watch.as_ref() {
+                            auth_watch.set_auth_profile(
+                                self.config.codex_home.as_path(),
+                                Some(response.name.as_str()),
+                            );
+                        }
+                        match app_server.read_account().await {
+                            Ok(account) => {
+                                let (
+                                    account_display,
+                                    plan_type,
+                                    has_chatgpt_account,
+                                    has_codex_backend_auth,
+                                ) = account_state_from_account(account.account.as_ref());
+                                self.chat_widget.update_account_state(
+                                    account_display,
+                                    plan_type,
+                                    has_chatgpt_account,
+                                    has_codex_backend_auth,
+                                );
+                            }
+                            Err(error) => {
+                                self.chat_widget.add_error_message(format!(
+                                    "Profile switched, but account state could not be read: {error:#}"
+                                ));
+                            }
+                        }
                         self.chat_widget.add_info_message(
                             format!("Switched authentication profile to `{}`.", response.name),
                             Some("Existing threads keep their account; new threads use the selected profile.".to_string()),

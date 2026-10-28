@@ -669,16 +669,7 @@ impl AppServerSession {
 
     pub(crate) async fn bootstrap(&mut self, config: &Config) -> Result<AppServerBootstrap> {
         let started_at = Instant::now();
-        if !self.account_profile_env_applied {
-            if let Ok(profile) = std::env::var("CODEX_ACCOUNT_PROFILE")
-                && !profile.trim().is_empty()
-            {
-                self.switch_auth_profile(profile)
-                    .await
-                    .wrap_err("failed to select CODEX_ACCOUNT_PROFILE")?;
-            }
-            self.account_profile_env_applied = true;
-        }
+        self.ensure_env_account_profile().await?;
         let account = self.read_account().await?;
         let mut bootstrap = self.bootstrap_with_account(config, account).await?;
         bootstrap.duration = started_at.elapsed();
@@ -690,16 +681,7 @@ impl AppServerSession {
         config: &Config,
     ) -> Result<AppServerBootstrap> {
         let started_at = Instant::now();
-        if !self.account_profile_env_applied {
-            if let Ok(profile) = std::env::var("CODEX_ACCOUNT_PROFILE")
-                && !profile.trim().is_empty()
-            {
-                self.switch_auth_profile(profile)
-                    .await
-                    .wrap_err("failed to select CODEX_ACCOUNT_PROFILE")?;
-            }
-            self.account_profile_env_applied = true;
-        }
+        self.ensure_env_account_profile().await?;
         let account = self.read_account().await?;
         let mut bootstrap = self
             .bootstrap_with_account_inner(config, account, EmptyCatalogFallback::ManagedNewThread)
@@ -879,6 +861,7 @@ impl AppServerSession {
     /// Used by both `bootstrap` (to populate the initial UI) and `get_login_status`
     /// (to check auth mode without the overhead of a full bootstrap).
     pub(crate) async fn read_account(&mut self) -> Result<GetAccountResponse> {
+        self.ensure_env_account_profile().await?;
         let account_request_id = self.next_request_id();
         self.client
             .request_typed(ClientRequest::GetAccount {
@@ -891,10 +874,26 @@ impl AppServerSession {
             .map_err(|err| bootstrap_request_error("account/read failed during TUI bootstrap", err))
     }
 
+    async fn ensure_env_account_profile(&mut self) -> Result<()> {
+        if self.account_profile_env_applied {
+            return Ok(());
+        }
+        if let Ok(profile) = std::env::var("CODEX_ACCOUNT_PROFILE")
+            && !profile.trim().is_empty()
+        {
+            self.switch_auth_profile(profile)
+                .await
+                .wrap_err("failed to select CODEX_ACCOUNT_PROFILE")?;
+        } else {
+            self.account_profile_env_applied = true;
+        }
+        Ok(())
+    }
+
     /// Reload auth from storage and return the refreshed account snapshot.
     ///
-    /// Used by the TUI auth watcher to pick up `auth.json` updates without
-    /// restarting the app-server.
+    /// Used by the TUI auth watcher to pick up the selected profile's
+    /// `auth.json` updates without restarting the app-server.
     pub(crate) async fn reload_account_from_storage(&mut self) -> Result<ReloadAccountResponse> {
         let account_request_id = self.next_request_id();
         self.client
@@ -1952,7 +1951,7 @@ pub(crate) fn status_account_display_from_auth_mode(
     }
 }
 
-/// Derive the TUI account-display state from an app-server `ReloadAccountResponse`.
+/// Derive the TUI account-display state from an app-server account response.
 ///
 /// Returns the status account display, plan type, whether the account is a
 /// ChatGPT account, and whether it has Codex-backend auth (used for rate-limit
@@ -1965,7 +1964,18 @@ pub(crate) fn account_state_from_reload_account_response(
     bool,
     bool,
 ) {
-    match account.account.as_ref() {
+    account_state_from_account(account.account.as_ref())
+}
+
+pub(crate) fn account_state_from_account(
+    account: Option<&Account>,
+) -> (
+    Option<StatusAccountDisplay>,
+    Option<codex_protocol::account::PlanType>,
+    bool,
+    bool,
+) {
+    match account {
         Some(Account::ApiKey {}) => (Some(StatusAccountDisplay::ApiKey), None, false, false),
         Some(Account::Chatgpt { email, plan_type }) => (
             Some(StatusAccountDisplay::ChatGpt {

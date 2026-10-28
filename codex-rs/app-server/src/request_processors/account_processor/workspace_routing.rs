@@ -253,7 +253,8 @@ impl AccountRequestProcessor {
         if let Some(profile_id) = auth_profile_id {
             return self.get_account_for_profile(params, &profile_id).await;
         }
-        self.refresh_token_if_requested(params.refresh_token).await;
+        self.refresh_token_if_requested(&self.auth_manager, params.refresh_token)
+            .await;
         let read = self
             .read_account(/*request*/ None)
             .await
@@ -288,12 +289,8 @@ impl AccountRequestProcessor {
         profile_id: &str,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let auth_manager = self.auth_manager_for_profile(Some(profile_id)).await?;
-        if params.refresh_token
-            && !auth_manager.is_external_chatgpt_auth_active()
-            && let Err(error) = auth_manager.refresh_token().await
-        {
-            tracing::warn!(profile_id, "failed to refresh selected account token: {error}");
-        }
+        self.refresh_token_if_requested(&auth_manager, params.refresh_token)
+            .await;
         let read = self
             .read_account_with_auth(auth_manager, None)
             .await
@@ -355,7 +352,7 @@ impl AccountRequestProcessor {
             .await
     }
 
-    async fn read_account_with_auth(
+    pub(super) async fn read_account_with_auth(
         &self,
         auth_manager: Arc<AuthManager>,
         request: Option<&WorkspaceRoutingRequest>,

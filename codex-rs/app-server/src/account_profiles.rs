@@ -63,24 +63,12 @@ impl AccountProfileRegistry {
             .expect("default auth manager lock poisoned") = Some(auth_manager);
     }
 
-    pub(crate) async fn select(&self, name: &str) -> Result<(), String> {
-        self.auth_manager_for_profile(name).await.map(|_| ())
-    }
-
     pub(crate) async fn auth_manager_for_profile(
         &self,
         name: &str,
     ) -> Result<Arc<AuthManager>, String> {
         let auth_manager = self.profile_auth_manager(name).await?;
         self.install_routing_resolver(name, &auth_manager).await;
-        if matches!(
-            auth_manager.reload_with_status().await,
-            codex_login::AuthReloadStatus::Failed
-        ) {
-            return Err(format!(
-                "failed to reload authentication profile `{name}` from storage"
-            ));
-        }
         if auth_manager.auth_cached().is_none() {
             return Err(format!(
                 "authentication profile `{name}` has no usable credentials"
@@ -272,4 +260,5 @@ pub(crate) fn is_safe_profile_name(name: &str) -> bool {
         && Path::new(name)
             .components()
             .all(|component| matches!(component, Component::Normal(_)))
+        && Path::new(name).components().count() == 1
 }

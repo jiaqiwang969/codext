@@ -1815,17 +1815,33 @@ impl MessageProcessor {
                     .await
             }
             ClientRequest::LoginAccount { params, .. } => {
+                self.account_processor.ensure_default_auth_scope(
+                    session.auth_profile_id().await,
+                    "account/login/start",
+                )?;
                 self.account_processor
                     .login_account(request_id.clone(), params)
                     .await
             }
             ClientRequest::BedrockDiscover { params, .. } => {
+                self.account_processor.ensure_default_auth_scope(
+                    session.auth_profile_id().await,
+                    "account/bedrock/discover",
+                )?;
                 self.account_processor.bedrock_discover(params).await
             }
             ClientRequest::BedrockSetup { params, .. } => {
+                self.account_processor.ensure_default_auth_scope(
+                    session.auth_profile_id().await,
+                    "account/bedrock/setup",
+                )?;
                 self.account_processor.bedrock_setup(params).await
             }
             ClientRequest::BedrockCheckGovCloudRequirements { .. } => {
+                self.account_processor.ensure_default_auth_scope(
+                    session.auth_profile_id().await,
+                    "account/bedrock/checkGovCloudRequirements",
+                )?;
                 self.account_processor
                     .bedrock_check_gov_cloud_requirements()
                     .await
@@ -1858,6 +1874,10 @@ impl MessageProcessor {
                     .map(|response| Some(response.into()))
             }
             ClientRequest::LogoutAccount { .. } => {
+                self.account_processor.ensure_default_auth_scope(
+                    session.auth_profile_id().await,
+                    "account/logout",
+                )?;
                 self.account_processor
                     .logout_account(request_id.clone())
                     .await
@@ -1868,6 +1888,10 @@ impl MessageProcessor {
                     .await
             }
             ClientRequest::CancelLoginAccount { params, .. } => {
+                self.account_processor.ensure_default_auth_scope(
+                    session.auth_profile_id().await,
+                    "account/login/cancel",
+                )?;
                 self.account_processor.cancel_login_account(params).await
             }
             ClientRequest::GetAccount { params, .. } => {
@@ -1876,10 +1900,14 @@ impl MessageProcessor {
                     .await
             }
             ClientRequest::ReloadAccount { .. } => {
-                self.account_processor.reload_account().await
+                self.account_processor
+                    .reload_account(session.auth_profile_id().await)
+                    .await
             }
             ClientRequest::GetAuthStatus { params, .. } => {
-                self.account_processor.get_auth_status(params).await
+                self.account_processor
+                    .get_auth_status(params, session.auth_profile_id().await)
+                    .await
             }
             ClientRequest::GetAccountRateLimits { params, .. } => {
                 self.account_processor
@@ -1900,11 +1928,13 @@ impl MessageProcessor {
                     .await
             }
             ClientRequest::GetWorkspaceMessages { .. } => {
-                self.account_processor.get_workspace_messages().await
+                self.account_processor
+                    .get_workspace_messages(session.auth_profile_id().await)
+                    .await
             }
             ClientRequest::SendAddCreditsNudgeEmail { params, .. } => {
                 self.account_processor
-                    .send_add_credits_nudge_email(params)
+                    .send_add_credits_nudge_email(params, session.auth_profile_id().await)
                     .await
             }
             ClientRequest::GitDiffToRemote { params, .. } => {
