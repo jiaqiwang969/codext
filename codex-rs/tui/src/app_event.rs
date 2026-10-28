@@ -683,6 +683,11 @@ pub(crate) enum AppEvent {
     /// Request app-server account logout, then exit after it succeeds.
     Logout,
 
+    /// Stage an account-pool credential profile into `CODEX_HOME/auth.json`.
+    SwitchAuthProfile {
+        name: String,
+    },
+
     /// Request to exit the application due to a fatal error.
     #[allow(dead_code)]
     FatalExitRequest(String),

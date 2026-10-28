@@ -1071,6 +1071,26 @@ impl App {
                         .add_error_message(format!("Logout failed: {err}"));
                 }
             },
+            AppEvent::SwitchAuthProfile { name } => {
+                match crate::auth_profile::switch_auth_profile(
+                    self.config.codex_home.as_path(),
+                    &name,
+                ) {
+                    Ok(()) => {
+                        self.chat_widget.add_info_message(
+                            format!("Switched authentication account to `{name}`."),
+                            Some(
+                                "Shared sessions, memory, and SQLite remain in place; the new account applies at the next safe request boundary."
+                                    .to_string(),
+                            ),
+                        );
+                    }
+                    Err(error) => {
+                        self.chat_widget
+                            .add_error_message(format!("Account switch failed: {error}"));
+                    }
+                }
+            }
             AppEvent::FatalExitRequest(message) => {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }

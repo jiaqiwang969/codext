@@ -117,6 +117,7 @@ mod app_server_connection;
 mod app_server_session;
 mod approval_events;
 mod async_question_reply;
+mod auth_profile;
 mod auth_watch;
 mod backend_banners;
 mod backend_id;

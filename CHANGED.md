@@ -76,6 +76,12 @@ Implementation must follow the status-header skill .agents/skills/status-header/
 - `codext app-server daemon reload-auth` asks the running daemon on `app-server-control.sock` to perform the idle-guarded `account/reload` without a TUI. It reports whether the daemon reloaded (and whether auth changed), was skipped-busy, or does not implement the RPC (foreign daemon). `codex_app_server_daemon::request_auth_reload` is the library entry point; external account switchers such as codex-auth invoke the subcommand after replacing `auth.json`.
 - Reapply notes: keep `reload_auth_from_storage_if_idle` wired into all three request entry points, preserve the idle guard, preserve the `auth_reload_skipped` response field and its busy-retry path in `handle_auth_file_changed`, keep `Feature::CodextAuthReload` in `SERVER_FEATURES`/`allowed_feature`, and preserve the invalidation chain `ThreadManager::invalidate_model_transport_caches` -> `CodexThread::invalidate_model_transport_cache` -> `ModelClient::invalidate_cached_transport_state`.
 
+## TUI account-pool switcher
+
+- Added `/profile` to the TUI command palette. With no argument it opens an account picker; `/profile <name>` switches directly to an account-pool entry.
+- The picker reads `CODEX_HOME/accounts/<name>/auth.json`, atomically stages the selected file as `CODEX_HOME/auth.json`, and lets the existing auth watcher perform the idle-guarded app-server reload.
+- Account switching changes credentials only. Sessions, memory, SQLite state, logs, and other shared `CODEX_HOME` data remain shared across the account pool.
+
 ## TUI exit resume command
 
 - Added a fork requirement that user-facing resume hints use `codext resume <session>` / `codext resume <thread-name>` instead of `codex resume ...`.
