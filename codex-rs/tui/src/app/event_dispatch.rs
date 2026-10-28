@@ -1782,13 +1782,6 @@ impl App {
             AppEvent::FileSearchResult { query, matches } => {
                 self.chat_widget.apply_file_search_result(query, matches);
             }
-            AppEvent::ServerOverloadedRetry {
-                attempt,
-                generation,
-            } => {
-                self.chat_widget
-                    .on_server_overloaded_retry(attempt, generation);
-            }
             AppEvent::AuthFileChanged => {
                 self.handle_auth_file_changed(app_server, /*attempt*/ 1)
                     .await;

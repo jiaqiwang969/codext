@@ -302,9 +302,6 @@ impl ChatWidget {
             status_header_git_status_task: None,
             pending_auth_reload_attempt: None,
             pending_usage_limit_resume_turn: None,
-            pending_server_overloaded_resume_turn: None,
-            server_overloaded_resume_attempts: 0,
-            server_overloaded_resume_generation: 0,
             usage_limit_resume_waiting_for_auth_reload: false,
         };
 

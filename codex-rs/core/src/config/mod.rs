@@ -908,7 +908,7 @@ pub struct Config {
     /// automatic recovery turn.
     pub tui_usage_limit_resume_prompt: Option<String>,
 
-    /// Whether to automatically submit `Continue` after a turn fails with `ServerOverloaded`.
+    /// Whether to automatically retry a turn after `ServerOverloaded`.
     pub tui_server_overloaded_resume: bool,
 
     /// The absolute directory that should be treated as the current working

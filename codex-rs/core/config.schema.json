@@ -5224,7 +5224,7 @@
         },
         "server_overloaded_resume": {
           "default": true,
-          "description": "Automatically submit `Continue` after a turn fails with `ServerOverloaded`. Defaults to `true`.",
+          "description": "Automatically retry the original turn after `ServerOverloaded`, without adding a synthetic `Continue` message. Defaults to `true`.",
           "type": "boolean"
         },
         "session_picker_view": {

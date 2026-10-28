@@ -470,7 +470,6 @@ const APPROVE_FOR_ME_LABEL: &str = "Approve for me";
 const AUTO_REVIEW_DESCRIPTION: &str = "Only ask for actions detected as potentially unsafe";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_STATUS_LINE_ITEMS: [&str; 3] = ["model-with-reasoning", "current-dir", "thread-name"];
-const DEFAULT_SERVER_OVERLOADED_RESUME_PROMPT: &str = "Continue";
 const DEFAULT_USAGE_LIMIT_RESUME_PROMPT: &str =
     "The usage limit has been reset, so you can resume from where you left off.";
 
@@ -824,12 +823,6 @@ pub(crate) struct ChatWidget {
     pending_auth_reload_attempt: Option<u8>,
     // Synthetic recovery turn queued after a `UsageLimitExceeded` turn failure.
     pending_usage_limit_resume_turn: Option<UserMessage>,
-    // Synthetic `Continue` turn queued after a `ServerOverloaded` turn failure.
-    pending_server_overloaded_resume_turn: Option<UserMessage>,
-    // Consecutive `ServerOverloaded` resume attempts, reset by any completed turn.
-    server_overloaded_resume_attempts: u8,
-    // Guards against late resume timers from an earlier attempt generation.
-    server_overloaded_resume_generation: u64,
     // A parked usage-limit recovery turn waits for an auth reload that changes identity.
     usage_limit_resume_waiting_for_auth_reload: bool,
 }

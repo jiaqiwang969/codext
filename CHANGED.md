@@ -53,13 +53,12 @@ Implementation must follow the status-header skill .agents/skills/status-header/
 - When a later Codex rate-limit snapshot shows quota available again, Codext resumes autosend and submits exactly the first queued user message; any additional queued messages remain queued for normal FIFO draining after that turn completes.
 - If both a parked usage-limit recovery prompt and user-queued follow-ups exist when quota recovers, the user-queued follow-up wins and the stale synthetic recovery prompt is cleared.
 
-## TUI server-overload auto-resume
+## Server-overload retry
 
-- When a turn fails with `ServerOverloaded`, the TUI automatically submits a `Continue` user turn so work resumes without manual intervention.
-- Auto-resume is bounded: exponential backoff of 15s → 30s → 60s → 120s → 240s between attempts, stopping after 5 consecutive failures and leaving the error on screen for the user.
-- The retry counter resets after any successfully completed turn; stale retry timers are discarded via a generation guard, so user intervention never triggers a late auto-Continue.
-- Controlled by `[tui].server_overloaded_resume` (default `true`; set to `false` to disable).
-- While auto-retries are pending, queued follow-up messages are held instead of being submitted into failing turns.
+- When a turn fails with `ServerOverloaded`, Codext retries the original turn instead of submitting a synthetic `Continue` user turn.
+- Retries honor the server's `Retry-After` advice and otherwise use bounded backoff of 15s → 30s → 60s → 120s → 240s, subject to the provider's stream retry limit.
+- Controlled by `[tui].server_overloaded_resume` (default `true`; set to `false` to disable automatic retries).
+- After retries are exhausted, the error remains visible and normal queued-input handling resumes.
 
 ## App-server auth.json account switching
 

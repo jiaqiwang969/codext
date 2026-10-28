@@ -725,12 +725,6 @@ pub(crate) enum AppEvent {
         matches: Vec<crate::task_mentions::TaskMention>,
     },
 
-    /// Retry a server-overloaded turn after its backoff delay.
-    ServerOverloadedRetry {
-        attempt: u8,
-        generation: u64,
-    },
-
     /// `CODEX_HOME/auth.json` changed on disk; reload auth from storage.
     AuthFileChanged,
     /// Retry a deferred auth reload after a previous attempt failed.

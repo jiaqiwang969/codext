@@ -244,9 +244,8 @@ impl ChatWidget {
 
     /// If idle and there are queued inputs, submit exactly one to start the next turn.
     ///
-    /// Pending synthetic recovery turns take priority over user-queued follow-ups:
-    /// a `ServerOverloaded` retry always goes first, and a usage-limit recovery turn
-    /// goes first once the auth reload it was parked on has completed.
+    /// A usage-limit recovery turn goes first once the auth reload it was parked on
+    /// has completed.
     pub(crate) fn maybe_send_next_queued_input(&mut self) -> bool {
         if !self.is_session_configured()
             || self.fork_in_progress
@@ -259,13 +258,6 @@ impl ChatWidget {
         }
         if self.is_user_turn_pending_or_running() {
             return false;
-        }
-        if let Some(user_message) = self.pending_server_overloaded_resume_turn.take() {
-            self.reasoning_buffer.clear();
-            self.set_status_header(String::from("Working"));
-            self.submit_user_message(user_message);
-            self.refresh_pending_input_preview();
-            return true;
         }
         if self.input_queue.submissions_paused()
             || self.input_queue.rate_limit_recovery_pending
