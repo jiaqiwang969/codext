@@ -1072,22 +1072,16 @@ impl App {
                 }
             },
             AppEvent::SwitchAuthProfile { name } => {
-                match crate::auth_profile::switch_auth_profile(
-                    self.config.codex_home.as_path(),
-                    &name,
-                ) {
-                    Ok(()) => {
+                match app_server.switch_auth_profile(name.clone()).await {
+                    Ok(response) => {
                         self.chat_widget.add_info_message(
-                            format!("Switched authentication account to `{name}`."),
-                            Some(
-                                "Shared sessions, memory, and SQLite remain in place; the new account applies at the next safe request boundary."
-                                    .to_string(),
-                            ),
+                            format!("Switched authentication profile to `{}`.", response.name),
+                            Some("Existing threads keep their account; new threads use the selected profile.".to_string()),
                         );
                     }
                     Err(error) => {
                         self.chat_widget
-                            .add_error_message(format!("Account switch failed: {error}"));
+                            .add_error_message(format!("Profile switch failed: {error:#}"));
                     }
                 }
             }

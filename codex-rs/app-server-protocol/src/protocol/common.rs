@@ -1357,6 +1357,12 @@ client_request_definitions! {
         response: v2::LogoutAccountResponse,
     },
 
+    SwitchAuthProfile => "account/profile/switch" {
+        params: v2::SwitchAuthProfileParams,
+        serialization: None,
+        response: v2::SwitchAuthProfileResponse,
+    },
+
     GetAccountRateLimits => "account/rateLimits/read" {
         params: #[ts(optional, as = "Option<GetAccountRateLimitsParamsTypeScript>", inline)] #[serde(default, skip_serializing_if = "Option::is_none")] v2::NullableGetAccountRateLimitsParams,
         serialization: None,

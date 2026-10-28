@@ -3872,6 +3872,30 @@
             },
             "method": {
               "enum": [
+                "account/profile/switch"
+              ],
+              "title": "Account/profile/switchRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/SwitchAuthProfileParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Account/profile/switchRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
                 "account/rateLimits/read"
               ],
               "title": "Account/rateLimits/readRequestMethod",
@@ -4356,6 +4380,30 @@
             "params"
           ],
           "title": "Account/readRequest",
+          "type": "object"
+        },
+        {
+          "description": "Reloads the auth snapshot from storage when no turn is running and returns the refreshed account state.",
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "account/reload"
+              ],
+              "title": "Account/reloadRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "id",
+            "method"
+          ],
+          "title": "Account/reloadRequest",
           "type": "object"
         },
         {
@@ -14768,6 +14816,39 @@
       "title": "ReasoningTextDeltaNotification",
       "type": "object"
     },
+    "ReloadAccountResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "account": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Account"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "authChanged": {
+          "description": "Whether this request reloaded a different auth snapshot from storage.",
+          "type": "boolean"
+        },
+        "authReloadSkipped": {
+          "default": false,
+          "description": "Whether the storage reload was skipped because a turn is running somewhere on this (possibly shared) app-server. When true, `account` and `auth_changed` reflect the previously cached auth, not storage.",
+          "type": "boolean"
+        },
+        "requiresOpenaiAuth": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "authChanged",
+        "requiresOpenaiAuth"
+      ],
+      "title": "ReloadAccountResponse",
+      "type": "object"
+    },
     "RemoteControlConnectionStatus": {
       "enum": [
         "disabled",
@@ -18829,6 +18910,37 @@
       "required": [
         "name"
       ],
+      "type": "object"
+    },
+    "SwitchAuthProfileParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Selects the credential profile used by subsequently created threads on one app-server connection. Existing threads keep their captured runtime.",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "SwitchAuthProfileParams",
+      "type": "object"
+    },
+    "SwitchAuthProfileResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "changed": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "changed",
+        "name"
+      ],
+      "title": "SwitchAuthProfileResponse",
       "type": "object"
     },
     "TerminalInteractionNotification": {

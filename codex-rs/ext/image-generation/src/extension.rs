@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use codex_core::config::Config;
+use codex_core::ThreadAuthManager;
 use codex_extension_api::ConfigContributor;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionFuture;
@@ -97,9 +98,14 @@ impl ToolContributor for ImageGenerationExtension {
             return Vec::new();
         }
 
+        let auth_manager = thread_store
+            .get::<ThreadAuthManager>()
+            .map(|auth| Arc::clone(&auth.0))
+            .unwrap_or_else(|| Arc::clone(&self.auth_manager));
+
         vec![Arc::new(ImageGenerationTool::new(
             CodexImagesBackend::new(
-                create_model_provider(config.provider.clone(), Some(self.auth_manager.clone())),
+                create_model_provider(config.provider.clone(), Some(auth_manager)),
                 config.http_client_factory.clone(),
                 thread_store
                     .get::<ThreadOriginator>()

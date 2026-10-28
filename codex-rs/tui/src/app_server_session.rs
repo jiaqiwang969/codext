@@ -60,6 +60,8 @@ use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::GetAccountResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::LogoutAccountResponse;
+use codex_app_server_protocol::SwitchAuthProfileParams;
+use codex_app_server_protocol::SwitchAuthProfileResponse;
 use codex_app_server_protocol::MemoryResetResponse;
 use codex_app_server_protocol::Model as ApiModel;
 use codex_app_server_protocol::ModelListParams;
@@ -343,6 +345,7 @@ pub(crate) struct AppServerSession {
     managed_new_thread_defaults: Option<NewThreadModelDefaults>,
     external_agent_config_import_id: Mutex<Option<String>>,
     dynamic_tool_mcp: Option<Arc<DynamicToolMcpServer>>,
+    account_profile_env_applied: bool,
     pub(crate) worktree_source_config_builder:
         Option<Box<crate::legacy_core::config::ConfigBuilder>>,
 }
@@ -466,6 +469,7 @@ impl AppServerSession {
             managed_new_thread_defaults: None,
             external_agent_config_import_id: Mutex::default(),
             dynamic_tool_mcp: None,
+            account_profile_env_applied: false,
             worktree_source_config_builder: None,
         }
     }
@@ -665,6 +669,16 @@ impl AppServerSession {
 
     pub(crate) async fn bootstrap(&mut self, config: &Config) -> Result<AppServerBootstrap> {
         let started_at = Instant::now();
+        if !self.account_profile_env_applied {
+            if let Ok(profile) = std::env::var("CODEX_ACCOUNT_PROFILE")
+                && !profile.trim().is_empty()
+            {
+                self.switch_auth_profile(profile)
+                    .await
+                    .wrap_err("failed to select CODEX_ACCOUNT_PROFILE")?;
+            }
+            self.account_profile_env_applied = true;
+        }
         let account = self.read_account().await?;
         let mut bootstrap = self.bootstrap_with_account(config, account).await?;
         bootstrap.duration = started_at.elapsed();
@@ -676,6 +690,16 @@ impl AppServerSession {
         config: &Config,
     ) -> Result<AppServerBootstrap> {
         let started_at = Instant::now();
+        if !self.account_profile_env_applied {
+            if let Ok(profile) = std::env::var("CODEX_ACCOUNT_PROFILE")
+                && !profile.trim().is_empty()
+            {
+                self.switch_auth_profile(profile)
+                    .await
+                    .wrap_err("failed to select CODEX_ACCOUNT_PROFILE")?;
+            }
+            self.account_profile_env_applied = true;
+        }
         let account = self.read_account().await?;
         let mut bootstrap = self
             .bootstrap_with_account_inner(config, account, EmptyCatalogFallback::ManagedNewThread)
@@ -1694,6 +1718,23 @@ impl AppServerSession {
             .await
             .wrap_err("account/logout failed in TUI")?;
         Ok(())
+    }
+
+    pub(crate) async fn switch_auth_profile(
+        &mut self,
+        name: String,
+    ) -> Result<SwitchAuthProfileResponse> {
+        let request_id = self.next_request_id();
+        let response = self
+            .client
+            .request_typed(ClientRequest::SwitchAuthProfile {
+                request_id,
+                params: SwitchAuthProfileParams { name },
+            })
+            .await
+            .wrap_err("account/profile/switch failed in TUI")?;
+        self.account_profile_env_applied = true;
+        Ok(response)
     }
 
     pub(crate) async fn thread_unsubscribe(&mut self, thread_id: ThreadId) -> Result<()> {

@@ -4346,6 +4346,18 @@
       ],
       "type": "object"
     },
+    "SwitchAuthProfileParams": {
+      "description": "Selects the credential profile used by subsequently created threads on one app-server connection. Existing threads keep their captured runtime.",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
     "TextElement": {
       "properties": {
         "byteRange": {
@@ -8339,6 +8351,30 @@
         },
         "method": {
           "enum": [
+            "account/profile/switch"
+          ],
+          "title": "Account/profile/switchRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/SwitchAuthProfileParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Account/profile/switchRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
             "account/rateLimits/read"
           ],
           "title": "Account/rateLimits/readRequestMethod",
@@ -8823,6 +8859,30 @@
         "params"
       ],
       "title": "Account/readRequest",
+      "type": "object"
+    },
+    {
+      "description": "Reloads the auth snapshot from storage when no turn is running and returns the refreshed account state.",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "account/reload"
+          ],
+          "title": "Account/reloadRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "id",
+        "method"
+      ],
+      "title": "Account/reloadRequest",
       "type": "object"
     },
     {

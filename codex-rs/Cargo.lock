@@ -3517,6 +3517,7 @@ name = "codex-git-attribution"
 version = "0.165.0"
 dependencies = [
  "codex-backend-client",
+ "codex-core",
  "codex-extension-api",
  "codex-http-client",
  "codex-login",

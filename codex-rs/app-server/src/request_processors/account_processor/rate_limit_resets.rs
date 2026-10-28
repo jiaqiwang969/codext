@@ -45,6 +45,7 @@ impl AccountRequestProcessor {
     pub(crate) async fn consume_account_rate_limit_reset_credit(
         &self,
         params: ConsumeAccountRateLimitResetCreditParams,
+        auth_profile_id: Option<String>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         if params.idempotency_key.is_empty() {
             return Err(invalid_request("idempotencyKey must not be empty"));
@@ -53,7 +54,9 @@ impl AccountRequestProcessor {
             return Err(invalid_request("creditId must not be empty"));
         }
 
-        let client = self.rate_limit_reset_backend_client().await?;
+        let client = self
+            .rate_limit_reset_backend_client(auth_profile_id.as_deref())
+            .await?;
         let request_timeout = RATE_LIMIT_RESET_REQUEST_TIMEOUT;
         #[cfg(debug_assertions)]
         let request_timeout = std::env::var(RATE_LIMIT_RESET_REQUEST_TIMEOUT_ENV_VAR)
@@ -97,9 +100,13 @@ impl AccountRequestProcessor {
         ))
     }
 
-    async fn rate_limit_reset_backend_client(&self) -> Result<BackendClient, JSONRPCErrorError> {
+    async fn rate_limit_reset_backend_client(
+        &self,
+        auth_profile_id: Option<&str>,
+    ) -> Result<BackendClient, JSONRPCErrorError> {
+        let auth_manager = self.auth_manager_for_profile(auth_profile_id).await?;
         let Some((auth, http_client_factory)) =
-            self.auth_manager.auth_with_http_client_factory().await
+            auth_manager.auth_with_http_client_factory().await
         else {
             return Err(invalid_request(
                 "codex account authentication required for rate limit reset credits",

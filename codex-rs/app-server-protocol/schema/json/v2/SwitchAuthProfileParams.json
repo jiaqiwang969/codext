@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Selects the credential profile used by subsequently created threads on one app-server connection. Existing threads keep their captured runtime.",
+  "properties": {
+    "name": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "SwitchAuthProfileParams",
+  "type": "object"
+}

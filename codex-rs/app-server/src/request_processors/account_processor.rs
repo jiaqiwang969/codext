@@ -3,6 +3,8 @@ use super::bedrock_auth::clear_user_model_provider_if_bedrock;
 use super::bedrock_auth::configure_bedrock_provider;
 use super::bedrock_auth::ensure_user_model_provider_can_be_bedrock;
 use super::*;
+use crate::account_profiles::AccountProfileRegistry;
+use crate::message_processor::ConnectionSessionState;
 use crate::auth_mode::auth_mode_to_api;
 use crate::external_auth::ExternalAuthBridge;
 use crate::model_catalog::ModelCatalog;
@@ -107,6 +109,7 @@ pub(crate) struct AccountRequestProcessor {
     /// Serializes auth reloads against turn starts so an in-flight `turn/start`
     /// never observes a half-applied auth transition.
     auth_transition_lock: Arc<Mutex<()>>,
+    account_profiles: Arc<AccountProfileRegistry>,
     active_login: Arc<Mutex<Option<ActiveLogin>>>,
     workspace_routing: Arc<Mutex<Option<workspace_routing::CachedWorkspaceRouting>>>,
     workspace_routing_fetches: Arc<Mutex<workspace_routing::WorkspaceRoutingFetches>>,
@@ -118,7 +121,31 @@ pub(crate) struct AccountRequestProcessor {
 }
 
 impl AccountRequestProcessor {
+    #[allow(dead_code)]
     pub(crate) fn new(
+        auth_manager: Arc<AuthManager>,
+        thread_manager: Arc<ThreadManager>,
+        outgoing: Arc<OutgoingMessageSender>,
+        config: Arc<Config>,
+        config_manager: ConfigManager,
+        model_catalog: Arc<ModelCatalog>,
+    ) -> Arc<Self> {
+        let account_profiles = Arc::new(AccountProfileRegistry::new(config.as_ref()));
+        Self::new_with_runtime(
+            auth_manager,
+            thread_manager,
+            outgoing,
+            config,
+            config_manager,
+            model_catalog,
+            ThreadWatchManager::new(),
+            Arc::new(Mutex::new(())),
+            account_profiles,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_runtime(
         auth_manager: Arc<AuthManager>,
         thread_manager: Arc<ThreadManager>,
         outgoing: Arc<OutgoingMessageSender>,
@@ -127,6 +154,7 @@ impl AccountRequestProcessor {
         model_catalog: Arc<ModelCatalog>,
         thread_watch_manager: ThreadWatchManager,
         auth_transition_lock: Arc<Mutex<()>>,
+        account_profiles: Arc<AccountProfileRegistry>,
     ) -> Arc<Self> {
         let gateway_notifications = crate::gateway_oauth_notifications::spawn(
             Arc::clone(&auth_manager),
@@ -148,6 +176,7 @@ impl AccountRequestProcessor {
             model_catalog,
             thread_watch_manager,
             auth_transition_lock,
+            account_profiles,
             active_login: Arc::new(Mutex::new(None)),
             gateway_login: Arc::new(std::sync::Mutex::new(/*t*/ None)),
             gateway_client: Arc::new(std::sync::Mutex::new(/*t*/ None)),
@@ -156,6 +185,12 @@ impl AccountRequestProcessor {
             workspace_routing_shutdown: CancellationToken::new(),
             enterprise_login,
         });
+        processor
+            .account_profiles
+            .set_routing_owner(Arc::downgrade(&processor));
+        processor
+            .account_profiles
+            .set_default_auth_manager(Arc::clone(&processor.auth_manager));
         let resolver: Arc<dyn codex_login::WorkspaceRoutingResolver> = processor.clone();
         processor
             .auth_manager
@@ -182,6 +217,43 @@ impl AccountRequestProcessor {
         request_id: ConnectionRequestId,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.logout_v2(request_id).await.map(|()| None)
+    }
+
+    pub(crate) async fn switch_auth_profile(
+        &self,
+        params: SwitchAuthProfileParams,
+        session: &ConnectionSessionState,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.account_profiles
+            .select(&params.name)
+            .await
+            .map_err(invalid_params)?;
+        let previous = session.auth_profile_id().await;
+        let changed = previous.as_deref() != Some(params.name.as_str());
+        session
+            .set_auth_profile_id(Some(params.name.clone()))
+            .await;
+        Ok(Some(
+            SwitchAuthProfileResponse {
+                name: params.name,
+                changed,
+            }
+            .into(),
+        ))
+    }
+
+    pub(super) async fn auth_manager_for_profile(
+        &self,
+        profile_id: Option<&str>,
+    ) -> Result<Arc<AuthManager>, JSONRPCErrorError> {
+        match profile_id {
+            Some(profile_id) => self
+                .account_profiles
+                .auth_manager_for_profile(profile_id)
+                .await
+                .map_err(invalid_request),
+            None => Ok(Arc::clone(&self.auth_manager)),
+        }
     }
 
     pub(crate) async fn cancel_login_account(
@@ -272,8 +344,12 @@ impl AccountRequestProcessor {
     pub(crate) async fn get_account_rate_limits(
         &self,
         params: Option<GetAccountRateLimitsParams>,
+        auth_profile_id: Option<String>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.get_account_rate_limits_response(params.unwrap_or_default())
+        let auth_manager = self
+            .auth_manager_for_profile(auth_profile_id.as_deref())
+            .await?;
+        self.get_account_rate_limits_response(params.unwrap_or_default(), auth_manager)
             .await
             .map(|response| Some(response.into()))
     }
@@ -281,8 +357,29 @@ impl AccountRequestProcessor {
     pub(crate) async fn get_account_token_usage(
         &self,
         params: Option<GetAccountTokenUsageParams>,
+        auth_profile_id: Option<String>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.get_account_token_usage_response(params)
+        let thread_id = params
+            .as_ref()
+            .and_then(|params| params.thread_id.as_deref())
+            .map(ThreadId::from_string)
+            .transpose()
+            .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
+        let auth_manager = if let Some(thread_id) = thread_id {
+            if let Some(auth_manager) = self
+                .thread_manager
+                .auth_manager_for_thread(thread_id)
+                .await
+            {
+                auth_manager
+            } else {
+                self.auth_manager_for_profile(auth_profile_id.as_deref())
+                    .await?
+            }
+        } else {
+            self.auth_manager_for_profile(auth_profile_id.as_deref()).await?
+        };
+        self.get_account_token_usage_response(params, auth_manager)
             .await
             .map(|response| Some(response.into()))
     }
@@ -1225,9 +1322,10 @@ impl AccountRequestProcessor {
     async fn get_account_rate_limits_response(
         &self,
         params: GetAccountRateLimitsParams,
+        auth_manager: Arc<AuthManager>,
     ) -> Result<GetAccountRateLimitsResponse, JSONRPCErrorError> {
         let Some((auth, http_client_factory)) =
-            self.auth_manager.auth_with_http_client_factory().await
+            auth_manager.auth_with_http_client_factory().await
         else {
             return Err(invalid_request(
                 "codex account authentication required to read rate limits",
@@ -1302,7 +1400,7 @@ impl AccountRequestProcessor {
         // Match desktop's account readiness check before exposing account-bound CTA content.
         // Normal rate limits remain available when older backends omit identity or banner data.
         // Login can change while the backend read is in flight.
-        let active_auth = self.auth_manager.auth().await;
+        let active_auth = auth_manager.auth().await;
         let matches_active_account = active_auth.is_some_and(|auth| {
             !auth.is_fedramp_account()
                 && response.account_id.is_some()
@@ -1334,6 +1432,7 @@ impl AccountRequestProcessor {
     async fn get_account_token_usage_response(
         &self,
         params: Option<GetAccountTokenUsageParams>,
+        auth_manager: Arc<AuthManager>,
     ) -> Result<GetAccountTokenUsageResponse, JSONRPCErrorError> {
         let thread_id = params
             .and_then(|params| params.thread_id)
@@ -1344,7 +1443,7 @@ impl AccountRequestProcessor {
             .transpose()?;
 
         let Some((auth, http_client_factory)) =
-            self.auth_manager.auth_with_http_client_factory().await
+            auth_manager.auth_with_http_client_factory().await
         else {
             return Err(invalid_request(
                 "codex account authentication required to read token usage",

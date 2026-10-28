@@ -13,6 +13,7 @@ use super::thread_input::can_accept_direct_input;
 use super::thread_input::ensure_direct_input_allowed;
 use super::*;
 use crate::connection_rpc_gate::ConnectionRpcGate;
+use crate::account_profiles::AccountProfileRegistry;
 use crate::error_code::method_not_found;
 use crate::thread_sample::SampleTask;
 use crate::thread_sample::SampleThread;
@@ -477,6 +478,7 @@ pub(crate) struct ThreadRequestProcessor {
     pub(super) skills_watcher: Arc<SkillsWatcher>,
     pub(super) turn_cost_worker: Option<crate::turn_cost_worker::TurnCostWorkerHandle>,
     pub(super) initial_config_warnings: Arc<Vec<ConfigWarningNotification>>,
+    pub(super) account_profiles: Arc<AccountProfileRegistry>,
 }
 
 /// Whether resume attaches a client or restores a cold runtime during daemon startup.
@@ -518,6 +520,7 @@ impl ThreadRequestProcessor {
         turn_cost_worker: Option<crate::turn_cost_worker::TurnCostWorkerHandle>,
         initial_config_warnings: Vec<ConfigWarningNotification>,
         sample_responses: Arc<crate::thread_sample::SampleResponseRegistry>,
+        account_profiles: Arc<AccountProfileRegistry>,
     ) -> Self {
         Self {
             auth_manager,
@@ -540,6 +543,7 @@ impl ThreadRequestProcessor {
             skills_watcher,
             turn_cost_worker,
             initial_config_warnings: Arc::new(initial_config_warnings),
+            account_profiles,
         }
     }
 
@@ -550,6 +554,7 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
+        auth_profile_id: Option<String>,
         request_context: RequestContext,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.thread_start_inner(
@@ -558,6 +563,7 @@ impl ThreadRequestProcessor {
             app_server_client_name,
             app_server_client_version,
             client_mcp_extensions,
+            auth_profile_id,
             request_context,
         )
         .await
@@ -581,6 +587,7 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
+        auth_profile_id: Option<String>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let mut prepared_config = None;
         // Keep the resume future off the request handler's stack.
@@ -590,6 +597,7 @@ impl ThreadRequestProcessor {
             app_server_client_name.clone(),
             app_server_client_version.clone(),
             client_mcp_extensions.clone(),
+            auth_profile_id.clone(),
             &mut prepared_config,
         ))
         .await?
@@ -605,6 +613,7 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
+        auth_profile_id: Option<String>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         // Keep the large fork future out of the shared request dispatcher's stack frame.
         Box::pin(self.thread_fork_inner(
@@ -613,6 +622,7 @@ impl ThreadRequestProcessor {
             app_server_client_name,
             app_server_client_version,
             client_mcp_extensions,
+            auth_profile_id,
         ))
         .await
         .map(|()| None)
@@ -1192,20 +1202,23 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
+        auth_profile_id: Option<String>,
         request_context: RequestContext,
     ) -> Result<(), JSONRPCErrorError> {
         let _auth_transition_guard = self.auth_transition_lock.lock().await;
-        reload_auth_from_storage_if_idle(
-            &self.auth_manager,
-            &self.thread_manager,
-            &self.config_manager,
-            &self.outgoing,
-            &self.thread_watch_manager,
-            &self.config.chatgpt_base_url,
-            self.config.http_client_factory(),
-            "thread/start",
-        )
-        .await;
+        if auth_profile_id.is_none() {
+            reload_auth_from_storage_if_idle(
+                &self.auth_manager,
+                &self.thread_manager,
+                &self.config_manager,
+                &self.outgoing,
+                &self.thread_watch_manager,
+                &self.config.chatgpt_base_url,
+                self.config.http_client_factory(),
+                "thread/start",
+            )
+            .await;
+        }
 
         let ThreadStartParams {
             model,
@@ -1300,6 +1313,7 @@ impl ThreadRequestProcessor {
         let config_manager = self.config_manager.clone();
         let thread_store = Arc::clone(&self.thread_store);
         let initial_config_warnings = Arc::clone(&self.initial_config_warnings);
+        let account_profiles = Arc::clone(&self.account_profiles);
         let outgoing = Arc::clone(&listener_task_context.outgoing);
         let error_request_id = request_id.clone();
         let thread_start_task = async move {
@@ -1311,6 +1325,8 @@ impl ThreadRequestProcessor {
                 app_server_client_name,
                 app_server_client_version,
                 client_mcp_extensions,
+                auth_profile_id,
+                account_profiles,
                 config,
                 typesafe_overrides,
                 dynamic_tools,
@@ -1393,6 +1409,8 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
+        auth_profile_id: Option<String>,
+        account_profiles: Arc<AccountProfileRegistry>,
         config_overrides: Option<HashMap<String, serde_json::Value>>,
         typesafe_overrides: ConfigOverrides,
         dynamic_tools: Option<Vec<DynamicToolSpec>>,
@@ -1541,6 +1559,14 @@ impl ThreadRequestProcessor {
             thread_extension_init.insert(selected_capability_roots);
         }
         let mut start_options = StartThreadOptions::new(config);
+        start_options.runtime = account_profiles
+            .runtime_for_profile(
+                &listener_task_context.thread_manager,
+                &start_options.config,
+                auth_profile_id.as_deref(),
+            )
+            .await
+            .map_err(invalid_params)?;
         let reserved_thread_id = if start_options.config.ephemeral {
             None
         } else {
@@ -2450,6 +2476,11 @@ impl ThreadRequestProcessor {
             )
             .await?;
         let response_history = thread_history.clone();
+        let auth_manager = self
+            .thread_manager
+            .auth_manager_for_thread(thread_id)
+            .await
+            .unwrap_or_else(|| Arc::clone(&self.auth_manager));
         let NewThread {
             thread_id: resumed_thread_id,
             thread: codex_thread,
@@ -2460,7 +2491,7 @@ impl ThreadRequestProcessor {
             .resume_thread_with_history(
                 config,
                 thread_history,
-                self.auth_manager.clone(),
+                auth_manager,
                 self.request_trace_context(request_id).await,
                 client_mcp_extensions,
             )
@@ -3949,20 +3980,23 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
+        auth_profile_id: Option<String>,
         prepared_config: &mut Option<PreparedResumeConfig>,
     ) -> Result<ControlFlow<()>, JSONRPCErrorError> {
         let _auth_transition_guard = self.auth_transition_lock.lock().await;
-        reload_auth_from_storage_if_idle(
-            &self.auth_manager,
-            &self.thread_manager,
-            &self.config_manager,
-            &self.outgoing,
-            &self.thread_watch_manager,
-            &self.config.chatgpt_base_url,
-            self.config.http_client_factory(),
-            "thread/resume",
-        )
-        .await;
+        if auth_profile_id.is_none() {
+            reload_auth_from_storage_if_idle(
+                &self.auth_manager,
+                &self.thread_manager,
+                &self.config_manager,
+                &self.outgoing,
+                &self.thread_watch_manager,
+                &self.config.chatgpt_base_url,
+                self.config.http_client_factory(),
+                "thread/resume",
+            )
+            .await;
+        }
 
         if let Ok(thread_id) = ThreadId::from_string(&params.thread_id)
             && self
@@ -4353,9 +4387,22 @@ impl ThreadRequestProcessor {
         }
         let response_history = thread_history.clone();
 
+        let runtime = self
+            .account_profiles
+            .runtime_for_account_id(
+                &self.thread_manager,
+                &config,
+                thread_history
+                    .get_session_account_id()
+                    .as_deref(),
+                auth_profile_id.as_deref(),
+            )
+            .await
+            .map_err(invalid_params)?;
         match self
             .thread_manager
             .start_thread(StartThreadOptions {
+                runtime,
                 initial_history: thread_history,
                 parent_trace: match target {
                     ThreadResumeTarget::Client(request_id) => {
@@ -5269,6 +5316,7 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
+        auth_profile_id: Option<String>,
     ) -> Result<(), JSONRPCErrorError> {
         if params.experimental_disable_prediction_mcp && !params.experimental_prediction_mode {
             return Err(invalid_request(
@@ -5618,7 +5666,7 @@ impl ThreadRequestProcessor {
             }
         }
         let (inherited_options, inherited_settings) = inherited_fork.unzip();
-        let options = if let Some(options) = inherited_options {
+        let mut options = if let Some(options) = inherited_options {
             *options
         } else {
             // Derive a Config using the same logic as new conversation, honoring overrides if provided.
@@ -5632,6 +5680,22 @@ impl ThreadRequestProcessor {
                 ..StartThreadOptions::new(config)
             }
         };
+        if options.runtime.is_none() {
+            let source_account_id = source_history_items.iter().find_map(|item| match item {
+                RolloutItem::SessionMeta(meta) => meta.meta.creator_account_id.clone(),
+                _ => None,
+            });
+            options.runtime = self
+                .account_profiles
+                .runtime_for_account_id(
+                    &self.thread_manager,
+                    &options.config,
+                    source_account_id.as_deref(),
+                    auth_profile_id.as_deref(),
+                )
+                .await
+                .map_err(invalid_params)?;
+        }
         let goals_enabled = options.config.features.enabled(Feature::Goals);
 
         let fallback_model_provider = options.config.model_provider_id.clone();

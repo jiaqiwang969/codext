@@ -95,6 +95,7 @@ use codex_protocol::protocol::TurnEnvironmentRequest;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_rollout::state_db::StateDbHandle;
+use codex_skills::SkillRootLoader;
 use codex_skills_extension::HostSkillsService;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::LoadThreadHistoryParams;
@@ -111,6 +112,7 @@ use codex_thread_store::ThreadStore;
 use codex_thread_store::ThreadStoreError;
 use codex_thread_store::ThreadStoreResumePreparation;
 use codex_thread_store::UpdateThreadMetadataParams;
+use codex_utils_plugins::PluginSkillRoot;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_git_discovery::GitRootDiscovery;
 use futures::StreamExt;
@@ -268,6 +270,45 @@ pub struct InternalSessionParent {
     pub(crate) inherited_instructions: Option<SessionInstructions>,
 }
 
+/// Runtime services bound to one authentication profile.
+///
+/// A thread captures one of these runtimes when it starts. The runtime owns the
+/// authentication manager and the account-aware model, plugin, and MCP managers,
+/// while persistence and agent coordination remain owned by the shared thread
+/// manager.
+#[derive(Clone)]
+pub struct ThreadRuntime {
+    pub(crate) auth_manager: Arc<AuthManager>,
+    pub(crate) models_manager: SharedModelsManager,
+    pub(crate) plugins_manager: Arc<PluginsManager>,
+    pub(crate) mcp_manager: Arc<McpManager>,
+    pub(crate) auth_profile_id: Option<String>,
+}
+
+/// Authentication manager captured by a thread for extensions that need to
+/// create account-bound backend clients.
+#[derive(Clone)]
+pub struct ThreadAuthManager(pub Arc<AuthManager>);
+
+impl ThreadRuntime {
+    pub fn auth_profile_id(&self) -> Option<&str> {
+        self.auth_profile_id.as_deref()
+    }
+
+    pub(crate) fn from_session_services(
+        services: &crate::state::SessionServices,
+        auth_profile_id: Option<String>,
+    ) -> Self {
+        Self {
+            auth_manager: Arc::clone(&services.auth_manager),
+            models_manager: Arc::clone(&services.models_manager),
+            plugins_manager: Arc::clone(&services.plugins_manager),
+            mcp_manager: Arc::clone(&services.mcp_manager),
+            auth_profile_id,
+        }
+    }
+}
+
 /// Controls the prompt cache key sent on model requests, independently of session identity.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum PromptCacheKey {
@@ -282,6 +323,8 @@ pub enum PromptCacheKey {
 
 pub struct StartThreadOptions {
     pub config: Config,
+    /// Account runtime captured by this thread. `None` uses the manager's default runtime.
+    pub runtime: Option<ThreadRuntime>,
     /// Request-body cache key policy for this thread and its children. Hosts must reapply it on cold resume.
     pub prompt_cache_key: PromptCacheKey,
     /// Host-owned provider for this root thread's additional instructions.
@@ -330,6 +373,7 @@ impl StartThreadOptions {
     pub fn new(config: Config) -> Self {
         Self {
             config,
+            runtime: None,
             prompt_cache_key: PromptCacheKey::default(),
             thread_instructions_provider: None,
             allow_provider_model_fallback: false,
@@ -447,6 +491,8 @@ pub(crate) struct ThreadManagerState {
     thread_created_tx: broadcast::Sender<ThreadId>,
     thread_id_generator: ThreadIdGenerator,
     agent_control_factory: Option<AgentControlFactory>,
+    codex_home: PathBuf,
+    thread_runtimes: Arc<RwLock<HashMap<ThreadId, ThreadRuntime>>>,
     auth_manager: Arc<AuthManager>,
     models_manager: SharedModelsManager,
     git_root_discovery: Arc<GitRootDiscovery>,
@@ -619,6 +665,8 @@ impl ThreadManager {
                 thread_created_tx,
                 thread_id_generator: default_thread_id_generator(),
                 agent_control_factory: None,
+                codex_home: codex_home.to_path_buf(),
+                thread_runtimes: Arc::new(RwLock::new(HashMap::new())),
                 models_manager,
                 git_root_discovery: Arc::default(),
                 environment_manager,
@@ -643,6 +691,28 @@ impl ThreadManager {
             }),
             _test_codex_home_guard: None,
         }
+    }
+
+    /// Builds account-aware services for a thread without changing the shared coordinator.
+    pub fn runtime_for_auth(
+        &self,
+        config: &Config,
+        auth_manager: Arc<AuthManager>,
+        auth_profile_id: Option<String>,
+    ) -> ThreadRuntime {
+        self.state
+            .runtime_for_auth(config, auth_manager, auth_profile_id)
+    }
+
+    /// Returns the authentication manager captured by a live thread.
+    pub async fn auth_manager_for_thread(&self, thread_id: ThreadId) -> Option<Arc<AuthManager>> {
+        if let Some(runtime) = self.state.thread_runtimes.read().await.get(&thread_id) {
+            return Some(Arc::clone(&runtime.auth_manager));
+        }
+        self.get_thread(thread_id)
+            .await
+            .ok()
+            .map(|thread| Arc::clone(&thread.session.services.auth_manager))
     }
 
     /// Generate every new thread identifier with the caller-provided factory.
@@ -807,6 +877,8 @@ impl ThreadManager {
                 thread_created_tx,
                 thread_id_generator: default_thread_id_generator(),
                 agent_control_factory: None,
+                codex_home: codex_home.clone(),
+                thread_runtimes: Arc::new(RwLock::new(HashMap::new())),
                 models_manager: create_model_provider(provider, Some(auth_manager.clone()))
                     .models_manager(codex_home, /*config_model_catalog*/ None),
                 git_root_discovery: Arc::default(),
@@ -1188,6 +1260,17 @@ impl ThreadManager {
         }
         let parent = self.get_thread(parent_thread_id).await?;
         options.initial_history = history;
+        let runtime = self
+            .state
+            .thread_runtimes
+            .read()
+            .await
+            .get(&parent_thread_id)
+            .cloned()
+            .unwrap_or_else(|| {
+                ThreadRuntime::from_session_services(&parent.session.services, None)
+            });
+        options.runtime = Some(runtime);
         options.internal_parent = Some(InternalSessionParent {
             thread_id: parent_thread_id,
             auth_manager: Arc::clone(&parent.session.services.auth_manager),
@@ -1232,6 +1315,18 @@ impl ThreadManager {
                 "a captured internal parent requires a new or forked internal session".to_owned(),
             ));
         }
+        if options.runtime.is_none()
+            && let Some(source_thread_id) = forked_from_thread_id
+            && let Some(runtime) = self
+                .state
+                .thread_runtimes
+                .read()
+                .await
+                .get(&source_thread_id)
+                .cloned()
+        {
+            options.runtime = Some(runtime);
+        }
         let mut request = if let Some(parent) = parent {
             let mut request =
                 ThreadSpawnRequest::new(options, parent.auth_manager, parent.agent_control);
@@ -1242,9 +1337,14 @@ impl ThreadManager {
             request
         } else {
             let agent_control = self.agent_control_for_config(&options.config);
+            let auth_manager = options
+                .runtime
+                .as_ref()
+                .map(|runtime| Arc::clone(&runtime.auth_manager))
+                .unwrap_or_else(|| Arc::clone(&self.state.auth_manager));
             let mut request = ThreadSpawnRequest::new(
                 options,
-                Arc::clone(&self.state.auth_manager),
+                auth_manager,
                 agent_control,
             );
             request.forked_from_thread_id = forked_from_thread_id;
@@ -1449,9 +1549,14 @@ impl ThreadManager {
                 "live internal threads can only be removed by their owner".to_owned(),
             ));
         }
-        Ok(threads.remove(thread_id).inspect(|thread| {
+        let removed = threads.remove(thread_id).inspect(|thread| {
             thread.session.services.mcp_runtime.revoke_ema();
-        }))
+        });
+        drop(threads);
+        if removed.is_some() {
+            self.state.thread_runtimes.write().await.remove(thread_id);
+        }
+        Ok(removed)
     }
 
     /// Removes a thread only if `thread_id` still maps to `expected`.
@@ -1464,7 +1569,7 @@ impl ThreadManager {
         expected: &Arc<CodexThread>,
     ) -> Option<Arc<CodexThread>> {
         let mut threads = self.state.threads.write().await;
-        if threads
+        let removed = if threads
             .get(thread_id)
             .is_some_and(|thread| Arc::ptr_eq(thread, expected))
         {
@@ -1473,7 +1578,12 @@ impl ThreadManager {
             })
         } else {
             None
+        };
+        drop(threads);
+        if removed.is_some() {
+            self.state.thread_runtimes.write().await.remove(thread_id);
         }
+        removed
     }
 
     /// Tries to shut down all tracked threads concurrently within the provided timeout.
@@ -1515,6 +1625,11 @@ impl ThreadManager {
             if let Some(thread) = tracked_threads.remove(thread_id) {
                 thread.session.services.mcp_runtime.revoke_ema();
             }
+        }
+        drop(tracked_threads);
+        let mut runtimes = self.state.thread_runtimes.write().await;
+        for thread_id in &report.completed {
+            runtimes.remove(thread_id);
         }
 
         report
@@ -1668,6 +1783,18 @@ impl ThreadManager {
             InitialHistory::Forked(_) => history.forked_from_id(),
             InitialHistory::New | InitialHistory::Cleared => None,
         };
+        if options.runtime.is_none()
+            && let Some(source_thread_id) = source_thread_id
+            && let Some(runtime) = self
+                .state
+                .thread_runtimes
+                .read()
+                .await
+                .get(&source_thread_id)
+                .cloned()
+        {
+            options.runtime = Some(runtime);
+        }
         // Capture the live source before later startup work can unload it. Keep
         // the fork's own providers, not the source's task-bound callback.
         let instructions = self
@@ -1698,8 +1825,12 @@ impl ThreadManager {
         );
         options.initial_history = fork_history_from_snapshot(snapshot, history, interrupted_marker);
         let agent_control = self.agent_control_for_config(&options.config);
-        let mut request =
-            ThreadSpawnRequest::new(options, Arc::clone(&self.state.auth_manager), agent_control);
+        let auth_manager = options
+            .runtime
+            .as_ref()
+            .map(|runtime| Arc::clone(&runtime.auth_manager))
+            .unwrap_or_else(|| Arc::clone(&self.state.auth_manager));
+        let mut request = ThreadSpawnRequest::new(options, auth_manager, agent_control);
         request.forked_from_thread_id = source_thread_id;
         request.fork_persistence = fork_persistence;
         request.inherited_instructions = Some(instructions);
@@ -1741,6 +1872,47 @@ impl ThreadManager {
 }
 
 impl ThreadManagerState {
+    fn runtime_for_auth(
+        &self,
+        config: &Config,
+        auth_manager: Arc<AuthManager>,
+        auth_profile_id: Option<String>,
+    ) -> ThreadRuntime {
+        let skill_root_loader: Arc<dyn SkillRootLoader<PluginSkillRoot>> = self.skills_service.clone();
+        let plugins_manager = Arc::new(PluginsManager::new_with_options(
+            self.codex_home.clone(),
+            self.session_source.restriction_product(),
+            Arc::clone(&auth_manager),
+            skill_root_loader,
+        ));
+        if let Some(analytics_events_client) = &self.analytics_events_client {
+            plugins_manager.set_analytics_events_client(analytics_events_client.clone());
+        }
+        let mcp_manager = Arc::new(McpManager::new_with_extensions(
+            Arc::clone(&plugins_manager),
+            Arc::clone(&self.extensions),
+            self.mcp_manager.codex_apps_tools_cache(),
+        ));
+        let models_manager = build_models_manager(config, Arc::clone(&auth_manager));
+        ThreadRuntime {
+            auth_manager,
+            models_manager,
+            plugins_manager,
+            mcp_manager,
+            auth_profile_id,
+        }
+    }
+
+    fn default_runtime_for_auth(&self, auth_manager: Arc<AuthManager>) -> ThreadRuntime {
+        ThreadRuntime {
+            auth_manager,
+            models_manager: Arc::clone(&self.models_manager),
+            plugins_manager: Arc::clone(&self.plugins_manager),
+            mcp_manager: Arc::clone(&self.mcp_manager),
+            auth_profile_id: None,
+        }
+    }
+
     pub(crate) fn shared_thread_instructions_provider(
         &self,
         root_thread_id: ThreadId,
@@ -1879,13 +2051,18 @@ impl ThreadManagerState {
 
     /// Remove a thread from the manager by ID, returning it when present.
     pub(crate) async fn remove_thread(&self, thread_id: &ThreadId) -> Option<Arc<CodexThread>> {
-        self.threads
+        let removed = self
+            .threads
             .write()
             .await
             .remove(thread_id)
             .inspect(|thread| {
                 thread.session.services.mcp_runtime.revoke_ema();
-            })
+            });
+        if removed.is_some() {
+            self.thread_runtimes.write().await.remove(thread_id);
+        }
+        removed
     }
 
     pub(crate) async fn effective_multi_agent_version_for_spawn(
@@ -2046,11 +2223,19 @@ impl ThreadManagerState {
         parent_thread_id: Option<ThreadId>,
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
     ) -> CodexResult<NewThread> {
-        (options.client_mcp_extensions, options.prompt_cache_key) =
+        let (client_mcp_extensions, prompt_cache_key, parent_runtime) =
             self.inherited_child_settings(parent_thread_id).await;
+        options.client_mcp_extensions = client_mcp_extensions;
+        options.prompt_cache_key = prompt_cache_key;
+        if let Some(runtime) = &parent_runtime {
+            options.runtime = Some(runtime.clone());
+        }
         let forked = matches!(options.initial_history, InitialHistory::Forked(_));
-        let mut request =
-            ThreadSpawnRequest::new(options, Arc::clone(&self.auth_manager), agent_control);
+        let auth_manager = parent_runtime
+            .as_ref()
+            .map(|runtime| Arc::clone(&runtime.auth_manager))
+            .unwrap_or_else(|| Arc::clone(&self.auth_manager));
+        let mut request = ThreadSpawnRequest::new(options, auth_manager, agent_control);
         request.parent_thread_id = parent_thread_id;
         request.inherited_exec_policy = inherited_exec_policy;
         if forked {
@@ -2077,12 +2262,12 @@ impl ThreadManagerState {
             inherited_exec_policy,
             client_mcp_extensions,
         } = options;
-        let (parent_client_mcp_extensions, inherited_prompt_cache_key) =
+        let (parent_client_mcp_extensions, inherited_prompt_cache_key, parent_runtime) =
             self.inherited_child_settings(parent_thread_id).await;
         let client_mcp_extensions = client_mcp_extensions.unwrap_or(parent_client_mcp_extensions);
         let prompt_cache_key = prompt_cache_key.unwrap_or(inherited_prompt_cache_key);
         let thread_source = initial_history.get_resumed_thread_source();
-        let options = StartThreadOptions {
+        let mut options = StartThreadOptions {
             prompt_cache_key,
             initial_history,
             session_source: Some(session_source),
@@ -2096,8 +2281,14 @@ impl ThreadManagerState {
             client_mcp_extensions,
             ..StartThreadOptions::new(config)
         };
-        let mut request =
-            ThreadSpawnRequest::new(options, Arc::clone(&self.auth_manager), agent_control);
+        if let Some(runtime) = &parent_runtime {
+            options.runtime = Some(runtime.clone());
+        }
+        let auth_manager = parent_runtime
+            .as_ref()
+            .map(|runtime| Arc::clone(&runtime.auth_manager))
+            .unwrap_or_else(|| Arc::clone(&self.auth_manager));
+        let mut request = ThreadSpawnRequest::new(options, auth_manager, agent_control);
         request.parent_thread_id = parent_thread_id;
         request.inherited_environments = inherited_environments;
         request.inherited_instructions = inherited_instructions;
@@ -2108,27 +2299,44 @@ impl ThreadManagerState {
     async fn inherited_child_settings(
         &self,
         parent_thread_id: Option<ThreadId>,
-    ) -> (ClientMcpExtensions, PromptCacheKey) {
+    ) -> (ClientMcpExtensions, PromptCacheKey, Option<ThreadRuntime>) {
         let Some(parent_thread_id) = parent_thread_id else {
             return Default::default();
         };
-        self.get_thread(parent_thread_id)
+        let Some(parent) = self.get_thread(parent_thread_id).await.ok() else {
+            return Default::default();
+        };
+        let runtime = self
+            .thread_runtimes
+            .read()
             .await
-            .map(|parent| {
-                (
-                    parent.session.services.client_mcp_extensions.clone(),
-                    parent
-                        .session
-                        .services
-                        .model_client
-                        .prompt_cache_key_policy(),
-                )
-            })
-            .unwrap_or_default()
+            .get(&parent_thread_id)
+            .cloned()
+            .unwrap_or_else(|| ThreadRuntime::from_session_services(&parent.session.services, None));
+        (
+            parent.session.services.client_mcp_extensions.clone(),
+            parent
+                .session
+                .services
+                .model_client
+                .prompt_cache_key_policy(),
+            Some(runtime),
+        )
     }
 
     /// Spawn a new thread with optional history and register it with the manager.
     async fn spawn_thread(&self, mut request: ThreadSpawnRequest) -> CodexResult<NewThread> {
+        let runtime = request.options.runtime.clone().unwrap_or_else(|| {
+            if Arc::ptr_eq(&request.auth_manager, &self.auth_manager) {
+                self.default_runtime_for_auth(Arc::clone(&request.auth_manager))
+            } else {
+                self.runtime_for_auth(
+                    &request.options.config,
+                    Arc::clone(&request.auth_manager),
+                    None,
+                )
+            }
+        });
         let cancellation = request
             .options
             .config
@@ -2140,8 +2348,8 @@ impl ThreadManagerState {
             .config
             .config_layer_stack
             .with_mcp_ema_cancellation(cancellation);
-        let runtime = request.agent_control.runtime().clone();
-        let membership = runtime.admit_start()?;
+        let agent_runtime = request.agent_control.runtime().clone();
+        let membership = agent_runtime.admit_start()?;
         let owns_startup = request.startup.is_none();
         let startup_state = Arc::clone(
             request
@@ -2154,7 +2362,7 @@ impl ThreadManagerState {
         let ThreadSpawnRequest {
             startup,
             options,
-            auth_manager,
+            auth_manager: _,
             agent_control,
             parent_thread_id,
             parent_originator,
@@ -2165,6 +2373,7 @@ impl ThreadManagerState {
             inherited_exec_policy,
             user_shell_override,
         } = request;
+        let auth_manager = Arc::clone(&runtime.auth_manager);
         let history_initialization = if matches!(
             &options.initial_history,
             InitialHistory::New | InitialHistory::Forked(_)
@@ -2203,6 +2412,7 @@ impl ThreadManagerState {
             client_mcp_extensions,
             mut reserved_thread_id,
             disabled_plugin_ids,
+            runtime: _runtime,
         } = options;
         if resume_preparation.is_some()
             && (config.ephemeral || !matches!(&initial_history, InitialHistory::Resumed(_)))
@@ -2226,6 +2436,7 @@ impl ThreadManagerState {
                 }
             });
         thread_extension_init.insert(isolation);
+        thread_extension_init.insert(ThreadAuthManager(Arc::clone(&runtime.auth_manager)));
         let environment_requests = environment_requests
             .or_else(|| {
                 let SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }) = &session_source
@@ -2254,41 +2465,52 @@ impl ThreadManagerState {
             ));
         }
         if let InitialHistory::Resumed(resumed) = &initial_history {
-            let mut threads = self.threads.write().await;
-            if let Some(thread) = threads.get(&resumed.conversation_id).cloned() {
-                if thread.is_running() {
-                    // The parent's pool still owns this runtime and its rollout writer.
-                    // Returning it would report success without allowing client access.
-                    if matches!(
-                        thread.session_source,
-                        SessionSource::Internal(InternalSessionSource::Guardian)
-                    ) {
-                        return Err(CodexErr::InvalidRequest(
-                            "cannot resume a live Guardian reviewer; use thread/read to inspect it, or resume after its parent is unloaded".to_owned(),
-                        ));
+            let replaced_thread = {
+                let mut threads = self.threads.write().await;
+                if let Some(thread) = threads.get(&resumed.conversation_id).cloned() {
+                    if thread.is_running() {
+                        // The parent's pool still owns this runtime and its rollout writer.
+                        // Returning it would report success without allowing client access.
+                        if matches!(
+                            thread.session_source,
+                            SessionSource::Internal(InternalSessionSource::Guardian)
+                        ) {
+                            return Err(CodexErr::InvalidRequest(
+                                "cannot resume a live Guardian reviewer; use thread/read to inspect it, or resume after its parent is unloaded".to_owned(),
+                            ));
+                        }
+                        if let Some(requested_rollout_path) = resumed.rollout_path.as_deref()
+                            && thread.rollout_path().as_deref() != Some(requested_rollout_path)
+                        {
+                            return Err(CodexErr::InvalidRequest(format!(
+                                "thread {} is already running with a different rollout path",
+                                resumed.conversation_id
+                            )));
+                        }
+                        let session_configured =
+                            thread.startup_metadata().to_session_configured_event();
+                        startup_state.release_membership();
+                        if let Some(startup_guard) = startup_guard {
+                            startup_guard.disarm();
+                        }
+                        return Ok(NewThread {
+                            thread_id: resumed.conversation_id,
+                            session_configured,
+                            thread,
+                        });
                     }
-                    if let Some(requested_rollout_path) = resumed.rollout_path.as_deref()
-                        && thread.rollout_path().as_deref() != Some(requested_rollout_path)
-                    {
-                        return Err(CodexErr::InvalidRequest(format!(
-                            "thread {} is already running with a different rollout path",
-                            resumed.conversation_id
-                        )));
-                    }
-                    let session_configured =
-                        thread.startup_metadata().to_session_configured_event();
-                    startup_state.release_membership();
-                    if let Some(startup_guard) = startup_guard {
-                        startup_guard.disarm();
-                    }
-                    return Ok(NewThread {
-                        thread_id: resumed.conversation_id,
-                        session_configured,
-                        thread,
-                    });
+                    threads.remove(&resumed.conversation_id);
+                    thread.session.services.mcp_runtime.revoke_ema();
+                    true
+                } else {
+                    false
                 }
-                threads.remove(&resumed.conversation_id);
-                thread.session.services.mcp_runtime.revoke_ema();
+            };
+            if replaced_thread {
+                self.thread_runtimes
+                    .write()
+                    .await
+                    .remove(&resumed.conversation_id);
             }
         }
         let agent_control = match (&self.agent_control_factory, agent_control) {
@@ -2337,7 +2559,7 @@ impl ThreadManagerState {
                     .map(|extensions| Arc::clone(&extensions.0))
                     .unwrap_or_else(empty_extension_registry);
                 let mcp_manager = McpManager::new_with_extensions(
-                    Arc::clone(&self.plugins_manager),
+                    Arc::clone(&runtime.plugins_manager),
                     Arc::clone(&extensions),
                     CodexAppsToolsCache::default(),
                 );
@@ -2364,7 +2586,7 @@ impl ThreadManagerState {
                     },
                     inherited_exec_policy,
                     Arc::clone(&self.extensions),
-                    Arc::clone(&self.mcp_manager),
+                    Arc::clone(&runtime.mcp_manager),
                     self.initial_multi_agent_version_for_spawn(
                         &initial_history,
                         Some(&session_source),
@@ -2422,14 +2644,14 @@ impl ThreadManagerState {
             instructions,
             installation_id: self.installation_id.clone(),
             auth_manager,
-            models_manager: self
+            models_manager: runtime
                 .models_manager
                 .for_originator(&originator)
-                .unwrap_or_else(|| Arc::clone(&self.models_manager)),
+                .unwrap_or_else(|| Arc::clone(&runtime.models_manager)),
             git_root_discovery: Arc::clone(&self.git_root_discovery),
             environment_manager: Arc::clone(&self.environment_manager),
             skills_service: Arc::clone(&self.skills_service),
-            plugins_manager: Arc::clone(&self.plugins_manager),
+            plugins_manager: Arc::clone(&runtime.plugins_manager),
             mcp_manager,
             code_mode_session_provider: Arc::clone(&self.code_mode_session_provider),
             extensions,
@@ -2492,6 +2714,10 @@ impl ThreadManagerState {
                 return Err(error);
             }
         };
+        self.thread_runtimes
+            .write()
+            .await
+            .insert(session.thread_id(), runtime.clone());
         if let Some(source_thread_id) = attachment_source
             && session.live_thread().is_some()
             && self.thread_store.supports_thread_attachments()
@@ -2519,11 +2745,20 @@ impl ThreadManagerState {
             session.services.mcp_runtime.enable_full_access_form_input();
         }
         let finalize_result = self
-            .finalize_thread_spawn(session, io, tracked_session_source, initial_host_config)
+            .finalize_thread_spawn(
+                Arc::clone(&session),
+                io,
+                tracked_session_source,
+                initial_host_config,
+            )
             .await;
         let new_thread = match finalize_result {
             Ok(new_thread) => new_thread,
             Err(error) => {
+                self.thread_runtimes
+                    .write()
+                    .await
+                    .remove(&session.thread_id());
                 if let Some(startup_guard) = startup_guard {
                     startup_guard.cleanup().await;
                 }

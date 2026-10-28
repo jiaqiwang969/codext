@@ -1,3 +1,12 @@
+# Connection-scoped account profiles
+
+The app-server keeps the default `auth.json` and shared thread storage in one
+daemon, while allowing each connection to select an account-pool entry with
+`account/profile/switch` and `{ "name": "profile" }`. A new thread captures
+that profile's authentication, model, plugin, MCP, and workspace-routing
+runtime. Switching a connection never changes an existing thread, and cold
+resume/fork restores the profile recorded in the thread history.
+
 # Thread memory summary (experimental)
 
 `thread/memory/read` takes `{threadId}` for a loaded thread and returns

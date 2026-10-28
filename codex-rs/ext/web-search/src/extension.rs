@@ -9,6 +9,7 @@ use codex_api::SearchContextSize;
 use codex_api::SearchFilters;
 use codex_api::SearchSettings;
 use codex_core::config::Config;
+use codex_core::ThreadAuthManager;
 use codex_extension_api::ConfigContributor;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionFuture;
@@ -134,12 +135,17 @@ impl ToolContributor for WebSearchExtension {
             return Vec::new();
         }
 
+        let auth_manager = thread_store
+            .get::<ThreadAuthManager>()
+            .map(|auth| Arc::clone(&auth.0))
+            .unwrap_or_else(|| Arc::clone(&self.auth_manager));
+
         vec![Arc::new(WebSearchTool {
             session_id: session_store.level_id().to_string(),
             http_client_factory: config.http_client_factory.clone(),
             provider: create_model_provider(
                 config.provider.clone(),
-                Some(self.auth_manager.clone()),
+                Some(auth_manager),
             ),
             settings: config.settings.clone(),
             originator: thread_store

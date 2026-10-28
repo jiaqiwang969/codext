@@ -106,6 +106,8 @@ use codex_app_server_protocol::LoginAccountResponse;
 use codex_app_server_protocol::LoginApiKeyParams;
 use codex_app_server_protocol::LoginAppBrand;
 use codex_app_server_protocol::LogoutAccountResponse;
+use codex_app_server_protocol::SwitchAuthProfileParams;
+use codex_app_server_protocol::SwitchAuthProfileResponse;
 use codex_app_server_protocol::MarketplaceAddParams;
 use codex_app_server_protocol::MarketplaceAddResponse;
 use codex_app_server_protocol::MarketplaceInterface;

@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 
 use crate::attestation::app_server_attestation_provider;
+use crate::account_profiles::AccountProfileRegistry;
 use crate::config_manager::ConfigManager;
 use crate::connection_rpc_gate::ConnectionRpcGate;
 use crate::current_time::app_server_time_provider;
@@ -97,6 +98,7 @@ use codex_state::log_db::LogDbLayer;
 use codex_thread_store::LocalQueueStore;
 use codex_thread_store::QueueStore;
 use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tokio::sync::Semaphore;
 use tokio::sync::broadcast;
 use tokio::sync::watch;
@@ -179,6 +181,7 @@ pub(crate) struct ConnectionSessionState {
     pub(crate) rpc_gate: Arc<ConnectionRpcGate>,
     pub(crate) origin: crate::transport::ConnectionOrigin,
     pub(crate) mcp_event_streams: McpEventStreams,
+    auth_profile_id: RwLock<Option<String>>,
     initialized: OnceLock<InitializedConnectionSessionState>,
 }
 
@@ -198,6 +201,7 @@ impl ConnectionSessionState {
             origin,
             rpc_gate: Arc::new(ConnectionRpcGate::new()),
             mcp_event_streams: McpEventStreams::default(),
+            auth_profile_id: RwLock::new(None),
             initialized: OnceLock::new(),
         }
     }
@@ -242,6 +246,14 @@ impl ConnectionSessionState {
             .get()
             .map(|session| session.client_mcp_extensions.clone())
             .unwrap_or_default()
+    }
+
+    pub(crate) async fn auth_profile_id(&self) -> Option<String> {
+        self.auth_profile_id.read().await.clone()
+    }
+
+    pub(crate) async fn set_auth_profile_id(&self, profile_id: Option<String>) {
+        *self.auth_profile_id.write().await = profile_id;
     }
     pub(crate) fn initialize(&self, session: InitializedConnectionSessionState) -> Result<(), ()> {
         self.initialized.set(session).map_err(|_| ())
@@ -397,6 +409,7 @@ impl MessageProcessor {
             thread_manager.get_models_manager(),
             Arc::clone(&auth_manager),
         ));
+        let account_profiles = Arc::new(AccountProfileRegistry::new(config.as_ref()));
         let models_refresh_worker = crate::models_refresh_worker::spawn(&model_catalog);
         let turn_cost_worker =
             TurnCostWorker::spawn(Arc::clone(&config), Arc::clone(&auth_manager));
@@ -433,7 +446,7 @@ impl MessageProcessor {
                 config_processor.clone(),
                 request_serialization_queues.clone(),
             );
-        let account_processor = AccountRequestProcessor::new(
+        let account_processor = AccountRequestProcessor::new_with_runtime(
             auth_manager.clone(),
             Arc::clone(&thread_manager),
             outgoing.clone(),
@@ -442,6 +455,7 @@ impl MessageProcessor {
             Arc::clone(&model_catalog),
             thread_watch_manager.clone(),
             Arc::clone(&auth_transition_lock),
+            Arc::clone(&account_profiles),
         );
         let apps_processor = AppsRequestProcessor::new(
             auth_manager.clone(),
@@ -450,13 +464,14 @@ impl MessageProcessor {
             config_manager.clone(),
             app_list_shutdown_token,
         );
-        let catalog_processor = CatalogRequestProcessor::new(
+        let catalog_processor = CatalogRequestProcessor::new_with_account_profiles(
             outgoing.clone(),
             Arc::clone(&skills_watcher),
             Arc::clone(&thread_manager),
             Arc::clone(&config),
             config_manager.clone(),
             model_catalog,
+            Arc::clone(&account_profiles),
         );
         let command_exec_processor = CommandExecRequestProcessor::new(
             arg0_paths.clone(),
@@ -548,6 +563,7 @@ impl MessageProcessor {
             turn_cost_worker.as_ref().map(TurnCostWorker::handle),
             config_warnings,
             sample_responses,
+            Arc::clone(&account_profiles),
         );
         let turn_processor = TurnRequestProcessor::new(
             auth_manager,
@@ -817,6 +833,7 @@ impl MessageProcessor {
                     /*app_server_client_name*/ None,
                     /*app_server_client_version*/ None,
                     ClientMcpExtensions::default(),
+                    /*auth_profile_id*/ None,
                 )
                 .await
             {
@@ -1313,6 +1330,7 @@ impl MessageProcessor {
                         app_server_client_name.clone(),
                         client_version.clone(),
                         client_mcp_extensions.clone(),
+                        session.auth_profile_id().await,
                         request_context,
                     )
                     .await
@@ -1336,6 +1354,7 @@ impl MessageProcessor {
                         app_server_client_name.clone(),
                         client_version.clone(),
                         client_mcp_extensions.clone(),
+                        session.auth_profile_id().await,
                     )
                     .await
             }
@@ -1347,6 +1366,7 @@ impl MessageProcessor {
                         app_server_client_name.clone(),
                         client_version.clone(),
                         client_mcp_extensions.clone(),
+                        session.auth_profile_id().await,
                     )
                     .await
             }
@@ -1664,7 +1684,9 @@ impl MessageProcessor {
                 self.plugin_processor.plugin_uninstall(params).await
             }
             ClientRequest::ModelList { params, .. } => {
-                self.catalog_processor.model_list(params).await
+                self.catalog_processor
+                    .model_list(params, session.auth_profile_id().await)
+                    .await
             }
             ClientRequest::ExperimentalFeatureList { params, .. } => {
                 self.catalog_processor
@@ -1840,11 +1862,18 @@ impl MessageProcessor {
                     .logout_account(request_id.clone())
                     .await
             }
+            ClientRequest::SwitchAuthProfile { params, .. } => {
+                self.account_processor
+                    .switch_auth_profile(params, &session)
+                    .await
+            }
             ClientRequest::CancelLoginAccount { params, .. } => {
                 self.account_processor.cancel_login_account(params).await
             }
             ClientRequest::GetAccount { params, .. } => {
-                self.account_processor.get_account(params).await
+                self.account_processor
+                    .get_account(params, session.auth_profile_id().await)
+                    .await
             }
             ClientRequest::ReloadAccount { .. } => {
                 self.account_processor.reload_account().await
@@ -1853,15 +1882,22 @@ impl MessageProcessor {
                 self.account_processor.get_auth_status(params).await
             }
             ClientRequest::GetAccountRateLimits { params, .. } => {
-                self.account_processor.get_account_rate_limits(params).await
+                self.account_processor
+                    .get_account_rate_limits(params, session.auth_profile_id().await)
+                    .await
             }
             ClientRequest::ConsumeAccountRateLimitResetCredit { params, .. } => {
                 self.account_processor
-                    .consume_account_rate_limit_reset_credit(params)
+                    .consume_account_rate_limit_reset_credit(
+                        params,
+                        session.auth_profile_id().await,
+                    )
                     .await
             }
             ClientRequest::GetAccountTokenUsage { params, .. } => {
-                self.account_processor.get_account_token_usage(params).await
+                self.account_processor
+                    .get_account_token_usage(params, session.auth_profile_id().await)
+                    .await
             }
             ClientRequest::GetWorkspaceMessages { .. } => {
                 self.account_processor.get_workspace_messages().await

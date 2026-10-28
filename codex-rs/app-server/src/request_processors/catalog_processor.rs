@@ -1,4 +1,5 @@
 use super::*;
+use crate::account_profiles::AccountProfileRegistry;
 use crate::model_catalog::ModelCatalog;
 use codex_config::ConfigPathContext;
 use codex_core::config::permission_profile_catalog;
@@ -16,6 +17,7 @@ pub(crate) struct CatalogRequestProcessor {
     pub(super) config: Arc<Config>,
     pub(super) config_manager: ConfigManager,
     model_catalog: Arc<ModelCatalog>,
+    account_profiles: Arc<AccountProfileRegistry>,
 }
 
 const SKILLS_LIST_CWD_CONCURRENCY: usize = 5;
@@ -120,6 +122,7 @@ fn errors_to_info(
 }
 
 impl CatalogRequestProcessor {
+    #[allow(dead_code)]
     pub(crate) fn new(
         outgoing: Arc<OutgoingMessageSender>,
         skills_watcher: Arc<SkillsWatcher>,
@@ -128,6 +131,27 @@ impl CatalogRequestProcessor {
         config_manager: ConfigManager,
         model_catalog: Arc<ModelCatalog>,
     ) -> Self {
+        let account_profiles = Arc::new(AccountProfileRegistry::new(config.as_ref()));
+        Self::new_with_account_profiles(
+            outgoing,
+            skills_watcher,
+            thread_manager,
+            config,
+            config_manager,
+            model_catalog,
+            account_profiles,
+        )
+    }
+
+    pub(crate) fn new_with_account_profiles(
+        outgoing: Arc<OutgoingMessageSender>,
+        skills_watcher: Arc<SkillsWatcher>,
+        thread_manager: Arc<ThreadManager>,
+        config: Arc<Config>,
+        config_manager: ConfigManager,
+        model_catalog: Arc<ModelCatalog>,
+        account_profiles: Arc<AccountProfileRegistry>,
+    ) -> Self {
         Self {
             outgoing,
             skills_watcher,
@@ -135,6 +159,7 @@ impl CatalogRequestProcessor {
             config,
             config_manager,
             model_catalog,
+            account_profiles,
         }
     }
 
@@ -177,17 +202,33 @@ impl CatalogRequestProcessor {
     pub(crate) async fn model_list(
         &self,
         params: ModelListParams,
+        auth_profile_id: Option<String>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        let (config, models_manager) = self
+        let (config, default_models_manager) = self
             .model_catalog
             .current()
             .await
             .map_err(|err| config_load_error(&err))?;
+        let (auth_manager, models_manager) = match auth_profile_id {
+            Some(profile_id) => {
+                let auth_manager = self
+                    .account_profiles
+                    .auth_manager_for_profile(&profile_id)
+                    .await
+                    .map_err(invalid_request)?;
+                let models_manager = codex_core::build_models_manager(
+                    &config,
+                    Arc::clone(&auth_manager),
+                );
+                (auth_manager, models_manager)
+            }
+            None => (self.thread_manager.auth_manager(), default_models_manager),
+        };
         // Gate the same provider used by the catalog, including when its model cache is warm.
         // Resolving credentials may refresh them, but explicit host policy prevents browser login.
         if let Some(gateway) = codex_model_provider::create_model_provider(
             config.model_provider.clone(),
-            Some(self.thread_manager.auth_manager()),
+            Some(auth_manager),
         )
         .gateway_auth_manager()
         .map_err(|error| internal_error(error.to_string()))?
