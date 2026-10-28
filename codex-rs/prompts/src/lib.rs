@@ -1,4 +1,5 @@
 mod compact;
+mod engineering;
 mod guardian_instructions;
 mod model_instructions;
 mod model_messages;
@@ -11,6 +12,7 @@ mod update_plan_instructions;
 
 pub use compact::SUMMARIZATION_PROMPT;
 pub use compact::SUMMARY_PREFIX;
+pub use engineering::ENGINEERING_AGENT_INSTRUCTIONS;
 pub use guardian_instructions::GuardianClassifierInstructions;
 pub use guardian_instructions::GuardianPolicyInstructions;
 pub use guardian_instructions::render_guardian_rejection;

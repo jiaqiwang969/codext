@@ -1,6 +1,7 @@
 mod answered_question;
 pub use answered_question::AnsweredQuestion;
 mod additional_context;
+mod engineering;
 mod annotated_content;
 mod fragment;
 mod recap_prompt;
@@ -8,6 +9,7 @@ mod recap_prompt;
 pub use additional_context::AdditionalContextDeveloperFragment;
 pub use additional_context::AdditionalContextToolOutput;
 pub use additional_context::AdditionalContextUserFragment;
+pub use engineering::EngineeringProjectContext;
 pub use annotated_content::AnnotatedContent;
 pub use annotated_content::message_from_parts;
 pub use annotated_content::set_annotated_content;
