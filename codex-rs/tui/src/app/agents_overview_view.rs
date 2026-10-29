@@ -118,13 +118,19 @@ pub(super) fn account_profile_name(thread: &Thread) -> &str {
     thread
         .extra
         .as_ref()
-        .and_then(|extra| {
-            extra
-                .account_profile
-                .as_deref()
-                .or(extra.account_id.as_deref())
-        })
+        .and_then(|extra| extra.account_profile.as_deref())
         .unwrap_or("default")
+}
+
+pub(super) fn account_id_name(thread: &Thread) -> Option<&str> {
+    thread
+        .extra
+        .as_ref()
+        .and_then(|extra| extra.account_id.as_deref())
+}
+
+pub(super) fn profile_switch_hint() -> ShortcutHint {
+    crate::key_hint::shift(KeyCode::Char('p')).into()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -488,15 +494,23 @@ impl AgentsOverviewView {
             Line::from(vec![dot, " ".into(), status.into()]),
             Line::default(),
             Line::from(vec![
-                "Account: ".dim(),
+                "Profile: ".dim(),
                 account_profile_name(&row.thread).to_owned().into(),
             ]),
+        ];
+        if let Some(account_id) = account_id_name(&row.thread) {
+            lines.push(Line::from(vec![
+                "Account: ".dim(),
+                account_id.to_owned().into(),
+            ]));
+        }
+        lines.extend([
             model,
             reasoning,
             Line::default(),
             Line::from("Project".dim()),
             Line::from(row.thread.cwd.display().to_string()),
-        ];
+        ]);
         lines.extend(row.details.usage_lines.clone());
         if let Some(branch) = row
             .thread

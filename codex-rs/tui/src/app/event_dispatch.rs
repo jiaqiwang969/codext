@@ -1113,6 +1113,9 @@ impl App {
                     }
                 }
             }
+            AppEvent::OpenAuthProfilePicker => {
+                self.chat_widget.show_auth_profile_picker();
+            }
             AppEvent::FatalExitRequest(message) => {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }

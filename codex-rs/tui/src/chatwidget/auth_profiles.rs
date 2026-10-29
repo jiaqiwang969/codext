@@ -9,7 +9,7 @@ use crate::bottom_pane::popup_consts::standard_popup_hint_line;
 use super::ChatWidget;
 
 impl ChatWidget {
-    pub(super) fn show_auth_profile_picker(&mut self) {
+    pub(crate) fn show_auth_profile_picker(&mut self) {
         let profiles = match list_auth_profiles(self.config.codex_home.as_path()) {
             Ok(profiles) => profiles,
             Err(error) => {

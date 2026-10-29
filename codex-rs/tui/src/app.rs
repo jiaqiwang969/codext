@@ -1115,6 +1115,23 @@ impl App {
             return Ok(AppRunControl::Continue);
         }
 
+        // The composer owns the normal left-arrow path, but transcript selection and pending
+        // chords can otherwise consume the event before the composer sees it. Keep the footer
+        // shortcut reliable at the app boundary while preserving the same empty-prompt rules.
+        if !transcript_owns_input
+            && let TuiEvent::Key(key) = &event
+            && key.kind == KeyEventKind::Press
+            && crate::key_hint::plain(KeyCode::Left).is_press(*key)
+            && matches!(self.app_server_target, AppServerTarget::LocalDaemon { .. })
+            && self.overlay.is_none()
+            && self.chat_widget.no_modal_or_popup_active()
+            && self.chat_widget.agents_navigation_available()
+        {
+            self.cancel_primed_browsing_for_event(&event);
+            self.open_agents_overview(app_server);
+            return Ok(AppRunControl::Continue);
+        }
+
         let mut event = if let TuiEvent::Key(mut key_event) = event {
             let escape = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
             if self.should_recover_vim_insert_escape(key_event)

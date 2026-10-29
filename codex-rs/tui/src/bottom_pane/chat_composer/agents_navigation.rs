@@ -19,7 +19,7 @@ impl ChatComposer {
         move_left.is_pressed(KeyCode::Left.into())
     }
 
-    pub(super) fn agents_navigation_available(&self) -> bool {
+    pub(crate) fn agents_navigation_available(&self) -> bool {
         self.agents_navigation_enabled
             && self.agents_navigation_key_available()
             && self.has_focus

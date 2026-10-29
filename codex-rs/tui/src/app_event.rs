@@ -688,6 +688,9 @@ pub(crate) enum AppEvent {
         name: String,
     },
 
+    /// Open the account-pool profile picker from the agents command center.
+    OpenAuthProfilePicker,
+
     /// Request to exit the application due to a fatal error.
     #[allow(dead_code)]
     FatalExitRequest(String),

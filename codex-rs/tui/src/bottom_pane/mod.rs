@@ -517,6 +517,10 @@ impl BottomPane {
             })
     }
 
+    pub(crate) fn agents_navigation_available(&self) -> bool {
+        self.composer.agents_navigation_available()
+    }
+
     pub(crate) fn set_task_mentions_enabled(&mut self, enabled: bool) {
         self.composer.set_task_mentions_enabled(enabled);
         self.request_redraw();
