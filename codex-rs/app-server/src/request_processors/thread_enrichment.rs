@@ -4,6 +4,7 @@ use crate::thread_status::ThreadWatchManager;
 use crate::thread_status::resolve_thread_status;
 use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::Thread;
+use codex_app_server_protocol::ThreadExtra;
 use codex_app_server_protocol::ThreadStatus;
 use codex_core::ThreadManager;
 use codex_protocol::ThreadId;
@@ -52,6 +53,19 @@ async fn enrich_loaded_thread(
     let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
         return;
     };
+    if let Some(account_profile) = thread_manager
+        .auth_profile_id_for_thread(thread_id)
+        .await
+    {
+        let account_id = thread
+            .extra
+            .as_ref()
+            .and_then(|extra| extra.account_id.clone());
+        thread.extra = Some(ThreadExtra {
+            account_profile: Some(account_profile),
+            account_id,
+        });
+    }
     let Ok(loaded_thread) = thread_manager.get_thread(thread_id).await else {
         return;
     };

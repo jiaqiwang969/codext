@@ -1602,6 +1602,24 @@
     },
     "ThreadExtra": {
       "description": "Extra app-server data for a thread.",
+      "properties": {
+        "accountId": {
+          "default": null,
+          "description": "Provider account id recorded when the thread was created, if available.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "accountProfile": {
+          "default": null,
+          "description": "Account-pool profile captured by the live thread runtime, if selected.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
       "type": "object"
     },
     "ThreadHistoryMode": {

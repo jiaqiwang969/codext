@@ -5246,6 +5246,20 @@ class ThreadExtra(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    account_id: Annotated[
+        str | None,
+        Field(
+            alias="accountId",
+            description="Provider account id recorded when the thread was created, if available.",
+        ),
+    ] = None
+    account_profile: Annotated[
+        str | None,
+        Field(
+            alias="accountProfile",
+            description="Account-pool profile captured by the live thread runtime, if selected.",
+        ),
+    ] = None
 
 
 class ThreadGoalClearResponse(BaseModel):

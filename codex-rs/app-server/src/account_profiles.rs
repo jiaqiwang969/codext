@@ -136,7 +136,7 @@ impl AccountProfileRegistry {
             == Some(account_id)
     }
 
-    async fn profile_for_account_id(&self, account_id: &str) -> Option<String> {
+    pub(crate) async fn profile_for_account_id(&self, account_id: &str) -> Option<String> {
         let entries = std::fs::read_dir(self.codex_home.join("accounts")).ok()?;
         let mut profile_names = entries
             .filter_map(Result::ok)

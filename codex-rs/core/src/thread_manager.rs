@@ -715,6 +715,16 @@ impl ThreadManager {
             .map(|thread| Arc::clone(&thread.session.services.auth_manager))
     }
 
+    /// Returns the account-pool profile captured by a live thread runtime.
+    pub async fn auth_profile_id_for_thread(&self, thread_id: ThreadId) -> Option<String> {
+        self.state
+            .thread_runtimes
+            .read()
+            .await
+            .get(&thread_id)
+            .and_then(|runtime| runtime.auth_profile_id.clone())
+    }
+
     /// Generate every new thread identifier with the caller-provided factory.
     pub fn with_thread_id_generator(
         mut self,

@@ -114,6 +114,19 @@ fn display_title(thread: &Thread) -> &str {
     title.trim().lines().next().unwrap_or("Untitled task")
 }
 
+pub(super) fn account_profile_name(thread: &Thread) -> &str {
+    thread
+        .extra
+        .as_ref()
+        .and_then(|extra| {
+            extra
+                .account_profile
+                .as_deref()
+                .or(extra.account_id.as_deref())
+        })
+        .unwrap_or("default")
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct AgentsOverviewProjectGroup {
     key: (PathBuf, PathBuf),
@@ -474,6 +487,10 @@ impl AgentsOverviewView {
             ),
             Line::from(vec![dot, " ".into(), status.into()]),
             Line::default(),
+            Line::from(vec![
+                "Account: ".dim(),
+                account_profile_name(&row.thread).to_owned().into(),
+            ]),
             model,
             reasoning,
             Line::default(),

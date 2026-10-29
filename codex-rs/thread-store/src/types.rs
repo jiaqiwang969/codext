@@ -67,7 +67,11 @@ pub struct ThreadPersistenceMetadata {
 
 /// Extra configuration fields for a thread.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExtraConfig {}
+pub struct ExtraConfig {
+    /// Provider account id recorded when the thread was created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator_account_id: Option<String>,
+}
 
 /// Parameters required to create a persisted thread.
 #[derive(Clone, Debug, Serialize, Deserialize)]

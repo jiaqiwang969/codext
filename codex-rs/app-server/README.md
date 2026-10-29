@@ -11,6 +11,11 @@ histories. Profile-scoped connections may read and use their selected account,
 but account login/logout and Bedrock credential mutation remain restricted to
 the default auth context so one profile cannot rewrite another profile's files.
 
+Live thread payloads expose the captured profile as `thread.extra.accountProfile`.
+The value is also enriched on `thread/list` for loaded threads, so a shared
+daemon client can show which account owns each active task without changing the
+thread's work context.
+
 # Thread memory summary (experimental)
 
 `thread/memory/read` takes `{threadId}` for a loaded thread and returns

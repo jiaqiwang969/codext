@@ -31,6 +31,7 @@ use codex_app_server_protocol::ThreadSection;
 use codex_app_server_protocol::ThreadSectionAppearance;
 use codex_app_server_protocol::ThreadSectionMoveParams;
 use codex_app_server_protocol::ThreadSectionMoveResponse;
+use codex_app_server_protocol::ThreadExtra;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ThreadIdleCause;
@@ -1669,6 +1670,10 @@ impl ThreadRequestProcessor {
             &config_snapshot,
             session_configured.rollout_path.clone(),
         );
+        thread.extra = auth_profile_id.clone().map(|account_profile| ThreadExtra {
+            account_profile: Some(account_profile),
+            account_id: None,
+        });
         thread.project_id = project_id.clone();
         thread.daybreak_enabled = daybreak_enabled;
 
@@ -2869,11 +2874,12 @@ impl ThreadRequestProcessor {
         let fallback_provider = self.config.model_provider_id.clone();
 
         for stored_thread in stored_threads {
-            let (thread, _) = thread_from_stored_thread(
+            let (mut thread, _) = thread_from_stored_thread(
                 stored_thread,
                 fallback_provider.as_str(),
                 &self.config.cwd,
             );
+            self.resolve_thread_account_profile(&mut thread).await;
             data.push(thread);
         }
 
@@ -2989,11 +2995,12 @@ impl ThreadRequestProcessor {
         let fallback_provider = self.config.model_provider_id.clone();
         let mut data = Vec::with_capacity(search_results.len());
         for result in search_results {
-            let (thread, _) = thread_from_stored_thread(
+            let (mut thread, _) = thread_from_stored_thread(
                 result.thread,
                 fallback_provider.as_str(),
                 &self.config.cwd,
             );
+            self.resolve_thread_account_profile(&mut thread).await;
             data.push(ThreadSearchResult {
                 thread,
                 snippet: result.snippet,
@@ -5309,6 +5316,48 @@ impl ThreadRequestProcessor {
         }
     }
 
+    async fn resolve_thread_account_profile(&self, thread: &mut Thread) {
+        let account_id = thread
+            .extra
+            .as_ref()
+            .and_then(|extra| extra.account_id.as_deref())
+            .map(ToOwned::to_owned);
+        let account_id = match account_id {
+            Some(account_id) => account_id,
+            None => {
+                let Some(path) = thread.path.as_deref() else {
+                    return;
+                };
+                let Ok(session_meta) = codex_rollout::read_session_meta_line(path).await else {
+                    return;
+                };
+                let Some(account_id) = session_meta.meta.creator_account_id else {
+                    return;
+                };
+                account_id
+            }
+        };
+        let Some(account_profile) = self
+            .account_profiles
+            .profile_for_account_id(account_id.as_str())
+            .await
+        else {
+            return;
+        };
+        match thread.extra.as_mut() {
+            Some(extra) => {
+                extra.account_profile = Some(account_profile);
+                extra.account_id = Some(account_id);
+            }
+            None => {
+                thread.extra = Some(ThreadExtra {
+                    account_profile: Some(account_profile),
+                    account_id: Some(account_id),
+                });
+            }
+        }
+    }
+
     async fn thread_fork_inner(
         &self,
         request_id: ConnectionRequestId,
@@ -6695,10 +6744,17 @@ pub(crate) fn thread_from_stored_thread(
     );
     let history = thread.history;
     let thread_id = thread.thread_id.to_string();
+    let account_id = thread
+        .extra_config
+        .as_ref()
+        .and_then(|extra| extra.creator_account_id.clone());
     let thread = Thread {
         id: thread_id.clone(),
         environments: None,
-        extra: None,
+        extra: account_id.map(|account_id| ThreadExtra {
+            account_profile: None,
+            account_id: Some(account_id),
+        }),
         session_id: thread_id,
         forked_from_id: thread.forked_from_id.map(|id| id.to_string()),
         parent_thread_id: thread.parent_thread_id.map(|id| id.to_string()),
