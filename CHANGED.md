@@ -82,6 +82,8 @@ Implementation must follow the status-header skill .agents/skills/status-header/
 - `/profile` switches the current idle conversation as well as the connection default. The server replaces account-aware services and model transports, preserves history/settings, and acknowledges the target thread before the TUI reports success or releases a parked usage-limit recovery prompt.
 - Explicit thread selections survive cold resume, daemon recovery, revert, and fork via `CODEX_HOME/thread-auth-profiles/<threadId>.json`; creator-account metadata remains historical. Other conversations keep their accounts.
 - Thread reads, resume, and the account overview report the actual bound profile/account. Resuming a profiled thread also aligns the TUI connection's account reads and quota polling with that runtime.
+- CLI `login`, `login status`, and `logout` honor `CODEX_ACCOUNT_PROFILE` and use that profile's file-backed credentials while retaining shared settings. Browser/device-code login must not replace the default account's `auth.json`.
+- Profile startup renews expired credentials and picks up a newer login for the same account before checking account identity. A permanently failed login produces an actionable error instead of sending the user through shared-account onboarding into an unauthenticated conversation.
 - Account switching changes credentials only. Sessions, memory, SQLite state, logs, and other shared `CODEX_HOME` data remain shared across the account pool.
 
 ## TUI exit resume command

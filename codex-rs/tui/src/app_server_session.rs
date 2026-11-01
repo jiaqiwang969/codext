@@ -58,6 +58,8 @@ use codex_app_server_protocol::ConfigWriteResponse;
 use codex_app_server_protocol::GetAccountParams;
 use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::GetAccountResponse;
+use codex_app_server_protocol::GetAuthStatusParams;
+use codex_app_server_protocol::GetAuthStatusResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::LogoutAccountResponse;
 use codex_app_server_protocol::SwitchAuthProfileParams;
@@ -863,7 +865,8 @@ impl AppServerSession {
     pub(crate) async fn read_account(&mut self) -> Result<GetAccountResponse> {
         self.ensure_env_account_profile().await?;
         let account_request_id = self.next_request_id();
-        self.client
+        let account: GetAccountResponse = self
+            .client
             .request_typed(ClientRequest::GetAccount {
                 request_id: account_request_id,
                 params: GetAccountParams {
@@ -871,7 +874,16 @@ impl AppServerSession {
                 },
             })
             .await
-            .map_err(|err| bootstrap_request_error("account/read failed during TUI bootstrap", err))
+            .map_err(|err| bootstrap_request_error("account/read failed during TUI bootstrap", err))?;
+        if account.requires_openai_auth
+            && account.account.is_none()
+            && std::env::var_os("CODEX_ACCOUNT_PROFILE").is_some_and(|profile| !profile.is_empty())
+        {
+            color_eyre::eyre::bail!(
+                "The selected account profile needs login. Run `codext login` with the same CODEX_ACCOUNT_PROFILE, then reopen this session."
+            );
+        }
+        Ok(account)
     }
 
     async fn ensure_env_account_profile(&mut self) -> Result<()> {
@@ -884,6 +896,21 @@ impl AppServerSession {
             self.switch_auth_profile(profile, /*thread_id*/ None)
                 .await
                 .wrap_err("failed to select CODEX_ACCOUNT_PROFILE")?;
+            // account/read only inspects cached identity. Let the auth manager
+            // renew expired credentials (including a newer same-account login
+            // on disk) before deciding whether this profile is signed in.
+            let request_id = self.next_request_id();
+            let _: GetAuthStatusResponse = self
+                .client
+                .request_typed(ClientRequest::GetAuthStatus {
+                    request_id,
+                    params: GetAuthStatusParams {
+                        include_token: Some(false),
+                        refresh_token: Some(false),
+                    },
+                })
+                .await
+                .wrap_err("failed to refresh the selected account profile")?;
         } else {
             self.account_profile_env_applied = true;
         }

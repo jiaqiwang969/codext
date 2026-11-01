@@ -30,6 +30,7 @@ use codex_utils_cli::CliConfigOverrides;
 use std::fs::OpenOptions;
 use std::io::IsTerminal;
 use std::io::Read;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use tracing_appender::non_blocking;
@@ -599,14 +600,32 @@ async fn load_config_or_exit(cli_config_overrides: CliConfigOverrides) -> Config
         }
     };
 
-    match Config::load_with_cli_overrides(cli_overrides).await {
-        Ok(config) => match config.auth_config().validate() {
-            Ok(()) => config,
-            Err(e) => {
-                eprintln!("Error loading configuration: {e}");
-                std::process::exit(1);
-            }
-        },
+    let mut config = match Config::load_with_cli_overrides(cli_overrides).await {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Error loading configuration: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // Load shared settings first, then scope only these credential commands to
+    // the same file-backed account selected by the TUI connection.
+    if let Some(profile) = std::env::var_os("CODEX_ACCOUNT_PROFILE")
+        && !profile.is_empty()
+    {
+        let mut components = Path::new(&profile).components();
+        if !matches!(components.next(), Some(Component::Normal(_)))
+            || components.next().is_some()
+        {
+            eprintln!("CODEX_ACCOUNT_PROFILE must be a single directory name");
+            std::process::exit(1);
+        }
+        config.codex_home = config.codex_home.join("accounts").join(profile);
+        config.cli_auth_credentials_store_mode = AuthCredentialsStoreMode::File;
+    }
+
+    match config.auth_config().validate() {
+        Ok(()) => config,
         Err(e) => {
             eprintln!("Error loading configuration: {e}");
             std::process::exit(1);
