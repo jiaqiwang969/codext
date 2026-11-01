@@ -4347,10 +4347,17 @@
       "type": "object"
     },
     "SwitchAuthProfileParams": {
-      "description": "Selects the credential profile used by subsequently created threads on one app-server connection. Existing threads keep their captured runtime.",
+      "description": "Selects the credential profile for a connection and, when requested, replaces the account runtime of an idle thread without changing its conversation.",
       "properties": {
         "name": {
           "type": "string"
+        },
+        "threadId": {
+          "description": "Also switch this loaded thread. Omission only selects the connection default.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

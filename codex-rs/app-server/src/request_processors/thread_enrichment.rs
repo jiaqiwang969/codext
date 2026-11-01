@@ -57,10 +57,11 @@ async fn enrich_loaded_thread(
         .auth_profile_id_for_thread(thread_id)
         .await
     {
-        let account_id = thread
-            .extra
-            .as_ref()
-            .and_then(|extra| extra.account_id.clone());
+        let account_id = thread_manager
+            .auth_manager_for_thread(thread_id)
+            .await
+            .and_then(|manager| manager.auth_cached())
+            .and_then(|auth| auth.get_account_id());
         thread.extra = Some(ThreadExtra {
             account_profile: Some(account_profile),
             account_id,

@@ -4,7 +4,6 @@ use super::bedrock_auth::configure_bedrock_provider;
 use super::bedrock_auth::ensure_user_model_provider_can_be_bedrock;
 use super::*;
 use crate::account_profiles::AccountProfileRegistry;
-use crate::message_processor::ConnectionSessionState;
 use crate::auth_mode::auth_mode_to_api;
 use crate::external_auth::ExternalAuthBridge;
 use crate::model_catalog::ModelCatalog;
@@ -217,53 +216,6 @@ impl AccountRequestProcessor {
         request_id: ConnectionRequestId,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.logout_v2(request_id).await.map(|()| None)
-    }
-
-    pub(crate) async fn switch_auth_profile(
-        &self,
-        params: SwitchAuthProfileParams,
-        session: &ConnectionSessionState,
-    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        let auth_manager = self
-            .auth_manager_for_profile(Some(&params.name))
-            .await?;
-        {
-            let _auth_transition_guard = self.auth_transition_lock.lock().await;
-            if *self
-                .thread_watch_manager
-                .subscribe_running_turn_count()
-                .borrow()
-                == 0
-            {
-                if matches!(
-                    auth_manager.reload_with_status().await,
-                    codex_login::AuthReloadStatus::Failed
-                ) {
-                    return Err(invalid_params(format!(
-                        "failed to reload authentication profile `{}` from storage",
-                        params.name
-                    )));
-                }
-                if auth_manager.auth_cached().is_none() {
-                    return Err(invalid_params(format!(
-                        "authentication profile `{}` has no usable credentials",
-                        params.name
-                    )));
-                }
-            }
-        }
-        let previous = session.auth_profile_id().await;
-        let changed = previous.as_deref() != Some(params.name.as_str());
-        session
-            .set_auth_profile_id(Some(params.name.clone()))
-            .await;
-        Ok(Some(
-            SwitchAuthProfileResponse {
-                name: params.name,
-                changed,
-            }
-            .into(),
-        ))
     }
 
     pub(crate) fn ensure_default_auth_scope(

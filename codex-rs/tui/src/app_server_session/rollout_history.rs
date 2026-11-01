@@ -236,6 +236,13 @@ impl AppServerSession {
                 ));
             }
         };
+        // Align account reads and quota polling with the runtime we actually
+        // attached to. This selects the connection default without rebinding it.
+        if let Some(profile) = response.thread.extra.as_ref()
+            .and_then(|extra| extra.account_profile.clone())
+        {
+            self.switch_auth_profile(profile, /*thread_id*/ None).await?;
+        }
         self.hydrate_initial_thread_history(
             &mut response.thread,
             response.turns_backwards_cursor.clone(),

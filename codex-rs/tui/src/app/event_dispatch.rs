@@ -1073,7 +1073,10 @@ impl App {
                 }
             },
             AppEvent::SwitchAuthProfile { name } => {
-                match app_server.switch_auth_profile(name.clone()).await {
+                match app_server
+                    .switch_auth_profile(name, self.chat_widget.thread_id())
+                    .await
+                {
                     Ok(response) => {
                         if let Some(auth_watch) = self._auth_watch.as_ref() {
                             auth_watch.set_auth_profile(
@@ -1104,8 +1107,22 @@ impl App {
                         }
                         self.chat_widget.add_info_message(
                             format!("Switched authentication profile to `{}`.", response.name),
-                            Some("Existing threads keep their account; new threads use the selected profile.".to_string()),
+                            response.thread_id.as_ref().map(|_| {
+                                "This conversation now uses the selected account.".to_string()
+                            }),
                         );
+                        if response.changed {
+                            self.chat_widget.handle_auth_identity_changed();
+                        }
+                        if self.chat_widget.has_chatgpt_account() {
+                            let reset_hint_request_id =
+                                self.chat_widget.start_rate_limit_reset_startup_check();
+                            self.refresh_rate_limits(
+                                app_server,
+                                RateLimitRefreshOrigin::StartupPrefetch { reset_hint_request_id },
+                            );
+                        }
+                        self.chat_widget.on_auth_reload_completed(response.changed);
                     }
                     Err(error) => {
                         self.chat_widget

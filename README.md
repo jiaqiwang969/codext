@@ -63,6 +63,13 @@ This feature helps manage follow-up messages when quota or rate limits are reach
 
 ![Account Changed](https://github.com/user-attachments/assets/35059463-b846-45c7-9d05-57a6e1082d8d)
 
+Use `/profile <name>` (or `/profile` to open the picker) to change the account
+used by the current conversation. Finish or interrupt active work first. The
+conversation keeps its history and settings, remembers the selected profile
+across restarts, and leaves other conversations' accounts unchanged. A successful
+switch releases any recovery prompt parked after a usage-limit error. Upgrade
+both the CLI and app-server before using this behavior.
+
 Codex now reloads authentication after external `auth.json` writes settle, so account changes can be picked up without restarting at safe boundaries.
 
 * **TUI**: Tracks `auth.json` changes without watching the whole `CODEX_HOME` directory: when the file exists, Codext watches the file directly; when it is absent, Codext lightly polls for it to appear again. Auth is deferred until any active task completes; transient read errors do not clear cached auth.

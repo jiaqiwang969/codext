@@ -271,13 +271,16 @@ pub enum AccountSessionWorkspaceKind {
 #[ts(export_to = "v2/")]
 pub struct LogoutAccountResponse {}
 
-/// Selects the credential profile used by subsequently created threads on one
-/// app-server connection. Existing threads keep their captured runtime.
+/// Selects the credential profile for a connection and, when requested, replaces
+/// the account runtime of an idle thread without changing its conversation.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct SwitchAuthProfileParams {
     pub name: String,
+    /// Also switch this loaded thread. Omission only selects the connection default.
+    #[ts(optional = nullable)]
+    pub thread_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -286,6 +289,8 @@ pub struct SwitchAuthProfileParams {
 pub struct SwitchAuthProfileResponse {
     pub name: String,
     pub changed: bool,
+    /// The thread whose runtime was switched, or null for a connection-only selection.
+    pub thread_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]

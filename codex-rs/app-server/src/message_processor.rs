@@ -1883,8 +1883,14 @@ impl MessageProcessor {
                     .await
             }
             ClientRequest::SwitchAuthProfile { params, .. } => {
-                self.account_processor
-                    .switch_auth_profile(params, &session)
+                self.thread_processor
+                    .switch_auth_profile(
+                        &request_id,
+                        params,
+                        &session,
+                        app_server_client_name.clone(),
+                        client_version.clone(),
+                    )
                     .await
             }
             ClientRequest::CancelLoginAccount { params, .. } => {

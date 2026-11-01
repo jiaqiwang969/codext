@@ -881,7 +881,7 @@ impl AppServerSession {
         if let Ok(profile) = std::env::var("CODEX_ACCOUNT_PROFILE")
             && !profile.trim().is_empty()
         {
-            self.switch_auth_profile(profile)
+            self.switch_auth_profile(profile, /*thread_id*/ None)
                 .await
                 .wrap_err("failed to select CODEX_ACCOUNT_PROFILE")?;
         } else {
@@ -1722,16 +1722,26 @@ impl AppServerSession {
     pub(crate) async fn switch_auth_profile(
         &mut self,
         name: String,
+        thread_id: Option<ThreadId>,
     ) -> Result<SwitchAuthProfileResponse> {
         let request_id = self.next_request_id();
-        let response = self
+        let requested_thread_id = thread_id.map(|id| id.to_string());
+        let response: SwitchAuthProfileResponse = self
             .client
             .request_typed(ClientRequest::SwitchAuthProfile {
                 request_id,
-                params: SwitchAuthProfileParams { name },
+                params: SwitchAuthProfileParams {
+                    name,
+                    thread_id: requested_thread_id.clone(),
+                },
             })
             .await
             .wrap_err("account/profile/switch failed in TUI")?;
+        if response.thread_id != requested_thread_id {
+            color_eyre::eyre::bail!(
+                "the app-server did not switch this thread; restart it with the updated codext binary and retry /profile"
+            );
+        }
         self.account_profile_env_applied = true;
         Ok(response)
     }

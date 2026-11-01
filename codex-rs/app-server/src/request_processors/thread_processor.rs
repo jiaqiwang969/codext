@@ -4,6 +4,9 @@ mod daemon_continuation;
 #[path = "daemon_snapshot.rs"]
 mod daemon_snapshot;
 
+#[path = "thread_auth_profile.rs"]
+mod thread_auth_profile;
+
 use super::persisted_resume_settings::PersistedResumeSettings;
 use super::persisted_resume_settings::latest_persisted_model_settings;
 use super::persisted_resume_settings::latest_persisted_resume_settings;
@@ -2481,11 +2484,17 @@ impl ThreadRequestProcessor {
             )
             .await?;
         let response_history = thread_history.clone();
-        let auth_manager = self
-            .thread_manager
-            .auth_manager_for_thread(thread_id)
+        let runtime = self
+            .account_profiles
+            .runtime_for_account_id(
+                &self.thread_manager,
+                &config,
+                Some(thread_id),
+                thread_history.get_session_account_id().as_deref(),
+                /*fallback_profile_id*/ None,
+            )
             .await
-            .unwrap_or_else(|| Arc::clone(&self.auth_manager));
+            .map_err(invalid_params)?;
         let NewThread {
             thread_id: resumed_thread_id,
             thread: codex_thread,
@@ -2493,13 +2502,13 @@ impl ThreadRequestProcessor {
             ..
         } = self
             .thread_manager
-            .resume_thread_with_history(
-                config,
-                thread_history,
-                auth_manager,
-                self.request_trace_context(request_id).await,
+            .start_thread(StartThreadOptions {
+                runtime,
+                initial_history: thread_history,
+                parent_trace: self.request_trace_context(request_id).await,
                 client_mcp_extensions,
-            )
+                ..StartThreadOptions::new(config)
+            })
             .await
             .map_err(|err| internal_error(format!("error reloading thread after revert: {err}")))?;
         if resumed_thread_id != thread_id {
@@ -3169,6 +3178,7 @@ impl ThreadRequestProcessor {
         };
 
         thread.daybreak_enabled = thread.daybreak_enabled.or(pending_daybreak_enabled);
+        self.resolve_thread_account_profile(&mut thread).await;
 
         let has_live_in_progress_turn = if let Some(loaded_thread) = loaded_thread.as_ref() {
             matches!(loaded_thread.agent_status().await, AgentStatus::Running)
@@ -4399,6 +4409,10 @@ impl ThreadRequestProcessor {
             .runtime_for_account_id(
                 &self.thread_manager,
                 &config,
+                match &thread_history {
+                    InitialHistory::Resumed(resumed) => Some(resumed.conversation_id),
+                    InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
+                },
                 thread_history
                     .get_session_account_id()
                     .as_deref(),
@@ -4895,6 +4909,7 @@ impl ThreadRequestProcessor {
             thread_summary.session_id = existing_thread.startup_metadata().session_id.to_string();
             thread_summary.thread_source = config_snapshot.thread_source.clone().map(Into::into);
             apply_live_thread_settings(&mut thread_summary, &config_snapshot);
+            self.resolve_thread_account_profile(&mut thread_summary).await;
             thread_summary.can_accept_direct_input = Some(can_accept_direct_input(
                 existing_thread.multi_agent_version(),
                 &config_snapshot.session_source,
@@ -5293,6 +5308,7 @@ impl ThreadRequestProcessor {
             );
         }
         self.attach_thread_name(thread_id, &mut thread).await;
+        self.resolve_thread_account_profile(&mut thread).await;
         Ok(thread)
     }
 
@@ -5317,6 +5333,25 @@ impl ThreadRequestProcessor {
     }
 
     async fn resolve_thread_account_profile(&self, thread: &mut Thread) {
+        if let Ok(thread_id) = ThreadId::from_string(&thread.id)
+            && let Some(auth_manager) = self.thread_manager.auth_manager_for_thread(thread_id).await
+        {
+            thread.extra = Some(ThreadExtra {
+                account_profile: self.thread_manager.auth_profile_id_for_thread(thread_id).await,
+                account_id: auth_manager.auth_cached().and_then(|auth| auth.get_account_id()),
+            });
+            return;
+        }
+        if let Ok(thread_id) = ThreadId::from_string(&thread.id)
+            && let Ok(Some(profile)) = self.account_profiles.thread_profile(thread_id)
+            && let Ok(auth_manager) = self.account_profiles.auth_manager_for_profile(&profile).await
+        {
+            thread.extra = Some(ThreadExtra {
+                account_profile: Some(profile),
+                account_id: auth_manager.auth_cached().and_then(|auth| auth.get_account_id()),
+            });
+            return;
+        }
         let account_id = thread
             .extra
             .as_ref()
@@ -5739,6 +5774,7 @@ impl ThreadRequestProcessor {
                 .runtime_for_account_id(
                     &self.thread_manager,
                     &options.config,
+                    Some(source_thread_id),
                     source_account_id.as_deref(),
                     auth_profile_id.as_deref(),
                 )

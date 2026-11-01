@@ -4,6 +4,9 @@
 //! daemon keeps the profile managers alive independently, so selecting one
 //! profile never rewrites the default `auth.json` or changes a running thread.
 
+#[path = "account_profiles/thread_bindings.rs"]
+mod thread_bindings;
+
 use codex_core::ThreadManager;
 use codex_core::ThreadRuntime;
 use codex_core::config::Config;
@@ -14,6 +17,7 @@ use codex_login::AuthConfig;
 use codex_login::WorkspaceRouting;
 use codex_login::WorkspaceRoutingRequest;
 use codex_login::WorkspaceRoutingResolver;
+use codex_protocol::ThreadId;
 use std::collections::HashMap;
 use std::path::Component;
 use std::path::Path;
@@ -98,9 +102,17 @@ impl AccountProfileRegistry {
         &self,
         thread_manager: &ThreadManager,
         config: &Config,
+        thread_id: Option<ThreadId>,
         account_id: Option<&str>,
         fallback_profile_id: Option<&str>,
     ) -> Result<Option<ThreadRuntime>, String> {
+        if let Some(thread_id) = thread_id
+            && let Some(profile_id) = self.thread_profile(thread_id)?
+        {
+            return self
+                .runtime_for_profile(thread_manager, config, Some(&profile_id))
+                .await;
+        }
         let profile_id = if let Some(account_id) =
             account_id.filter(|account_id| !account_id.is_empty())
         {

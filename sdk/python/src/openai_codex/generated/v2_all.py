@@ -4973,6 +4973,13 @@ class SwitchAuthProfileParams(BaseModel):
         populate_by_name=True,
     )
     name: str
+    thread_id: Annotated[
+        str | None,
+        Field(
+            alias="threadId",
+            description="Also switch this loaded thread. Omission only selects the connection default.",
+        ),
+    ] = None
 
 
 class SwitchAuthProfileResponse(BaseModel):
@@ -4981,6 +4988,13 @@ class SwitchAuthProfileResponse(BaseModel):
     )
     changed: bool
     name: str
+    thread_id: Annotated[
+        str | None,
+        Field(
+            alias="threadId",
+            description="The thread whose runtime was switched, or null for a connection-only selection.",
+        ),
+    ] = None
 
 
 class TerminalInteractionNotification(BaseModel):

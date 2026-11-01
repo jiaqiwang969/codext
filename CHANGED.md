@@ -78,7 +78,10 @@ Implementation must follow the status-header skill .agents/skills/status-header/
 ## TUI account-pool switcher
 
 - Added `/profile` to the TUI command palette. With no argument it opens an account picker; `/profile <name>` switches directly to an account-pool entry.
-- The picker reads `CODEX_HOME/accounts/<name>/auth.json`, atomically stages the selected file as `CODEX_HOME/auth.json`, and lets the existing auth watcher perform the idle-guarded app-server reload.
+- The picker uses `CODEX_HOME/accounts/<name>/auth.json` through a profile-scoped runtime without rewriting the shared `auth.json`.
+- `/profile` switches the current idle conversation as well as the connection default. The server replaces account-aware services and model transports, preserves history/settings, and acknowledges the target thread before the TUI reports success or releases a parked usage-limit recovery prompt.
+- Explicit thread selections survive cold resume, daemon recovery, revert, and fork via `CODEX_HOME/thread-auth-profiles/<threadId>.json`; creator-account metadata remains historical. Other conversations keep their accounts.
+- Thread reads, resume, and the account overview report the actual bound profile/account. Resuming a profiled thread also aligns the TUI connection's account reads and quota polling with that runtime.
 - Account switching changes credentials only. Sessions, memory, SQLite state, logs, and other shared `CODEX_HOME` data remain shared across the account pool.
 
 ## TUI exit resume command

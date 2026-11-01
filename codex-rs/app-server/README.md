@@ -4,15 +4,23 @@ The app-server keeps the default `auth.json` and shared thread storage in one
 daemon, while allowing each connection to select an account-pool entry with
 `account/profile/switch` and `{ "name": "profile" }`. A new thread captures
 that profile's authentication, model, plugin, MCP, and workspace-routing
-runtime. Switching a connection never changes an existing thread, and cold
-resume/fork resolves the creator account recorded in the thread history before
-falling back to the connection's selected profile for older or account-less
-histories. Profile-scoped connections may read and use their selected account,
+runtime. Supplying `threadId` also switches that loaded, idle conversation by
+replacing its account runtime while preserving its ID, history, settings, and
+subscriptions. Active tasks (including agents) must finish or be interrupted first.
+The response echoes `threadId` only after the runtime switch and durable binding
+succeed; clients must check this acknowledgement before reporting success.
+
+Explicit thread bindings are stored as profile names (without credentials) in
+`CODEX_HOME/thread-auth-profiles/<threadId>.json`. Cold resume, daemon recovery,
+revert, and fork consult this selection before the immutable creator account.
+Histories without an account fall back to the connection's selected profile.
+Other threads keep their account runtimes. Profile-scoped connections may read and use their selected account,
 but account login/logout and Bedrock credential mutation remain restricted to
 the default auth context so one profile cannot rewrite another profile's files.
 
-Live thread payloads expose the captured profile as `thread.extra.accountProfile`.
-The value is also enriched on `thread/list` for loaded threads, so a shared
+Live thread payloads expose the captured profile as `thread.extra.accountProfile`
+and its actual account as `thread.extra.accountId`. The values are also enriched
+on `thread/list`, `thread/read`, and resume, so a shared
 daemon client can show which account owns each active task without changing the
 thread's work context.
 
