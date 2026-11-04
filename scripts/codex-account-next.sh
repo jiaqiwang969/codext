@@ -3,7 +3,9 @@
 set -eu
 umask 077
 
-codex_home=${CODEX_HOME:-$HOME/.codex}
+# This account pool has one home. An inherited home from a resumed session or
+# an old isolated launcher must not redirect login, status, or new conversations.
+codex_home=$HOME/.codex
 codex_bin=${CODEX_ACCOUNT_NEXT_BIN:-$HOME/.local/bin/codex}
 status_bin=${CODEX_ACCOUNT_STATUS_BIN:-$HOME/.local/bin/codex-account-status}
 
@@ -11,7 +13,7 @@ usage() {
     printf '%s\n' \
         'Usage: codex-account-next <account> [codex arguments...]' \
         '       codex-account-next list [options]     show live account status' \
-        '       options: --local, --json, --include-free, --timeout SECONDS, --workers N'
+        '       options: --local, --json, --timeout SECONDS, --workers N'
 }
 
 if [ "$#" -ge 1 ] && [ "$1" = list ]; then
@@ -37,11 +39,17 @@ case "$account" in
         ;;
 esac
 
+# Preserve the old codex-account <account> status spelling in the shared entry.
+if [ "${1:-}" = status ]; then
+    shift
+    set -- login status "$@"
+fi
+
 # Credential commands must also work before the first login or after logout.
 # The CLI scopes their storage to accounts/<account>/auth.json. Interactive
 # sessions keep shared configuration/history and select the daemon profile.
 exec env \
     CODEX_HOME="$codex_home" \
-    CODEX_SQLITE_HOME="${CODEX_SQLITE_HOME:-$codex_home}" \
+    CODEX_SQLITE_HOME="$codex_home" \
     CODEX_ACCOUNT_PROFILE="$account" \
     "$codex_bin" "$@"

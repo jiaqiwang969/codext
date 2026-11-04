@@ -604,16 +604,32 @@ def build_rows_parallel(
     workers: int,
 ) -> tuple[list[dict[str, Any]], str, list[str]]:
     accounts_dir = home / "accounts"
-    account_dirs = sorted(
-        (path for path in accounts_dir.iterdir() if path.is_dir()),
-        key=lambda path: path.name.casefold(),
-    ) if accounts_dir.is_dir() else []
+    account_dirs = {
+        path.name.casefold(): path
+        for path in accounts_dir.iterdir()
+        if path.is_dir()
+    } if accounts_dir.is_dir() else {}
+    deadline_accounts, timezone_name = load_deadline_data()
+    # Include expected profiles even when their credential directory is missing.
+    # The ledger is metadata only: credentials still come from the account pool.
+    for key, record in deadline_accounts.items():
+        if record.get("enabled") is False:
+            continue
+        collector = mapping(record.get("collector"))
+        name = collector.get("auth_profile") or record.get("label")
+        if (
+            isinstance(name, str)
+            and name not in {"", ".", ".."}
+            and "/" not in name
+            and "\\" not in name
+            and name.isprintable()
+        ):
+            account_dirs.setdefault(key, accounts_dir / name)
     active_path = home / "auth.json"
     try:
         active_digest = hashlib.sha256(active_path.read_bytes()).digest()
     except OSError:
         active_digest = None
-    deadline_accounts, timezone_name = load_deadline_data()
     try:
         timezone = ZoneInfo(timezone_name)
     except (KeyError, ValueError):
@@ -623,7 +639,7 @@ def build_rows_parallel(
     rows: list[dict[str, Any]] = []
     jobs: dict[Any, dict[str, Any]] = {}
     with ThreadPoolExecutor(max_workers=max(1, min(workers, len(account_dirs) or 1))) as executor:
-        for account_dir in account_dirs:
+        for account_dir in sorted(account_dirs.values(), key=lambda path: path.name.casefold()):
             auth_path = account_dir / "auth.json"
             auth = local_auth(auth_path)
             try:
@@ -636,7 +652,7 @@ def build_rows_parallel(
             row: dict[str, Any] = {
                 "active": selected,
                 "account": account_dir.name,
-                "status": "local" if local_only else auth["status"],
+                "status": "local" if local_only and auth["status"] == "ready" else auth["status"],
                 "auth_mode": auth["auth_mode"],
                 "auth_status": auth["status"],
                 "last_refresh": auth["last_refresh"],
@@ -650,6 +666,11 @@ def build_rows_parallel(
                 "subscription_display": subscription_text,
                 "error": None,
             }
+            if auth["status"] == "missing":
+                row["error"] = (
+                    f"Credentials missing at {auth_path}; "
+                    f"run codex-account-next {account_dir.name} login."
+                )
             recharge = recharge_records.get(account_dir.name.casefold())
             row["last_recharge"] = dict(recharge) if recharge is not None else None
             rows.append(row)
@@ -676,6 +697,7 @@ def build_rows_parallel(
 
 
 def render_table(rows: list[dict[str, Any]], timezone_name: str, local_only: bool) -> None:
+    print(f"Accounts: {len(rows)}; free accounts are listed last.")
     print("* = active account; QUOTA is remaining%@reset time")
     print(f"  {'ACCOUNT':<24} {'STATUS':<8} {'AUTH':<8} {'PLAN':<8} {'QUOTA':<34} {'RESET_CARD':<10} {'CREDIT':<10} {'SUBSCRIPTION':<28}")
     for row in rows:
@@ -698,7 +720,7 @@ def render_table(rows: list[dict[str, Any]], timezone_name: str, local_only: boo
         return
     errors = [f"{row['account']}: {row['error']}" for row in rows if row.get("error")]
     if errors:
-        print("\nLive query notes:")
+        print("\nAccount notes:")
         for error in errors:
             print(f"  - {error}")
     if local_only:
@@ -726,7 +748,7 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--local", action="store_true", help="skip network calls and show local auth status")
     parser.add_argument("--json", action="store_true", dest="as_json")
-    parser.add_argument("--include-free", action="store_true", help="include free-plan accounts hidden by default")
+    parser.add_argument("--include-free", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     home = args.home.expanduser()
     binary = args.binary.expanduser()
@@ -737,8 +759,14 @@ def main() -> int:
     rows, timezone_name, recharge_sources = build_rows_parallel(
         home, binary, max(0.1, args.timeout), args.local, max(1, args.workers)
     )
-    if not args.include_free:
-        rows = [row for row in rows if str(row["plan"]).casefold() != "free"]
+    # Keep every configured account visible. Paid accounts sort first so the
+    # free-plan account stays available without taking focus from the paid pool.
+    rows.sort(
+        key=lambda row: (
+            str(row["plan"]).casefold() == "free",
+            str(row["account"]).casefold(),
+        )
+    )
     if args.as_json:
         print(json.dumps(json_ready(rows, timezone_name, recharge_sources, args.local), ensure_ascii=False, indent=2))
     else:
