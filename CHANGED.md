@@ -84,6 +84,7 @@ Implementation must follow the status-header skill .agents/skills/status-header/
 - Thread reads, resume, and the account overview report the actual bound profile/account. Resuming a profiled thread also aligns the TUI connection's account reads and quota polling with that runtime.
 - CLI `login`, `login status`, and `logout` honor `CODEX_ACCOUNT_PROFILE` and use that profile's file-backed credentials while retaining shared settings. Browser/device-code login must not replace the default account's `auth.json`.
 - Profile startup renews expired credentials and picks up a newer login for the same account before checking account identity. A permanently failed login produces an actionable error instead of sending the user through shared-account onboarding into an unauthenticated conversation.
+- `codex-account-next list` hides free-plan accounts by default (`--include-free` restores them), while exhausted paid accounts and unknown plans remain visible. Its tracked status helper retains refreshed credentials in each profile's actual directory instead of discarding them with a temporary query home.
 - Account switching changes credentials only. Sessions, memory, SQLite state, logs, and other shared `CODEX_HOME` data remain shared across the account pool.
 
 ## TUI exit resume command

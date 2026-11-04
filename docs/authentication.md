@@ -29,3 +29,15 @@ it as `~/.local/bin/codex-account-next`; it defaults to `~/.local/bin/codex` and
 accepts `CODEX_ACCOUNT_NEXT_BIN` to select another candidate binary. For example,
 `codex-account-next adantruden4b login` uses the same profile as
 `codex-account-next adantruden4b`.
+
+Install `scripts/codex-account-status.py` as `~/.local/bin/codex-account-status`
+for `codex-account-next list`. The list scans `CODEX_HOME/accounts/` and hides
+accounts whose plan is `free` by default; `--include-free` shows them. This applies
+to table and JSON output. Live plan data takes priority over local token claims;
+`--local` uses those cached claims. Paid accounts with exhausted quota and accounts
+with an unknown plan remain visible.
+
+Live queries use isolated configuration and the profile's actual credential
+directory, so refreshed tokens are retained. Profiles left only in an old home
+or a migration staging directory are not scanned; migrate their credentials to
+`CODEX_HOME/accounts/<profile>/auth.json` or log in there.

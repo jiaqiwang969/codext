@@ -11,7 +11,7 @@ usage() {
     printf '%s\n' \
         'Usage: codex-account-next <account> [codex arguments...]' \
         '       codex-account-next list [options]     show live account status' \
-        '       options: --local, --json, --timeout SECONDS, --workers N'
+        '       options: --local, --json, --include-free, --timeout SECONDS, --workers N'
 }
 
 if [ "$#" -ge 1 ] && [ "$1" = list ]; then
