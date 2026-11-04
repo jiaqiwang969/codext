@@ -51,6 +51,25 @@ configuration and conversation history stay in the shared home. For example,
 `codex-account-next adantruden4b` reads. It defaults to `~/.local/bin/codex` and
 accepts `CODEX_ACCOUNT_NEXT_BIN` to select another candidate binary.
 
+An account explicitly selected for CLI resume overrides the conversation's saved
+account:
+
+```sh
+codex-account-next IrmaCattrel resume <session-id>
+```
+
+Startup binds that conversation to `IrmaCattrel` before resuming it and verifies
+the actual binding before accepting input. The session ID, history, and settings
+are preserved. This also works for an unloaded conversation whose previous
+profile has been removed; only the selected profile needs usable credentials.
+The CLI and running daemon both need this update for account selection before
+cold resume. Switching a task with running work or agents returns an error.
+
+Ordinary resume without an explicit account, automatic reconnect, and navigation
+to other conversations retain their saved bindings. A later `/profile` selection
+therefore survives reconnect instead of being replaced by the original launcher
+account. The explicit startup account also survives an unarchive-and-resume retry.
+
 The installer backs up existing launchers and makes `codex-account`,
 `codex-account-pool`, and `codex-account-next-1` aliases of `codex-account-next`.
 `codex-account <profile> status` remains an alias for `login status`. The old

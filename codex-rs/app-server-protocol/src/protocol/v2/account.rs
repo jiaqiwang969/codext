@@ -272,13 +272,14 @@ pub enum AccountSessionWorkspaceKind {
 pub struct LogoutAccountResponse {}
 
 /// Selects the credential profile for a connection and, when requested, replaces
-/// the account runtime of an idle thread without changing its conversation.
+/// the account binding of an idle or unloaded thread without changing its conversation.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct SwitchAuthProfileParams {
     pub name: String,
-    /// Also switch this loaded thread. Omission only selects the connection default.
+    /// Also switch this thread, persisting the selection before cold resume when unloaded.
+    /// Omission only selects the connection default.
     #[ts(optional = nullable)]
     pub thread_id: Option<String>,
 }
@@ -289,7 +290,7 @@ pub struct SwitchAuthProfileParams {
 pub struct SwitchAuthProfileResponse {
     pub name: String,
     pub changed: bool,
-    /// The thread whose runtime was switched, or null for a connection-only selection.
+    /// The thread whose binding was switched, or null for a connection-only selection.
     pub thread_id: Option<String>,
 }
 

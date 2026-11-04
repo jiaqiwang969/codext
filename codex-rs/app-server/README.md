@@ -6,9 +6,19 @@ daemon, while allowing each connection to select an account-pool entry with
 that profile's authentication, model, plugin, MCP, and workspace-routing
 runtime. Supplying `threadId` also switches that loaded, idle conversation by
 replacing its account runtime while preserving its ID, history, settings, and
-subscriptions. Active tasks (including agents) must finish or be interrupted first.
-The response echoes `threadId` only after the runtime switch and durable binding
-succeed; clients must check this acknowledgement before reporting success.
+subscriptions. For an unloaded conversation, the server validates the stored
+thread and saves the selected profile before cold resume; it does not load the
+previous account or start the old runtime. Active tasks (including agents) must
+finish or be interrupted first. A closing thread rejects the change until its
+unload completes. The response echoes `threadId` only after any runtime switch
+and the durable binding succeed; clients must check this acknowledgement before
+reporting success.
+
+Explicit CLI account selection for resume uses this thread-scoped switch before
+`thread/resume`, then verifies `thread.extra.accountProfile` before input can be
+submitted. A connection-only profile selection remains a default for new threads
+and does not override resume bindings. Ordinary resume and reconnection preserve
+the saved account; the CLI startup override is not reapplied during navigation.
 
 Explicit thread bindings are stored as profile names (without credentials) in
 `CODEX_HOME/thread-auth-profiles/<threadId>.json`. Cold resume, daemon recovery,

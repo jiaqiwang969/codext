@@ -3,6 +3,7 @@
 use super::*;
 use crate::message_processor::ConnectionSessionState;
 use codex_protocol::protocol::AgentStatus;
+use codex_protocol::protocol::SessionSource;
 
 impl ThreadRequestProcessor {
     pub(crate) async fn switch_auth_profile(
@@ -52,12 +53,14 @@ impl ThreadRequestProcessor {
             || session.auth_profile_id().await.as_deref() != Some(params.name.as_str());
         if let Some(thread_id) = params.thread_id.as_deref() {
             let _thread_list_state_permit = self.acquire_thread_list_state_permit().await?;
-            let (thread_id, thread) = self.load_thread(thread_id).await?;
-            let _goal_resume_guard = self.thread_state_manager.lock_goal_resume(thread_id).await;
-            ensure_direct_input_allowed(thread.as_ref()).await?;
-            if thread.config_snapshot().await.ephemeral {
-                return Err(invalid_request("account switching requires a persistent thread"));
+            let thread_id = ThreadId::from_string(thread_id)
+                .map_err(|error| invalid_request(format!("invalid thread id: {error}")))?;
+            if self.pending_thread_unloads.lock().await.contains_key(&thread_id) {
+                return Err(invalid_request(format!(
+                    "thread {thread_id} is closing; retry the account switch after it is closed"
+                )));
             }
+            let _goal_resume_guard = self.thread_state_manager.lock_goal_resume(thread_id).await;
             // Shutdown also owns the local agent tree. Never interrupt active
             // work implicitly just because an account was selected in a picker.
             for id in self
@@ -74,24 +77,57 @@ impl ThreadRequestProcessor {
                     ));
                 }
             }
-            let current_profile = self
-                .thread_manager
-                .auth_profile_id_for_thread(thread_id)
-                .await;
-            if current_profile.as_deref() != Some(params.name.as_str()) {
-                self.replace_thread_account_runtime(
-                    request_id,
-                    thread_id,
-                    thread,
-                    &params.name,
-                    app_server_client_name,
-                    app_server_client_version,
-                )
-                .await?;
-                changed = true;
+            if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
+                ensure_direct_input_allowed(thread.as_ref()).await?;
+                if thread.config_snapshot().await.ephemeral {
+                    return Err(invalid_request("account switching requires a persistent thread"));
+                }
+                let current_profile = self
+                    .thread_manager
+                    .auth_profile_id_for_thread(thread_id)
+                    .await;
+                if current_profile.as_deref() != Some(params.name.as_str()) {
+                    self.replace_thread_account_runtime(
+                        request_id,
+                        thread_id,
+                        thread,
+                        &params.name,
+                        app_server_client_name,
+                        app_server_client_version,
+                    )
+                    .await?;
+                    changed = true;
+                }
+            } else {
+                // Select the account before cold resume loads any runtime or
+                // continues a goal. The previous account need not exist or log in.
+                let stored_thread = self
+                    .read_stored_thread_for_resume(
+                        &thread_id.to_string(),
+                        /*path*/ None,
+                        /*include_history*/ false,
+                    )
+                    .await?;
+                if matches!(stored_thread.source, SessionSource::SubAgent(_)) {
+                    let (history, _) = self
+                        .load_resume_initial_history_from_stored_thread(
+                            stored_thread,
+                            /*prepared_model_context*/ None,
+                        )
+                        .await?;
+                    if let Some((source, _)) = history.get_resumed_session_sources()
+                        && !can_accept_direct_input(history.get_multi_agent_version(), &source)
+                    {
+                        return Err(invalid_request(
+                            "switch a multi-agent v2 sub-agent through its parent session",
+                        ));
+                    }
+                }
+                changed |= self.account_profiles.thread_profile(thread_id)
+                    .map_err(internal_error)?.as_deref() != Some(params.name.as_str());
             }
-            // Only acknowledge success after both the live runtime and its next
-            // cold resume select this account. The creator identity is immutable.
+            // Acknowledge only after any live runtime and its next cold resume
+            // select this account. The creator identity remains historical.
             self.account_profiles
                 .save_thread_profile(thread_id, &params.name)
                 .map_err(internal_error)?;

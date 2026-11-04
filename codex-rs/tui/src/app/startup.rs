@@ -669,7 +669,7 @@ impl App {
                 let resumed = match startup_draft
                     .run_until(
                         tui,
-                        app_server.resume_thread_with_permission_overrides(
+                        app_server.resume_thread_from_cli(
                             &local_settings,
                             config.clone(),
                             target_session.thread_id,
