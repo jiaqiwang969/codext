@@ -4,6 +4,7 @@ use codex_analytics::AnalyticsEventsClient;
 use codex_analytics::ThreadHintStatus;
 use codex_analytics::ThreadHintStatusEvent;
 use codex_core::config::Config;
+use codex_core::ThreadAuthManager;
 use codex_extension_api::ConfigContributor;
 use codex_extension_api::ContentItemKind;
 use codex_extension_api::ContextContributor;
@@ -46,18 +47,22 @@ struct HistoryNotesAgentIdentity {
 
 impl HistoryNotesExtension {
     fn update_config(&self, thread_store: &ExtensionData, config: &Config) {
+        let auth_manager = thread_store
+            .get::<ThreadAuthManager>()
+            .map(|auth| Arc::clone(&auth.0))
+            .unwrap_or_else(|| Arc::clone(&self.auth_manager));
         if config
             .token_budget
             .as_ref()
             .is_some_and(|token_budget| token_budget.use_history_notes_extension)
             && config.model_provider.is_openai()
-            && self.auth_manager.current_auth_uses_codex_backend()
+            && auth_manager.current_auth_uses_codex_backend()
         {
             thread_store.insert(HistoryNotesExtensionConfig {
                 backend: HistoryNotesBackend::new(
                     create_model_provider(
                         config.model_provider.clone(),
-                        Some(self.auth_manager.clone()),
+                        Some(auth_manager),
                     ),
                     config.http_client_factory(),
                 ),

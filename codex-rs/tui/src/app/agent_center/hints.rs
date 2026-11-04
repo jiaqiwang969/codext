@@ -119,6 +119,7 @@ impl AgentsOverviewView {
         ] {
             view.push(self.agents_keymap.primary_hint(action, bindings), label);
         }
+        view.push(Some(profile_switch_hint()), "Switch profile");
         let mut lines = vec!["Task shortcuts".bold().into(), Line::default()];
         lines.extend(crate::shortcut_help::group_lines(
             [navigate, tasks, view],
@@ -184,6 +185,7 @@ impl AgentsOverviewView {
         {
             hints.push((hint.display_label(), "new".into()));
         }
+        hints.push((profile_switch_hint().display_label(), "profile".into()));
         hints
     }
 }

@@ -4359,6 +4359,25 @@
       ],
       "type": "object"
     },
+    "SwitchAuthProfileParams": {
+      "description": "Selects the credential profile for a connection and, when requested, replaces the account runtime of an idle thread without changing its conversation.",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "threadId": {
+          "description": "Also switch this loaded thread. Omission only selects the connection default.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
     "TextElement": {
       "properties": {
         "byteRange": {
@@ -8352,6 +8371,30 @@
         },
         "method": {
           "enum": [
+            "account/profile/switch"
+          ],
+          "title": "Account/profile/switchRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/SwitchAuthProfileParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Account/profile/switchRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
             "account/rateLimits/read"
           ],
           "title": "Account/rateLimits/readRequestMethod",
@@ -8836,6 +8879,30 @@
         "params"
       ],
       "title": "Account/readRequest",
+      "type": "object"
+    },
+    {
+      "description": "Reloads the auth snapshot from storage when no turn is running and returns the refreshed account state.",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "account/reload"
+          ],
+          "title": "Account/reloadRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "id",
+        "method"
+      ],
+      "title": "Account/reloadRequest",
       "type": "object"
     },
     {

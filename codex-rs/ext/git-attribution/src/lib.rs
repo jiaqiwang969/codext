@@ -4,6 +4,7 @@ mod world_state;
 use std::sync::Arc;
 use std::time::Instant;
 
+use codex_core::ThreadAuthManager;
 use codex_extension_api::ContextContributor;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
@@ -35,8 +36,13 @@ impl ContextContributor for GitAttributionExtension {
         input: WorldStateContributionInput<'a>,
     ) -> ExtensionFuture<'a, Vec<WorldStateSectionContribution>> {
         Box::pin(async move {
+            let auth_manager = input
+                .thread_store
+                .get::<ThreadAuthManager>()
+                .map(|auth| Arc::clone(&auth.0))
+                .unwrap_or_else(|| Arc::clone(&self.auth_manager));
             let enabled = loop {
-                let current_auth_generation = auth_generation(self.auth_manager.as_ref());
+                let current_auth_generation = auth_generation(auth_manager.as_ref());
                 let policy = match cached_attribution_policy(
                     input.thread_store,
                     input.turn_store,
@@ -51,7 +57,7 @@ impl ContextContributor for GitAttributionExtension {
                     }
                     None => {
                         match resolve_attribution_policy(
-                            &self.auth_manager,
+                            &auth_manager,
                             &self.base_url,
                             &self.http_client_factory,
                         )
@@ -70,7 +76,7 @@ impl ContextContributor for GitAttributionExtension {
                                 policy
                             }
                             Err(_) => {
-                                let auth_generation = auth_generation(self.auth_manager.as_ref());
+                                let auth_generation = auth_generation(auth_manager.as_ref());
                                 if auth_generation == current_auth_generation {
                                     input.thread_store.insert(GitAttributionRetry {
                                         auth_generation,
@@ -85,7 +91,7 @@ impl ContextContributor for GitAttributionExtension {
                         }
                     }
                 };
-                if policy.auth_generation == auth_generation(self.auth_manager.as_ref()) {
+                if policy.auth_generation == auth_generation(auth_manager.as_ref()) {
                     break policy.enabled;
                 }
             };

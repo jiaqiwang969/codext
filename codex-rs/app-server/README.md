@@ -1,3 +1,48 @@
+# Connection-scoped account profiles
+
+The app-server keeps the default `auth.json` and shared thread storage in one
+daemon, while allowing each connection to select an account-pool entry with
+`account/profile/switch` and `{ "name": "profile" }`. A new thread captures
+that profile's authentication, model, plugin, MCP, and workspace-routing
+runtime. Supplying `threadId` also switches that loaded, idle conversation by
+replacing its account runtime while preserving its ID, history, settings, and
+subscriptions. For an unloaded conversation, the server validates the stored
+thread and saves the selected profile before cold resume; it does not load the
+previous account or start the old runtime. Active tasks (including agents) must
+finish or be interrupted first. A closing thread rejects the change until its
+unload completes. The response echoes `threadId` only after any runtime switch
+and the durable binding succeed; clients must check this acknowledgement before
+reporting success.
+
+Explicit CLI account selection for resume uses this thread-scoped switch before
+`thread/resume`, then verifies `thread.extra.accountProfile` before input can be
+submitted. A connection-only profile selection remains a default for new threads
+and does not override resume bindings. Ordinary resume and reconnection preserve
+the saved account; the CLI startup override is not reapplied during navigation.
+
+Explicit thread bindings are stored as profile names (without credentials) in
+`CODEX_HOME/thread-auth-profiles/<threadId>.json`. Cold resume, daemon recovery,
+revert, and fork consult this selection before the immutable creator account.
+Histories without an account fall back to the connection's selected profile.
+Other threads keep their account runtimes. Profile-scoped connections may read and use their selected account,
+but account login/logout and Bedrock credential mutation remain restricted to
+the default auth context so one profile cannot rewrite another profile's files.
+
+Live thread payloads expose the captured profile as `thread.extra.accountProfile`
+and its actual account as `thread.extra.accountId`. The values are also enriched
+on `thread/list`, `thread/read`, and resume, so a shared
+daemon client can show which account owns each active task without changing the
+thread's work context.
+
+The account-pool status helper uses the internal CLI command
+`app-server daemon account-status <name> --timeout-ms 12000`. It opens a dedicated
+WebSocket connection to the local daemon, selects the profile without a
+`threadId`, and reads `account/rateLimits/read` and `account/usage/read`. Output is
+JSON with `limits`, `usage`, and `usage_error`; usage failure preserves a successful
+quota response. The command neither loads credentials nor starts a separate
+app-server, so list queries share the daemon's per-profile refresh locks. An
+unavailable daemon is an error, not a fallback to an independent auth manager.
+
 # Thread memory summary (experimental)
 
 `thread/memory/read` takes `{threadId}` for a loaded thread and returns

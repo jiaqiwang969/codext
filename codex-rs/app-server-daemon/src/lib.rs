@@ -1,5 +1,7 @@
 //! Managed app-server lifecycle, serialized across CLI invocations and the updater.
 
+mod account_status;
+pub use account_status::query_account_status;
 mod backend;
 mod background_command;
 #[cfg(windows)]
@@ -9,6 +11,8 @@ pub use backend::windows::is_elevated;
 #[cfg(windows)]
 use backend::windows::try_lock_file;
 mod client;
+pub use client::AuthReloadOutcome;
+pub use client::request_auth_reload;
 mod diagnostics;
 mod install_lock;
 mod launch;
