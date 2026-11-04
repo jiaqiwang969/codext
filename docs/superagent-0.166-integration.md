@@ -3,6 +3,11 @@
 Updated 2026-11-04. This is the integration contract and work ledger, not a claim
 that the organization engine is included in the current build.
 
+Latest user direction: leave the record for now. Local preparation is complete
+in `d16bdb73f8`; further migration is deferred until the user asks to continue.
+The next step is acquiring the exact Dell build-27 source. A newly reachable
+Dell is not an instruction to resume migration or start the sealed services.
+
 ## Source baselines and availability
 
 | Component | Baseline | State |
