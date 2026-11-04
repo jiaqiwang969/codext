@@ -695,6 +695,14 @@ enum AppServerDaemonSubcommand {
     /// [codext] Ask the running daemon to reload auth.json from storage.
     ReloadAuth,
 
+    /// [internal] Read one account profile through the shared daemon.
+    #[clap(hide = true)]
+    AccountStatus {
+        name: String,
+        #[arg(long, default_value_t = 12000)]
+        timeout_ms: u64,
+    },
+
     /// Print local CLI and running app-server versions as JSON.
     Version,
 
@@ -1426,6 +1434,18 @@ async fn cli_main(
                     }
                     AppServerDaemonSubcommand::ReloadAuth => {
                         daemon_reload_auth::run_daemon_reload_auth().await?;
+                    }
+                    AppServerDaemonSubcommand::AccountStatus { name, timeout_ms } => {
+                        let codex_home = find_codex_home()?;
+                        let socket_path =
+                            codex_app_server::app_server_control_socket_path(&codex_home)?;
+                        let output = codex_app_server_daemon::query_account_status(
+                            socket_path.as_path(),
+                            &name,
+                            std::time::Duration::from_millis(timeout_ms),
+                        )
+                        .await?;
+                        println!("{}", serde_json::to_string(&output)?);
                     }
                     AppServerDaemonSubcommand::Version => {
                         print_app_server_daemon_output(AppServerLifecycleCommand::Version).await?;
@@ -2446,6 +2466,7 @@ fn app_server_subcommand_name(subcommand: Option<&AppServerSubcommand>) -> &'sta
             }
             AppServerDaemonSubcommand::Stop => "app-server daemon stop",
             AppServerDaemonSubcommand::ReloadAuth => "app-server daemon reload-auth",
+            AppServerDaemonSubcommand::AccountStatus { .. } => "app-server daemon account-status",
             AppServerDaemonSubcommand::Version => "app-server daemon version",
             AppServerDaemonSubcommand::PidUpdateLoop { .. } => "app-server daemon pid-update-loop",
         },

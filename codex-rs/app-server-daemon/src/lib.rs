@@ -1,5 +1,7 @@
 //! Managed app-server lifecycle, serialized across CLI invocations and the updater.
 
+mod account_status;
+pub use account_status::query_account_status;
 mod backend;
 mod background_command;
 #[cfg(windows)]

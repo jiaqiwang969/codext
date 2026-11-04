@@ -24,6 +24,15 @@ on `thread/list`, `thread/read`, and resume, so a shared
 daemon client can show which account owns each active task without changing the
 thread's work context.
 
+The account-pool status helper uses the internal CLI command
+`app-server daemon account-status <name> --timeout-ms 12000`. It opens a dedicated
+WebSocket connection to the local daemon, selects the profile without a
+`threadId`, and reads `account/rateLimits/read` and `account/usage/read`. Output is
+JSON with `limits`, `usage`, and `usage_error`; usage failure preserves a successful
+quota response. The command neither loads credentials nor starts a separate
+app-server, so list queries share the daemon's per-profile refresh locks. An
+unavailable daemon is an error, not a fallback to an independent auth manager.
+
 # Thread memory summary (experimental)
 
 `thread/memory/read` takes `{threadId}` for a loaded thread and returns

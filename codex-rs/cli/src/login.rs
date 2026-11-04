@@ -51,6 +51,8 @@ const API_KEY_AUTHENTICATION_NOTICE: &str = "Authentication is checked when you 
 const DEFAULT_LOGIN_LOG_FILTER: &str =
     "codex_cli=info,codex_core=info,codex_login=info,codex_otel::auth_storage=warn";
 
+mod profile;
+
 /// Installs a small file-backed tracing layer for direct `codex login` flows.
 ///
 /// This deliberately duplicates a narrow slice of the TUI logging setup instead of reusing it
@@ -174,7 +176,7 @@ pub async fn login_with_chatgpt(
 }
 
 pub async fn run_login_with_chatgpt(cli_config_overrides: CliConfigOverrides) -> ! {
-    let config = load_config_or_exit(cli_config_overrides).await;
+    let mut config = load_config_or_exit(cli_config_overrides).await;
     let _login_log_guard = init_login_file_logging(&config);
     tracing::info!("starting browser login flow");
 
@@ -186,6 +188,7 @@ pub async fn run_login_with_chatgpt(cli_config_overrides: CliConfigOverrides) ->
         std::process::exit(1);
     }
 
+    let profile_login = profile::prepare_or_exit(&mut config);
     let effective_chatgpt_workspaces = config.auth_config().effective_chatgpt_workspaces();
     match login_with_chatgpt(
         config.codex_home.to_path_buf(),
@@ -197,10 +200,10 @@ pub async fn run_login_with_chatgpt(cli_config_overrides: CliConfigOverrides) ->
     .await
     {
         Ok(_) => {
-            eprintln!("{LOGIN_SUCCESS_MESSAGE}");
-            std::process::exit(0);
+            profile::finish_or_exit(profile_login, LOGIN_SUCCESS_MESSAGE);
         }
         Err(e) => {
+            drop(profile_login);
             eprintln!("Error logging in: {e}");
             std::process::exit(1);
         }
@@ -211,7 +214,7 @@ pub async fn run_login_with_api_key(
     cli_config_overrides: CliConfigOverrides,
     api_key: String,
 ) -> ! {
-    let config = load_config_or_exit(cli_config_overrides).await;
+    let mut config = load_config_or_exit(cli_config_overrides).await;
     let _login_log_guard = init_login_file_logging(&config);
     tracing::info!("starting api key login flow");
 
@@ -223,6 +226,7 @@ pub async fn run_login_with_api_key(
         std::process::exit(1);
     }
 
+    let profile_login = profile::prepare_or_exit(&mut config);
     match login_with_api_key(
         &config.codex_home,
         &api_key,
@@ -230,10 +234,13 @@ pub async fn run_login_with_api_key(
         config.auth_keyring_backend_kind(),
     ) {
         Ok(_) => {
-            eprintln!("API key saved. {API_KEY_AUTHENTICATION_NOTICE}");
-            std::process::exit(0);
+            profile::finish_or_exit(
+                profile_login,
+                &format!("API key saved. {API_KEY_AUTHENTICATION_NOTICE}"),
+            );
         }
         Err(e) => {
+            drop(profile_login);
             eprintln!("Error logging in: {e}");
             std::process::exit(1);
         }
@@ -244,7 +251,7 @@ pub async fn run_login_with_access_token(
     cli_config_overrides: CliConfigOverrides,
     access_token: String,
 ) -> ! {
-    let config = load_config_or_exit(cli_config_overrides).await;
+    let mut config = load_config_or_exit(cli_config_overrides).await;
     let _login_log_guard = init_login_file_logging(&config);
     tracing::info!("starting access token login flow");
 
@@ -256,6 +263,7 @@ pub async fn run_login_with_access_token(
         std::process::exit(1);
     }
 
+    let profile_login = profile::prepare_or_exit(&mut config);
     let auth_route_config = config.auth_route_config();
     let effective_chatgpt_workspaces = config.auth_config().effective_chatgpt_workspaces();
     match login_with_access_token(
@@ -270,10 +278,10 @@ pub async fn run_login_with_access_token(
     .await
     {
         Ok(_) => {
-            eprintln!("{LOGIN_SUCCESS_MESSAGE}");
-            std::process::exit(0);
+            profile::finish_or_exit(profile_login, LOGIN_SUCCESS_MESSAGE);
         }
         Err(e) => {
+            drop(profile_login);
             eprintln!("Error logging in with access token: {e}");
             std::process::exit(1);
         }
@@ -327,7 +335,7 @@ pub async fn run_login_with_device_code(
     issuer_base_url: Option<String>,
     client_id: Option<String>,
 ) -> ! {
-    let config = load_config_or_exit(cli_config_overrides).await;
+    let mut config = load_config_or_exit(cli_config_overrides).await;
     let _login_log_guard = init_login_file_logging(&config);
     tracing::info!("starting device code login flow");
     if !config
@@ -337,6 +345,7 @@ pub async fn run_login_with_device_code(
         eprintln!("{CHATGPT_LOGIN_DISABLED_MESSAGE}");
         std::process::exit(1);
     }
+    let profile_login = profile::prepare_or_exit(&mut config);
     let auth_route_config = config.auth_route_config();
     clear_existing_auth_before_login(
         &config.codex_home,
@@ -359,10 +368,10 @@ pub async fn run_login_with_device_code(
     }
     match run_device_code_login(opts).await {
         Ok(()) => {
-            eprintln!("{LOGIN_SUCCESS_MESSAGE}");
-            std::process::exit(0);
+            profile::finish_or_exit(profile_login, LOGIN_SUCCESS_MESSAGE);
         }
         Err(e) => {
+            drop(profile_login);
             eprintln!("Error logging in with device code: {e}");
             std::process::exit(1);
         }
@@ -378,7 +387,7 @@ pub async fn run_login_with_device_code_fallback_to_browser(
     issuer_base_url: Option<String>,
     client_id: Option<String>,
 ) -> ! {
-    let config = load_config_or_exit(cli_config_overrides).await;
+    let mut config = load_config_or_exit(cli_config_overrides).await;
     let _login_log_guard = init_login_file_logging(&config);
     tracing::info!("starting login flow with device code fallback");
     if !config
@@ -388,6 +397,7 @@ pub async fn run_login_with_device_code_fallback_to_browser(
         eprintln!("{CHATGPT_LOGIN_DISABLED_MESSAGE}");
         std::process::exit(1);
     }
+    let profile_login = profile::prepare_or_exit(&mut config);
     let auth_route_config = config.auth_route_config();
     clear_existing_auth_before_login(
         &config.codex_home,
@@ -413,8 +423,7 @@ pub async fn run_login_with_device_code_fallback_to_browser(
 
     match run_device_code_login(opts.clone()).await {
         Ok(()) => {
-            eprintln!("{LOGIN_SUCCESS_MESSAGE}");
-            std::process::exit(0);
+            profile::finish_or_exit(profile_login, LOGIN_SUCCESS_MESSAGE);
         }
         Err(e) => {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -424,21 +433,23 @@ pub async fn run_login_with_device_code_fallback_to_browser(
                         print_login_server_start(server.actual_port, &server.auth_url);
                         match server.block_until_done().await {
                             Ok(()) => {
-                                eprintln!("{LOGIN_SUCCESS_MESSAGE}");
-                                std::process::exit(0);
+                                profile::finish_or_exit(profile_login, LOGIN_SUCCESS_MESSAGE);
                             }
                             Err(e) => {
+                                drop(profile_login);
                                 eprintln!("Error logging in: {e}");
                                 std::process::exit(1);
                             }
                         }
                     }
                     Err(e) => {
+                        drop(profile_login);
                         eprintln!("Error logging in: {e}");
                         std::process::exit(1);
                     }
                 }
             } else {
+                drop(profile_login);
                 eprintln!("Error logging in with device code: {e}");
                 std::process::exit(1);
             }

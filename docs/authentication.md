@@ -18,6 +18,19 @@ and `logout` use `CODEX_HOME/accounts/<profile>/auth.json` with file credential
 storage. Settings are still loaded from the shared configuration. Without the
 environment variable, these commands retain their default account behavior.
 
+Named-profile logins stage new credentials in a private temporary directory
+inside the profile. For an existing ChatGPT profile, the account/workspace ID
+and user ID (or email when no user ID is available) must match the stored login
+before `auth.json` is atomically replaced. A failed, cancelled, or mismatched
+login keeps the previous credentials. The check reads the credential files,
+not an inherited access-token environment variable. A new profile accepts its
+first login; successful ChatGPT login prints the actual account and destination.
+Use a different profile name to add a different account.
+
+Concurrent CLI logins to the same profile are rejected. If another completed
+login or logout changes the profile while a login is in progress, that login
+does not overwrite it. Normal token rotations of the existing login are allowed.
+
 Profile startup refreshes expired credentials before reading the account. A
 profile whose refresh token is permanently invalid must be logged in again;
 the TUI reports this instead of opening onboarding against the shared account.
@@ -57,5 +70,20 @@ Free-plan accounts remain at the end. Live plan data takes priority over local
 token claims; `--local` uses those cached claims. Paid accounts with exhausted
 quota and accounts with an unknown plan remain visible.
 
-Live queries use isolated configuration and the profile's actual credential
-directory, so refreshed tokens are retained in the main account pool.
+Live queries use a dedicated connection to the running shared daemon for each
+profile. They share its profile credential manager and refresh lock instead of
+starting independent app-server processes that can compete to rotate the same
+refresh token. These query connections never select an account for an existing
+conversation or change the default account. The CLI and status helper must be
+updated together with this version.
+
+When the daemon is unavailable, accounts remain listed with an error and local
+metadata. Open an account session to start the daemon, or use `list --local` for
+an offline inventory. The helper does not fall back to independently refreshing
+credentials.
+
+`*` identifies the default account stored in the shared `auth.json`, matched by
+account ID and user ID (or email), rather than by the credential file's bytes.
+Token rotation therefore does not remove the marker. Individual conversations
+may use other profiles. JSON exposes this as `default`; the existing `active`
+field is retained as a compatibility alias with the same meaning.

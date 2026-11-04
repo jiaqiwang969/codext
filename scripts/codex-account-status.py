@@ -6,23 +6,15 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
-import hashlib
 import json
 import math
 import os
-import queue
 import subprocess
-import tempfile
-import threading
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
-
-_EOF = object()
-_MISSING = object()
 
 
 def mapping(value: Any) -> Mapping[str, Any]:
@@ -124,143 +116,15 @@ def duration_label(value: Any) -> str:
     return f"{duration}m"
 
 
-def error_text(value: Any) -> str:
-    error = mapping(value)
-    message = error.get("message") or error.get("detail") or error.get("data")
-    return safe_text(message if message is not None else value, "request failed", 180)
-
-
-class JsonlSession:
-    def __init__(self, command: list[str], env: Mapping[str, str], timeout: float) -> None:
-        self.deadline = time.monotonic() + max(0.05, timeout)
-        try:
-            self.process = subprocess.Popen(
-                command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                bufsize=1,
-                env=dict(env),
-            )
-        except (OSError, ValueError) as exc:
-            raise RuntimeError(f"could not start app-server: {exc}") from exc
-        if self.process.stdin is None or self.process.stdout is None:
-            self.close()
-            raise RuntimeError("app-server pipes unavailable")
-        self.lines: queue.Queue[Any] = queue.Queue()
-        self.pending: dict[Any, Mapping[str, Any]] = {}
-        self.reader = threading.Thread(target=self._read_lines, daemon=True)
-        self.reader.start()
-
-    def _read_lines(self) -> None:
-        try:
-            for line in self.process.stdout:
-                self.lines.put(line)
-        except (OSError, ValueError):
-            pass
-        finally:
-            self.lines.put(_EOF)
-
-    def notify(self, method: str, params: Any = _MISSING) -> None:
-        payload: dict[str, Any] = {"method": method}
-        if params is not _MISSING:
-            payload["params"] = params
-        self._write(payload)
-
-    def request(self, request_id: int, method: str, params: Any = _MISSING) -> Mapping[str, Any]:
-        payload: dict[str, Any] = {"id": request_id, "method": method}
-        if params is not _MISSING:
-            payload["params"] = params
-        response = self._wait_for_write(payload, request_id)
-        error = response.get("error")
-        if error is not None:
-            raise RuntimeError(f"{method}: {error_text(error)}")
-        result = response.get("result")
-        if result is None:
-            return {}
-        if not isinstance(result, Mapping):
-            raise RuntimeError(f"{method}: invalid response")
-        return result
-
-    def _write(self, payload: Mapping[str, Any]) -> None:
-        if self.process.stdin is None:
-            raise RuntimeError("app-server input unavailable")
-        try:
-            self.process.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
-            self.process.stdin.flush()
-        except (BrokenPipeError, OSError, ValueError) as exc:
-            raise RuntimeError(f"app-server closed its input: {exc}") from exc
-
-    def _wait_for_write(self, payload: Mapping[str, Any], request_id: int) -> Mapping[str, Any]:
-        self._write(payload)
-        cached = self.pending.pop(request_id, None)
-        if cached is not None:
-            return cached
-        while True:
-            remaining = self.deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError("app-server timed out")
-            try:
-                line = self.lines.get(timeout=remaining)
-            except queue.Empty as exc:
-                raise RuntimeError("app-server timed out") from exc
-            if line is _EOF:
-                raise RuntimeError("app-server exited early")
-            if not isinstance(line, str) or len(line) > 8_000_000:
-                continue
-            try:
-                message = json.loads(line)
-            except (TypeError, json.JSONDecodeError):
-                continue
-            if not isinstance(message, Mapping):
-                continue
-            response_id = message.get("id", _MISSING)
-            if response_id is _MISSING:
-                continue
-            if response_id == request_id:
-                return message
-            self.pending[response_id] = message
-
-    def close(self) -> None:
-        process = getattr(self, "process", None)
-        if process is None:
-            return
-        try:
-            if process.stdin is not None and not process.stdin.closed:
-                process.stdin.close()
-        except (OSError, ValueError):
-            pass
-        try:
-            process.wait(timeout=0.5)
-            return
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        try:
-            process.terminate()
-            process.wait(timeout=0.5)
-            return
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        try:
-            process.kill()
-            process.wait(timeout=0.5)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-
-    def __enter__(self) -> "JsonlSession":
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        self.close()
-
-
 def local_auth(auth_path: Path) -> dict[str, Any]:
     result: dict[str, Any] = {
         "status": "missing",
         "auth_mode": "-",
         "last_refresh": "-",
         "plan": "-",
+        "account_id": None,
+        "user_id": None,
+        "email": None,
     }
     if not auth_path.is_file():
         return result
@@ -280,6 +144,7 @@ def local_auth(auth_path: Path) -> dict[str, Any]:
     result["auth_mode"] = auth_mode
     result["last_refresh"] = safe_text(data.get("last_refresh"), "-")[:10]
     tokens = mapping(data.get("tokens"))
+    result["account_id"] = tokens.get("account_id") or None
     # Token claims provide a local display hint; a live response takes priority.
     # Never expose the token itself or use these claims to authorize requests.
     id_token = tokens.get("id_token")
@@ -290,6 +155,9 @@ def local_auth(auth_path: Path) -> dict[str, Any]:
                 claims = mapping(json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))))
                 account = mapping(claims.get("https://api.openai.com/auth"))
                 result["plan"] = safe_text(account.get("chatgpt_plan_type"), "-")
+                result["account_id"] = result["account_id"] or account.get("chatgpt_account_id") or None
+                result["user_id"] = account.get("chatgpt_user_id") or account.get("user_id") or None
+                result["email"] = claims.get("email") or mapping(claims.get("https://api.openai.com/profile")).get("email")
             except (ValueError, UnicodeDecodeError, binascii.Error):
                 pass
     if auth_mode == "chatgpt":
@@ -302,55 +170,38 @@ def local_auth(auth_path: Path) -> dict[str, Any]:
     return result
 
 
-def query_account(auth_path: Path, binary: Path, timeout: float) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="codex-account-status-") as temporary:
-        isolated_home = Path(temporary)
-        # Keep query configuration isolated, but let the profile manager save
-        # rotated credentials to the real account directory instead of losing
-        # them when this temporary home is removed.
-        profile_name = auth_path.parent.name
-        profiles = isolated_home / "accounts"
-        profiles.mkdir()
-        (profiles / profile_name).symlink_to(auth_path.parent.resolve(), target_is_directory=True)
-        environment = os.environ.copy()
-        environment.update(
-            {
-                "CODEX_HOME": str(isolated_home),
-                "CODEX_SQLITE_HOME": str(isolated_home),
-                "RUST_LOG": "error",
-            }
+def query_account(home: Path, profile_name: str, binary: Path, timeout: float) -> dict[str, Any]:
+    socket_path = home / "app-server-control/app-server-control.sock"
+    if not socket_path.is_socket():
+        raise RuntimeError("Background server unavailable; open an account session, or use list --local.")
+    environment = os.environ.copy()
+    environment.update({"CODEX_HOME": str(home), "CODEX_SQLITE_HOME": str(home), "RUST_LOG": "error"})
+    # This CLI command only exchanges RPC with the shared daemon. It never loads
+    # credentials, so list calls share the daemon's per-profile refresh locks.
+    for inherited_name in (
+        "CODEX_AUTH_PROFILE", "CODEX_ACCOUNT_PROFILE", "CODEX_ACCESS_TOKEN",
+        "CODEX_API_KEY", "OPENAI_API_KEY",
+    ):
+        environment.pop(inherited_name, None)
+    command = [
+        str(binary), "app-server", "daemon", "account-status", profile_name,
+        "--timeout-ms", str(max(1, int(timeout * 1000))),
+    ]
+    try:
+        result = subprocess.run(
+            command, env=environment, capture_output=True, text=True, timeout=timeout + 2,
         )
-        for inherited_name in (
-            "CODEX_AUTH_PROFILE",
-            "CODEX_ACCOUNT_PROFILE",
-            "CODEX_ACCESS_TOKEN",
-            "CODEX_API_KEY",
-            "OPENAI_API_KEY",
-        ):
-            environment.pop(inherited_name, None)
-        with JsonlSession([str(binary), "app-server", "--stdio"], environment, timeout) as session:
-            session.request(
-                0,
-                "initialize",
-                {
-                    "clientInfo": {
-                        "name": "codex-account-next",
-                        "title": "Codex account pool status",
-                        "version": "0.1.0",
-                    },
-                    "capabilities": {"experimentalApi": True},
-                },
-            )
-            session.notify("initialized", {})
-            session.request(1, "account/profile/switch", {"name": profile_name})
-            limits = session.request(2, "account/rateLimits/read")
-            usage: Mapping[str, Any] = {}
-            usage_error: str | None = None
-            try:
-                usage = session.request(3, "account/usage/read")
-            except RuntimeError as exc:
-                usage_error = safe_text(exc, "usage unavailable", 180)
-            return {"limits": dict(limits), "usage": dict(usage), "usage_error": usage_error}
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Background server query timed out") from exc
+    if result.returncode:
+        raise RuntimeError(safe_text(result.stderr, "Background server query failed", 180))
+    try:
+        payload = json.loads(result.stdout)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Invalid background server query response") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("limits"), Mapping):
+        raise RuntimeError("Missing quota data in background server query response")
+    return payload
 
 
 def normalize_live(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -625,11 +476,7 @@ def build_rows_parallel(
             and name.isprintable()
         ):
             account_dirs.setdefault(key, accounts_dir / name)
-    active_path = home / "auth.json"
-    try:
-        active_digest = hashlib.sha256(active_path.read_bytes()).digest()
-    except OSError:
-        active_digest = None
+    default_auth = local_auth(home / "auth.json")
     try:
         timezone = ZoneInfo(timezone_name)
     except (KeyError, ValueError):
@@ -642,15 +489,20 @@ def build_rows_parallel(
         for account_dir in sorted(account_dirs.values(), key=lambda path: path.name.casefold()):
             auth_path = account_dir / "auth.json"
             auth = local_auth(auth_path)
-            try:
-                selected = active_digest is not None and hashlib.sha256(auth_path.read_bytes()).digest() == active_digest
-            except OSError:
-                selected = False
+            selected = bool(default_auth["account_id"]) and (
+                auth["account_id"] == default_auth["account_id"]
+                and (
+                    auth["user_id"] == default_auth["user_id"]
+                    if default_auth["user_id"]
+                    else bool(default_auth["email"]) and str(auth["email"]).casefold() == str(default_auth["email"]).casefold()
+                )
+            )
             subscription_text, subscription = subscription_for(
                 deadline_accounts.get(account_dir.name.casefold()), timezone
             )
             row: dict[str, Any] = {
-                "active": selected,
+                "active": selected,  # Compatibility: this flag identifies the default account.
+                "default": selected,
                 "account": account_dir.name,
                 "status": "local" if local_only and auth["status"] == "ready" else auth["status"],
                 "auth_mode": auth["auth_mode"],
@@ -675,7 +527,7 @@ def build_rows_parallel(
             row["last_recharge"] = dict(recharge) if recharge is not None else None
             rows.append(row)
             if not local_only and auth["status"] == "ready":
-                jobs[executor.submit(query_account, auth_path, binary, timeout)] = row
+                jobs[executor.submit(query_account, home, account_dir.name, binary, timeout)] = row
         for future in as_completed(jobs):
             row = jobs[future]
             try:
@@ -698,10 +550,10 @@ def build_rows_parallel(
 
 def render_table(rows: list[dict[str, Any]], timezone_name: str, local_only: bool) -> None:
     print(f"Accounts: {len(rows)}; nearest quota reset first, free accounts last.")
-    print("* = active account; QUOTA is remaining%@reset time")
+    print("* = default account (sessions may use other accounts); QUOTA is remaining%@reset time")
     print(f"  {'ACCOUNT':<24} {'STATUS':<8} {'AUTH':<8} {'PLAN':<8} {'QUOTA':<34} {'RESET_CARD':<10} {'CREDIT':<10} {'SUBSCRIPTION':<28}")
     for row in rows:
-        marker = "*" if row["active"] else " "
+        marker = "*" if row["default"] else " "
         credits = mapping(row.get("credits"))
         credit_text = credits.get("value", "-")
         reset_cards = row.get("reset_cards")
@@ -726,7 +578,7 @@ def render_table(rows: list[dict[str, Any]], timezone_name: str, local_only: boo
     if local_only:
         print("\nLocal mode: use `codex-account-next list` for live quota and credit data.")
     else:
-        print(f"\nLive source: account/rateLimits/read + account/usage/read ({timezone_name}).")
+        print(f"\nLive source: shared daemon account/rateLimits/read + account/usage/read ({timezone_name}).")
     print("Subscription dates come from the local deadline renewal record and are separate from quota resets.")
 
 
