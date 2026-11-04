@@ -50,9 +50,12 @@ case sensitivity. Missing credentials remain visible as `missing` with a login
 hint. The ledger supplies expected names and subscription dates, never a second
 credential location. Old homes and backup directories are not active sources.
 
-Free-plan accounts sort last in table and JSON output. Live plan data takes
-priority over local token claims; `--local` uses those cached claims. Paid accounts
-with exhausted quota and accounts with an unknown plan remain visible.
+Paid accounts sort by their nearest quota reset time, soonest first, in table and
+JSON output. When several quota windows exist, the earliest known reset is used.
+Missing reset times sort after known times, with account names breaking ties.
+Free-plan accounts remain at the end. Live plan data takes priority over local
+token claims; `--local` uses those cached claims. Paid accounts with exhausted
+quota and accounts with an unknown plan remain visible.
 
 Live queries use isolated configuration and the profile's actual credential
 directory, so refreshed tokens are retained in the main account pool.

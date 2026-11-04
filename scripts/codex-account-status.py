@@ -697,7 +697,7 @@ def build_rows_parallel(
 
 
 def render_table(rows: list[dict[str, Any]], timezone_name: str, local_only: bool) -> None:
-    print(f"Accounts: {len(rows)}; free accounts are listed last.")
+    print(f"Accounts: {len(rows)}; nearest quota reset first, free accounts last.")
     print("* = active account; QUOTA is remaining%@reset time")
     print(f"  {'ACCOUNT':<24} {'STATUS':<8} {'AUTH':<8} {'PLAN':<8} {'QUOTA':<34} {'RESET_CARD':<10} {'CREDIT':<10} {'SUBSCRIPTION':<28}")
     for row in rows:
@@ -759,11 +759,19 @@ def main() -> int:
     rows, timezone_name, recharge_sources = build_rows_parallel(
         home, binary, max(0.1, args.timeout), args.local, max(1, args.workers)
     )
-    # Keep every configured account visible. Paid accounts sort first so the
-    # free-plan account stays available without taking focus from the paid pool.
+    # Compare reset timestamps, not formatted dates or remaining quota. When
+    # several windows are shown, use the earliest known reset for that account.
     rows.sort(
         key=lambda row: (
             str(row["plan"]).casefold() == "free",
+            min(
+                (
+                    reset
+                    for window in row["quota"]
+                    if (reset := parse_datetime(window.get("resets_at"))) is not None
+                ),
+                default=datetime.max.replace(tzinfo=UTC),
+            ),
             str(row["account"]).casefold(),
         )
     )
