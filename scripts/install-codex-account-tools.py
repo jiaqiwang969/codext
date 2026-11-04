@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the account-pool tools and route compatibility names to one launcher."""
+"""Install account-pool tools and the isolated remote organization launcher."""
 
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,6 +21,7 @@ def main() -> None:
     files = {
         "codex-account-next": "codex-account-next.sh",
         "codex-account-status": "codex-account-status.py",
+        "codext-org": "codext-org.sh",
     }
     aliases = ("codex-account", "codex-account-pool", "codex-account-next-1")
     for name in (*files, *aliases):
@@ -41,6 +42,7 @@ def main() -> None:
 
     print(f"Installed account tools in {bin_dir}")
     print(f"Account credentials: {Path.home() / '.codex/accounts'}/<profile>/auth.json")
+    print("codext-org preserves the remote PM's account unless CODEXT_ORG_ACCOUNT_PROFILE is set")
     print(f"Previous launchers saved in {backup}")
 
 
