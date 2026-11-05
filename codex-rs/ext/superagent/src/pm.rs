@@ -34,7 +34,6 @@ use crate::effects::Effects;
 use crate::effects::HandlerOptions;
 use crate::host::DeliveryMode;
 use crate::host::SuperagentHost;
-use crate::resources::ReadScope;
 use crate::store::Store;
 use crate::tools::pm::PmTool;
 use crate::tools::pm::PmToolKind;
@@ -436,9 +435,9 @@ pub fn pm_tools(
     runtime: &Arc<PmRuntime>,
 ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
     let mut tools: Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> = Vec::new();
-    tools.push(Arc::new(ReadTool::new(
+    tools.push(Arc::new(ReadTool::for_pm(
         runtime.store.clone(),
-        ReadScope::Pm,
+        Arc::clone(&runtime.host),
     )));
     for kind in [
         PmToolKind::Route,

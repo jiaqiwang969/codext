@@ -25,8 +25,11 @@ use codex_superagent_extension::core::Ticket;
 use codex_superagent_extension::core::UserError;
 use codex_superagent_extension::host::DeliveryMode;
 use codex_superagent_extension::host::GoalStatus;
+use codex_superagent_extension::host::SessionBrief;
+use codex_superagent_extension::host::SessionPage;
 use codex_superagent_extension::host::SuperagentHost;
 use codex_superagent_extension::host::ThreadSpec;
+use codex_superagent_extension::host::TurnBrief;
 use codex_superagent_extension::pm::Candidate;
 use codex_superagent_extension::pm::EngineError;
 use codex_superagent_extension::pm::EngineForPm;
@@ -286,6 +289,103 @@ impl SuperagentHost for FakeHost {
     fn goal_status(&self, _thread: ThreadId) -> BoxFut<'_, anyhow::Result<Option<GoalStatus>>> {
         Box::pin(async { Ok(None) })
     }
+    fn list_sessions(
+        &self,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> BoxFut<'_, anyhow::Result<SessionPage>> {
+        // Two pages of one session each: the first names where the second starts.
+        let page = match cursor.as_deref() {
+            None => SessionPage {
+                sessions: vec![SessionBrief {
+                    id: SESSION.to_owned(),
+                    name: Some("有限元重写".to_owned()),
+                    preview: "询问项目\n当前进展".to_owned(),
+                    cwd: "/Users/u/239-jtufem".to_owned(),
+                    status: "notLoaded".to_owned(),
+                    updated_at: Some(1_793_000_000),
+                    account_profile: Some("Simmonsalex805".to_owned()),
+                }],
+                next_cursor: Some("c2".to_owned()),
+            },
+            Some(_) => SessionPage::default(),
+        };
+        let _ = limit;
+        Box::pin(async move { Ok(page) })
+    }
+    fn session_turns(
+        &self,
+        _thread: ThreadId,
+        limit: u32,
+    ) -> BoxFut<'_, anyhow::Result<Vec<TurnBrief>>> {
+        let turn = TurnBrief {
+            id: "turn-9".to_owned(),
+            status: "completed".to_owned(),
+            user: vec!["现在进展到哪了？".to_owned()],
+            assistant: vec!["长".repeat(700)],
+        };
+        Box::pin(async move { Ok(std::iter::repeat_n(turn, limit as usize).collect()) })
+    }
+}
+
+const SESSION: &str = "019a0000-0000-7000-8000-00000000c003";
+
+#[tokio::test]
+async fn the_router_reads_sessions_without_loading_them() -> anyhow::Result<()> {
+    let (_dir, store) = open_store().await?;
+    let host: Arc<dyn SuperagentHost> = Arc::new(FakeHost::default());
+    let router = ReadTool::for_pm(store.clone(), host);
+    let read = |args: Value| {
+        let router = &router;
+        async move {
+            router
+                .run(&args.to_string())
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))
+        }
+    };
+    let page = read(json!({ "resource": "sessions" })).await?;
+    assert_eq!(
+        page,
+        json!({
+            "items": [{
+                "id": SESSION,
+                "name": "有限元重写",
+                "preview": "询问项目 当前进展",
+                "cwd": "/Users/u/239-jtufem",
+                "status": "notLoaded",
+                "updatedAt": 1_793_000_000,
+                "account": "Simmonsalex805",
+            }],
+            "next_resource": "sessions/c2",
+        })
+    );
+    let last = read(json!({ "resource": "sessions/c2" })).await?;
+    assert_eq!(last, json!({ "items": [], "next_resource": null }));
+    let turns = read(json!({ "resource": format!("session/{SESSION}"), "limit": 1 })).await?;
+    assert_eq!(turns["turns"].as_array().map(Vec::len), Some(1));
+    assert_eq!(turns["turns"][0]["user"], json!(["现在进展到哪了？"]));
+    assert_eq!(
+        turns["turns"][0]["assistant"][0]
+            .as_str()
+            .map(|text| text.chars().count()),
+        Some(600),
+        "long answers are shortened"
+    );
+    // A worker's read tool has no sessions to read.
+    let worker = ReadTool::new(
+        store,
+        ReadScope::Worker {
+            ticket_id: "t001".to_owned(),
+        },
+    );
+    assert!(
+        worker
+            .run(&json!({ "resource": "sessions" }).to_string())
+            .await
+            .is_err()
+    );
+    Ok(())
 }
 
 struct Setup {

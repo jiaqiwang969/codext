@@ -2798,7 +2798,7 @@ impl ThreadRequestProcessor {
         Ok(ThreadApproveGuardianDeniedActionResponse {})
     }
 
-    async fn thread_list_response_inner(
+    pub(super) async fn thread_list_response_inner(
         &self,
         params: ThreadListParams,
     ) -> Result<ThreadListResponse, JSONRPCErrorError> {
@@ -3399,7 +3399,7 @@ impl ThreadRequestProcessor {
         Ok(())
     }
 
-    async fn thread_turns_list_response_inner(
+    pub(super) async fn thread_turns_list_response_inner(
         &self,
         params: ThreadTurnsListParams,
     ) -> Result<ThreadTurnsListResponse, JSONRPCErrorError> {

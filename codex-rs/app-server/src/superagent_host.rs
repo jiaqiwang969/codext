@@ -30,8 +30,11 @@ use codex_state::StateRuntime;
 use codex_superagent_extension::BoxFut;
 use codex_superagent_extension::host::DeliveryMode;
 use codex_superagent_extension::host::GoalStatus;
+use codex_superagent_extension::host::SessionBrief;
+use codex_superagent_extension::host::SessionPage;
 use codex_superagent_extension::host::SuperagentHost;
 use codex_superagent_extension::host::ThreadSpec;
+use codex_superagent_extension::host::TurnBrief;
 
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadStartParams;
@@ -126,6 +129,116 @@ impl AppServerSuperagentHost {
 }
 
 impl SuperagentHost for AppServerSuperagentHost {
+    fn list_sessions(
+        &self,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> BoxFut<'_, anyhow::Result<SessionPage>> {
+        Box::pin(async move {
+            let response = self
+                .processor()?
+                .list_sessions_internal(cursor, limit)
+                .await
+                .map_err(|err| anyhow::anyhow!("listing sessions failed: {}", err.message))?;
+            let value = serde_json::to_value(&response)?;
+            let text = |value: &JsonValue, key: &str| {
+                value
+                    .get(key)
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_owned)
+            };
+            let sessions = value
+                .get("data")
+                .and_then(JsonValue::as_array)
+                .into_iter()
+                .flatten()
+                .map(|thread| SessionBrief {
+                    id: text(thread, "id").unwrap_or_default(),
+                    name: text(thread, "name"),
+                    preview: text(thread, "preview").unwrap_or_default(),
+                    cwd: text(thread, "cwd").unwrap_or_default(),
+                    status: thread
+                        .get("status")
+                        .and_then(|status| text(status, "type"))
+                        .unwrap_or_default(),
+                    updated_at: thread.get("updatedAt").and_then(JsonValue::as_i64),
+                    account_profile: thread
+                        .get("extra")
+                        .and_then(|extra| text(extra, "accountProfile")),
+                })
+                .collect();
+            Ok(SessionPage {
+                sessions,
+                next_cursor: text(&value, "nextCursor"),
+            })
+        })
+    }
+
+    fn session_turns(
+        &self,
+        thread: ThreadId,
+        limit: u32,
+    ) -> BoxFut<'_, anyhow::Result<Vec<TurnBrief>>> {
+        Box::pin(async move {
+            let response = self
+                .processor()?
+                .session_turns_internal(thread.to_string(), limit)
+                .await
+                .map_err(|err| {
+                    anyhow::anyhow!("reading turns of {thread} failed: {}", err.message)
+                })?;
+            let value = serde_json::to_value(&response)?;
+            let turns = value
+                .get("data")
+                .and_then(JsonValue::as_array)
+                .into_iter()
+                .flatten()
+                .map(|turn| {
+                    let mut brief = TurnBrief {
+                        id: turn
+                            .get("id")
+                            .and_then(JsonValue::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        status: turn
+                            .get("status")
+                            .and_then(JsonValue::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        ..TurnBrief::default()
+                    };
+                    for item in turn
+                        .get("items")
+                        .and_then(JsonValue::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
+                        match item.get("type").and_then(JsonValue::as_str) {
+                            Some("userMessage") => brief.user.extend(
+                                item.get("content")
+                                    .and_then(JsonValue::as_array)
+                                    .into_iter()
+                                    .flatten()
+                                    .filter_map(|input| {
+                                        input.get("text").and_then(JsonValue::as_str)
+                                    })
+                                    .map(str::to_owned),
+                            ),
+                            Some("agentMessage") => brief.assistant.extend(
+                                item.get("text")
+                                    .and_then(JsonValue::as_str)
+                                    .map(str::to_owned),
+                            ),
+                            _ => {}
+                        }
+                    }
+                    brief
+                })
+                .collect();
+            Ok(turns)
+        })
+    }
+
     fn queued(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<Vec<(String, String)>>> {
         Box::pin(async move {
             let Some(queue) = self.queue_service.as_ref() else {

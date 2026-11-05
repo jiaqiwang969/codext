@@ -9,6 +9,52 @@ use codex_protocol::mcp::ClientMcpExtensions;
 pub(crate) const SUPERAGENT_CONNECTION: ConnectionId = ConnectionId(u64::MAX - 1);
 
 impl ThreadRequestProcessor {
+    /// One page of persisted root sessions for the organization's Router, newest first. Listing
+    /// reads stored metadata only and loads no thread, so it cannot start automatic work.
+    pub(crate) async fn list_sessions_internal(
+        &self,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> Result<codex_app_server_protocol::ThreadListResponse, JSONRPCErrorError> {
+        self.thread_list_response_inner(ThreadListParams {
+            cursor,
+            limit: Some(limit),
+            excluded_thread_ids: None,
+            sort_key: None,
+            sort_direction: None,
+            model_providers: None,
+            source_kinds: None,
+            originators: None,
+            archived: Some(false),
+            section_id: None,
+            project_id: None,
+            cwd: None,
+            use_state_db_only: false,
+            search_term: None,
+            parent_thread_id: None,
+            ancestor_thread_id: None,
+            attached_to_thread_id: None,
+        })
+        .await
+    }
+
+    /// A session's latest turns, newest first, summarized, for the organization's Router. Read
+    /// from history without resuming the thread (a resume would wake its queue and Goal).
+    pub(crate) async fn session_turns_internal(
+        &self,
+        thread_id: String,
+        limit: u32,
+    ) -> Result<codex_app_server_protocol::ThreadTurnsListResponse, JSONRPCErrorError> {
+        self.thread_turns_list_response_inner(ThreadTurnsListParams {
+            thread_id,
+            cursor: None,
+            limit: Some(limit),
+            sort_direction: Some(SortDirection::Desc),
+            items_view: Some(TurnItemsView::Summary),
+        })
+        .await
+    }
+
     /// Starts a thread for the Superagent engine, as `thread/start` would for a client, and answers
     /// its id once it is up. The engine is not a client: the placeholder subscription the start
     /// registers is dropped, so the thread unloads like any other idle thread and the executor

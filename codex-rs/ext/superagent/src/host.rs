@@ -9,6 +9,7 @@
 use std::path::PathBuf;
 
 use codex_protocol::ThreadId;
+use serde::Serialize;
 
 use crate::BoxFut;
 
@@ -47,6 +48,37 @@ impl GoalStatus {
     pub fn exhausted(&self) -> bool {
         matches!(self, Self::BudgetLimited | Self::UsageLimited)
     }
+}
+
+/// A session as the Router's session index shows it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionBrief {
+    pub id: String,
+    pub name: Option<String>,
+    pub preview: String,
+    pub cwd: String,
+    pub status: String,
+    pub updated_at: Option<i64>,
+    pub account_profile: Option<String>,
+}
+
+/// One page of sessions, newest first, and where the next page starts.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionPage {
+    pub sessions: Vec<SessionBrief>,
+    pub next_cursor: Option<String>,
+}
+
+/// One turn of a session: what the person asked and what the assistant answered.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnBrief {
+    pub id: String,
+    pub status: String,
+    pub user: Vec<String>,
+    pub assistant: Vec<String>,
 }
 
 /// Drives threads through the host's normal admission, account, and lifecycle checks.
@@ -88,6 +120,25 @@ pub trait SuperagentHost: Send + Sync {
         text: String,
         mode: DeliveryMode,
     ) -> BoxFut<'_, anyhow::Result<()>>;
+    /// One page of the host's root sessions, newest first, read from stored metadata without
+    /// loading any thread. A host without a session store has none.
+    fn list_sessions(
+        &self,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> BoxFut<'_, anyhow::Result<SessionPage>> {
+        let _ = (cursor, limit);
+        Box::pin(async { Ok(SessionPage::default()) })
+    }
+    /// A session's latest turns, newest first, read from its history without resuming it.
+    fn session_turns(
+        &self,
+        thread: ThreadId,
+        limit: u32,
+    ) -> BoxFut<'_, anyhow::Result<Vec<TurnBrief>>> {
+        let _ = (thread, limit);
+        Box::pin(async { Ok(Vec::new()) })
+    }
     /// The items waiting in the thread's persistent queue, as (id, text), oldest first. A host
     /// without a persistent queue has none.
     fn queued(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<Vec<(String, String)>>> {
@@ -146,8 +197,10 @@ mod ledger {
 
     use super::DeliveryMode;
     use super::GoalStatus;
+    use super::SessionPage;
     use super::SuperagentHost;
     use super::ThreadSpec;
+    use super::TurnBrief;
     use crate::BoxFut;
 
     /// What the engine itself handed to threads, by text hash, so the intake never reads an engine
@@ -237,6 +290,22 @@ mod ledger {
         ) -> BoxFut<'_, anyhow::Result<()>> {
             self.ledger.note(&text);
             self.inner.deliver(thread, text, mode)
+        }
+
+        fn list_sessions(
+            &self,
+            cursor: Option<String>,
+            limit: u32,
+        ) -> BoxFut<'_, anyhow::Result<SessionPage>> {
+            self.inner.list_sessions(cursor, limit)
+        }
+
+        fn session_turns(
+            &self,
+            thread: ThreadId,
+            limit: u32,
+        ) -> BoxFut<'_, anyhow::Result<Vec<TurnBrief>>> {
+            self.inner.session_turns(thread, limit)
         }
 
         fn queued(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<Vec<(String, String)>>> {

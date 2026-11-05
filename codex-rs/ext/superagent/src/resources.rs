@@ -72,6 +72,16 @@ pub const RESOURCES: &[(&str, &str, bool)] = &[
         "one thread: its tickets and latest decisions, and its triggers, newest first",
         true,
     ),
+    (
+        "sessions",
+        "every root session of this Codext, newest first: id, name, preview, cwd, run status and account; read without loading any; next_resource pages older ones",
+        false,
+    ),
+    (
+        "session/<id>",
+        "one session's latest turns, newest first: what the person asked and what the assistant answered, shortened; read without resuming it",
+        false,
+    ),
     ("decisions", "decisions, newest first", false),
     ("decision/<id>", "one decision with its audit", false),
     (
