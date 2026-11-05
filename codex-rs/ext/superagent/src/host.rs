@@ -88,6 +88,21 @@ pub trait SuperagentHost: Send + Sync {
         text: String,
         mode: DeliveryMode,
     ) -> BoxFut<'_, anyhow::Result<()>>;
+    /// The items waiting in the thread's persistent queue, as (id, text), oldest first. A host
+    /// without a persistent queue has none.
+    fn queued(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<Vec<(String, String)>>> {
+        let _ = thread;
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    /// Removes one item from the thread's persistent queue; answers whether it was still there.
+    fn withdraw_queued(
+        &self,
+        thread: ThreadId,
+        item_id: String,
+    ) -> BoxFut<'_, anyhow::Result<bool>> {
+        let _ = (thread, item_id);
+        Box::pin(async { Ok(false) })
+    }
     /// Interrupts the current turn.
     fn interrupt(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<()>>;
     /// Ends the thread's background commands.
@@ -222,6 +237,18 @@ mod ledger {
         ) -> BoxFut<'_, anyhow::Result<()>> {
             self.ledger.note(&text);
             self.inner.deliver(thread, text, mode)
+        }
+
+        fn queued(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<Vec<(String, String)>>> {
+            self.inner.queued(thread)
+        }
+
+        fn withdraw_queued(
+            &self,
+            thread: ThreadId,
+            item_id: String,
+        ) -> BoxFut<'_, anyhow::Result<bool>> {
+            self.inner.withdraw_queued(thread, item_id)
         }
 
         fn interrupt(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<()>> {

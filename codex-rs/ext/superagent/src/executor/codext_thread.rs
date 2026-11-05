@@ -490,6 +490,16 @@ impl CodextThreadExecutor {
         if self.told_of_inflight(ticket_id, inflight).await? {
             return Ok(false);
         }
+        // What the engine queued for this thread must not run once the ticket waits for a
+        // person: the queue would start it at the thread's next idle (G02). A person's own queued
+        // messages stay.
+        if let Ok(thread) = ThreadId::from_string(&inflight.thread_id) {
+            for (item_id, text) in self.inner.host.queued(thread).await? {
+                if crate::intake::engine_delivery(&text) {
+                    self.inner.host.withdraw_queued(thread, item_id).await?;
+                }
+            }
+        }
         let report = WorkerReport {
             state: ReportState::Blocked,
             summary: format!(

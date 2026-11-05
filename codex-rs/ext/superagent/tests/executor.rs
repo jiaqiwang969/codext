@@ -64,6 +64,8 @@ struct FakeHost {
     /// Every delivered text in full (the calls keep only the first line).
     texts: Mutex<Vec<String>>,
     fail_deliver: AtomicBool,
+    /// The thread's persistent queue: (id, text), oldest first.
+    queue: Mutex<Vec<(String, String)>>,
 }
 
 impl FakeHost {
@@ -132,6 +134,24 @@ impl SuperagentHost for FakeHost {
             }
             Ok(())
         })
+    }
+
+    fn queued(&self, _thread: ThreadId) -> BoxFut<'_, anyhow::Result<Vec<(String, String)>>> {
+        let items = self.queue.lock().unwrap().clone();
+        Box::pin(async move { Ok(items) })
+    }
+
+    fn withdraw_queued(
+        &self,
+        _thread: ThreadId,
+        item_id: String,
+    ) -> BoxFut<'_, anyhow::Result<bool>> {
+        self.push(format!("withdraw_queued:{item_id}"));
+        let mut queue = self.queue.lock().unwrap();
+        let before = queue.len();
+        queue.retain(|(id, _)| *id != item_id);
+        let removed = queue.len() < before;
+        Box::pin(async move { Ok(removed) })
     }
 
     fn interrupt(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<()>> {
@@ -694,8 +714,21 @@ async fn never_replays_a_delivery_that_was_in_flight() -> anyhow::Result<()> {
     launch(&s, &s.executor, &s.effects, &t).await?;
     let thread = thread_of(&s, "t017").await?;
     assert!(s.executor.inflight_for(&thread).await?.is_some());
+    // The queue still holds the engine's delivery and a message the person queued themself.
+    *s.host.queue.lock().unwrap() = vec![
+        (
+            "q-engine".to_owned(),
+            "工单 t017：fix t017\n授权范围：fix t017".to_owned(),
+        ),
+        ("q-person".to_owned(), "顺便看一下日志".to_owned()),
+    ];
     // The service restarts while the delivery is in flight.
     let (_effects, executor) = restart(&s).await?;
+    assert_eq!(
+        s.host.queue.lock().unwrap().clone(),
+        vec![("q-person".to_owned(), "顺便看一下日志".to_owned())],
+        "the engine's queued delivery is withdrawn; the person's message stays"
+    );
     assert!(
         executor.inflight_for(&thread).await?.is_some(),
         "the row stays for the person to inspect"

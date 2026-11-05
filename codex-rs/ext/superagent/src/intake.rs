@@ -50,7 +50,25 @@ const ENGINE_LABELS: &[&str] = &[
 
 pub fn engine_delivery(text: &str) -> bool {
     let text = text.trim_start();
-    ENGINE_LABELS.iter().any(|label| text.starts_with(label))
+    ENGINE_LABELS.iter().any(|label| text.starts_with(label)) || assignment_card(text)
+}
+
+/// A worker's first assignment (`executor::codext_thread` compose): `工单 <name>：<title>`, then
+/// its `授权范围：` line. A person rarely writes that shape, and a queued one survives a restart.
+fn assignment_card(text: &str) -> bool {
+    let mut lines = text.lines();
+    let Some((name, _title)) = lines
+        .next()
+        .and_then(|line| line.strip_prefix("工单 "))
+        .and_then(|head| head.split_once('：'))
+    else {
+        return false;
+    };
+    !name.is_empty()
+        && !name.contains(char::is_whitespace)
+        && lines
+            .next()
+            .is_some_and(|line| line.starts_with("授权范围："))
 }
 
 pub struct SuperagentIntake {

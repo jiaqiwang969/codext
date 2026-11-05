@@ -126,6 +126,45 @@ impl AppServerSuperagentHost {
 }
 
 impl SuperagentHost for AppServerSuperagentHost {
+    fn queued(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<Vec<(String, String)>>> {
+        Box::pin(async move {
+            let Some(queue) = self.queue_service.as_ref() else {
+                return Ok(Vec::new());
+            };
+            let items = queue.list(thread).await?;
+            Ok(items
+                .into_iter()
+                .map(|item| {
+                    let text = match item.input {
+                        TurnInput::UserInput { content, .. } => content
+                            .into_iter()
+                            .filter_map(|input| match input {
+                                UserInput::Text { text, .. } => Some(text),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                        _ => String::new(),
+                    };
+                    (item.id, text)
+                })
+                .collect())
+        })
+    }
+
+    fn withdraw_queued(
+        &self,
+        thread: ThreadId,
+        item_id: String,
+    ) -> BoxFut<'_, anyhow::Result<bool>> {
+        Box::pin(async move {
+            let Some(queue) = self.queue_service.as_ref() else {
+                return Ok(false);
+            };
+            Ok(queue.delete(thread, item_id).await?)
+        })
+    }
+
     fn start_thread(&self, spec: ThreadSpec) -> BoxFut<'_, anyhow::Result<ThreadId>> {
         Box::pin(async move {
             let ThreadSpec {
