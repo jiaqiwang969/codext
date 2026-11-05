@@ -1,6 +1,8 @@
 //! The judgment after each driven step: the engineering ontology's `project route-audit` on the
-//! goal's Project workspace (`<project>/.engineering`). The workspace HEAD names the current
-//! commit, and the commit names the Project record and the route anchor the audit reads.
+//! goal's Project workspace (`<project>/.engineering`). With a committed workspace, its HEAD names
+//! the current commit, and the commit names the Project record and the route anchor the audit
+//! reads. Without one, the audit reads the workspace's `route-anchor.json` and its latest Project
+//! record (`project-rN.json`, else `project.json`), the form goal anchoring §8 describes.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -9,16 +11,41 @@ use serde_json::Value;
 
 use crate::BoxFut;
 
-/// The Project record and the route anchor of a workspace's current commit, relative to the
-/// workspace.
+/// The Project record and the route anchor the audit reads, relative to the workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Workspace {
     pub project: String,
     pub anchor: String,
+    /// Whether they come from a committed workspace (else from the plain files).
+    pub committed: bool,
 }
 
-/// Reads the current commit of the workspace at `home`.
+/// The current commit of the workspace at `home`, else its plain anchor and Project record.
 pub fn workspace(home: &Path) -> anyhow::Result<Workspace> {
+    if !home.join("HEAD.json").exists() && home.join("route-anchor.json").exists() {
+        let mut revisions: Vec<(u64, String)> = std::fs::read_dir(home)?
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let name = entry.file_name().into_string().ok()?;
+                let revision = name.strip_prefix("project-r")?.strip_suffix(".json")?;
+                Some((revision.parse().ok()?, name))
+            })
+            .collect();
+        revisions.sort();
+        let project = match revisions.pop() {
+            Some((_, name)) => name,
+            None if home.join("project.json").exists() => "project.json".to_owned(),
+            None => anyhow::bail!(
+                "{} 有 route-anchor.json，但没有 Project 记录",
+                home.display()
+            ),
+        };
+        return Ok(Workspace {
+            project,
+            anchor: "route-anchor.json".to_owned(),
+            committed: false,
+        });
+    }
     let read = |path: &Path| -> anyhow::Result<Value> {
         let text = std::fs::read_to_string(path)
             .map_err(|err| anyhow::anyhow!("读不到 {}：{err}", path.display()))?;
@@ -40,7 +67,11 @@ pub fn workspace(home: &Path) -> anyhow::Result<Workspace> {
     let project = path_of("project").ok_or_else(|| anyhow::anyhow!("当前提交没有 Project 记录"))?;
     let anchor =
         path_of("anchor").ok_or_else(|| anyhow::anyhow!("当前提交没有锚定记录（route-anchor）"))?;
-    Ok(Workspace { project, anchor })
+    Ok(Workspace {
+        project,
+        anchor,
+        committed: true,
+    })
 }
 
 /// What `route-audit` answered.

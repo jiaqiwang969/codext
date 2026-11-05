@@ -503,6 +503,33 @@ async fn start_refuses_a_project_without_a_committed_anchor_and_a_second_start()
 }
 
 #[test]
+fn without_a_commit_the_plain_anchor_and_the_latest_project_record_are_read() -> anyhow::Result<()>
+{
+    let dir = TempDir::new()?;
+    let home = dir.path();
+    assert!(codex_superagent_extension::drive::workspace(home).is_err());
+    std::fs::write(home.join("route-anchor.json"), "{}")?;
+    std::fs::write(home.join("project.json"), "{}")?;
+    let plain = codex_superagent_extension::drive::workspace(home)?;
+    assert_eq!(
+        (
+            plain.project.as_str(),
+            plain.anchor.as_str(),
+            plain.committed
+        ),
+        ("project.json", "route-anchor.json", false)
+    );
+    for name in ["project-r2.json", "project-r10.json"] {
+        std::fs::write(home.join(name), "{}")?;
+    }
+    assert_eq!(
+        codex_superagent_extension::drive::workspace(home)?.project,
+        "project-r10.json"
+    );
+    Ok(())
+}
+
+#[test]
 fn an_audit_report_reads_as_its_delivery_scope() -> anyhow::Result<()> {
     let report = json!({
         "schema": "oev2.route-audit/2",

@@ -110,7 +110,7 @@ pub fn compose(
         "要求：
 1. 开始前按工程本体 goal-anchoring §2 写一行阶段声明：本阶段对象与根对象的关系、推进哪项验收、预期得到什么。
 2. 只做推进 {id} 的工作；不扩大范围，不改其他项目；需要推送、发布、删除或对外发消息时，先停下来问。
-3. 结束前把本阶段回填到 route-anchor（stages、验收项 status、decisions、evidence），并提交工作区（project workspace commit）。没有回填，这一步算没有推进。
+3. 结束前把本阶段回填到 route-anchor（stages、验收项 status、decisions、evidence）：有工作区提交的项目用 project workspace commit 提交，没有的直接更新 .engineering 里的 route-anchor.json 和 Project 记录。没有回填，这一步算没有推进。
 4. 需要用户决定时，写出一个具体问题，然后结束本轮。"
     ));
     text
