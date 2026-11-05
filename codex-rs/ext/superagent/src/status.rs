@@ -48,6 +48,8 @@ pub struct Status {
     pub started: bool,
     /// The registered PM thread ids, the first being the primary PM.
     pub pm_threads: Vec<String>,
+    /// The Router's level: `observe` or `drive` (`router.rs`).
+    pub router_mode: &'static str,
     /// Every part's health by name: `runtime`, each effect kind, `models` and whatever else claims one.
     pub health: BTreeMap<String, Health>,
     /// Per effect kind: rows waiting, and rows that failed at least once.
@@ -235,6 +237,7 @@ pub async fn status_with(
         at: iso(now_ms),
         started: runtime.is_some(),
         pm_threads,
+        router_mode: service.router_mode().name(),
         health,
         effects,
         tickets,

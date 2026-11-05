@@ -20,8 +20,9 @@ impl ThreadRequestProcessor {
             cursor,
             limit: Some(limit),
             excluded_thread_ids: None,
-            sort_key: None,
-            sort_direction: None,
+            // Most recently active first: the Router's index is about what is moving.
+            sort_key: Some(ThreadSortKey::UpdatedAt),
+            sort_direction: Some(SortDirection::Desc),
             model_providers: None,
             source_kinds: None,
             originators: None,

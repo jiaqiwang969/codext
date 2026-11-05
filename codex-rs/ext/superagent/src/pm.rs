@@ -34,6 +34,7 @@ use crate::effects::Effects;
 use crate::effects::HandlerOptions;
 use crate::host::DeliveryMode;
 use crate::host::SuperagentHost;
+use crate::router::RouterMode;
 use crate::store::Store;
 use crate::tools::pm::PmTool;
 use crate::tools::pm::PmToolKind;
@@ -451,7 +452,8 @@ pub fn pm_tools(
     tools
 }
 
-/// The extension contribution: PM threads get the PM tools, other threads nothing from here.
+/// The extension contribution: PM threads get the PM tools (only `superagent_read` while the
+/// Router observes), other threads nothing from here.
 pub struct PmExtension {
     service: Arc<SuperagentService>,
 }
@@ -474,6 +476,13 @@ impl ToolContributor for PmExtension {
         if !runtime.pm_threads.is_pm(thread_store.level_id()) {
             return Vec::new();
         }
-        pm_tools(&runtime)
+        match self.service.router_mode() {
+            // The observing Router reads; nothing it can call sends or opens work.
+            RouterMode::Observe => vec![Arc::new(ReadTool::for_pm(
+                runtime.store.clone(),
+                Arc::clone(&runtime.host),
+            ))],
+            RouterMode::Drive => pm_tools(&runtime),
+        }
     }
 }

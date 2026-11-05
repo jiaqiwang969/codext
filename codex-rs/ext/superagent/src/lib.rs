@@ -35,6 +35,7 @@ pub mod pm;
 pub mod pm_threads;
 pub mod recovery;
 pub mod resources;
+pub mod router;
 pub mod status;
 pub mod store;
 pub mod tools;
@@ -407,6 +408,11 @@ impl SuperagentService {
         &self.pm_threads
     }
 
+    /// The Router's level, read from `superagent/router-mode` on each use (`router.rs`).
+    pub fn router_mode(&self) -> router::RouterMode {
+        router::RouterMode::read(&self.dir)
+    }
+
     /// Whether the organization drives this thread: a PM thread, or the worker thread of a ticket
     /// that has not ended. Codext's own automatic drivers (daemon recovery, Goal continuation)
     /// leave such threads to the engine's reconciliation. A failed lookup answers true, so an
@@ -460,8 +466,8 @@ pub(crate) fn executor_root(dir: &Path) -> PathBuf {
         .unwrap_or_else(|| dir.to_path_buf())
 }
 
-/// Installs the extension: the intake that records the user's turns, the PM's tools on PM
-/// threads, the worker tools on worker threads and the turn-lifecycle feed of the executor. The
+/// Installs the extension: the intake that records the user's turns, the PM's tools and the
+/// Router's context on PM threads, the worker tools on worker threads and the turn-lifecycle feed of the executor. The
 /// host supplies its `SuperagentHost`, then calls `start_in_background`.
 pub fn install<C>(registry: &mut ExtensionRegistryBuilder<C>, service: Arc<SuperagentService>)
 where
@@ -470,6 +476,7 @@ where
     registry.turn_input_contributor(Arc::new(intake::SuperagentIntake::new(&service)));
     registry.automatic_turn_arbiter(Arc::new(arbiter::SuperagentArbiter::new(&service)));
     registry.tool_contributor(Arc::new(pm::PmExtension::new(Arc::clone(&service))));
+    registry.prompt_contributor(Arc::new(router::RouterContext::new(&service)));
     let lookup = Arc::new(move || {
         service
             .runtime()
