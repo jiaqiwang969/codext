@@ -125,9 +125,10 @@ pub trait SuperagentHost: Send + Sync {
         text: String,
         mode: DeliveryMode,
     ) -> BoxFut<'_, anyhow::Result<()>>;
-    /// Starts a drive step on an idle session: a new turn under the drive's own sandbox (writes
-    /// inside the session's working directory, network allowed, no approvals) and the `drive`
-    /// trigger, whatever the session ran with before. A host without per-turn settings steers it.
+    /// Starts a drive step on an idle session: a new turn with the drive's own settings (full
+    /// access and no approvals, as the person decided, so the worker can open applications and
+    /// browsers) and the `drive` trigger, whatever the session ran with before. A host without
+    /// per-turn settings steers it.
     fn start_step(&self, thread: ThreadId, text: String) -> BoxFut<'_, anyhow::Result<()>> {
         self.deliver(thread, text, DeliveryMode::Steer)
     }

@@ -18,10 +18,11 @@ use super::DriveService;
 const RULES_ID: &str = "superagent_driven";
 const RULES_MARKERS: (&str, &str) = ("<superagent_driven>", "</superagent_driven>");
 /// Told again when this text changes.
-const VERSION: &str = "1";
+const VERSION: &str = "2";
 
 const RULES: &str = "\
 这个会话由总 Router 代用户推进：每轮开头的话来自 Router，它转述用户的要求和反馈。
+- 回合没有沙箱：可以开软件、开浏览器、联网。只改当前文件夹里的东西；不碰 ~/.codex、别的项目和技能目录；要推送、发布、删除或对外发消息，先在结论里问用户。
 - 先确认环境：这里能用什么运行和检查结果；不能用的换个办法自己验证，能自己做的检查不推给用户。
 - 在给定的范围内连续做完，不要每做一点就停下来问。
 - 每轮结束时先说结论：做了什么、没做到什么、凭什么（怎么检查的）、卡在哪；说人话，不超过 300 字。

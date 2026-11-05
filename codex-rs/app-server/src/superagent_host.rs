@@ -490,13 +490,10 @@ impl SuperagentHost for AppServerSuperagentHost {
             // what its turn runs under.
             self.resume_thread(thread, None).await?;
             let mut request = TurnInputRequest::new(Self::user_input(text));
+            // Full access, as the person decided on 2026-11-05: the worker may open applications
+            // and browsers; staying inside its folder is a rule it is told, not a sandbox.
             request.thread_settings.sandbox_policy =
-                Some(codex_protocol::protocol::SandboxPolicy::WorkspaceWrite {
-                    writable_roots: Vec::new(),
-                    network_access: true,
-                    exclude_tmpdir_env_var: false,
-                    exclude_slash_tmp: false,
-                });
+                Some(codex_protocol::protocol::SandboxPolicy::DangerFullAccess);
             request.thread_settings.approval_policy =
                 Some(codex_protocol::protocol::AskForApproval::Never);
             request.start.turn_trigger = Some("drive".to_owned());
