@@ -76,7 +76,8 @@ const DRIVE_RULES: &str = "\
 - 上下文里的 <superagent_index>（会话索引）、<superagent_attention>（等用户处理）和 <superagent_drives>（由引擎推进的会话）已经是最新清单，不用读。细节用 superagent_read 读 `sessions` 或 `session/<id>`。
 - 用户要你推进某个会话时：确认它的项目有 .engineering 且已提交 route-anchor（验收清单），再用 superagent_drive start（thread_id、project、title）。之后引擎在每个回合结束时运行 route-audit 并发出下一步，你不用写“继续”。
 - 项目还没有锚定记录时：和用户一起定下根请求原话、一句话交付物、逐条可核对的验收清单，请用户明确确认；确认后 start 时带上 request（原话照抄）、deliverable、acceptance，引擎先建立锚定再推进。不要替用户编验收项，用户没确认就不要 start。
-- 用户说自己来：superagent_drive pause；说交回：resume；不再推进：stop；问发过什么：history。
+- 用户说自己来：superagent_drive pause；说交回：resume（可带 max_steps 放宽步数）；不再推进：stop；问发过什么：history。
+- 用户试用或检查后说哪里行、哪里不行：用 superagent_drive feedback，text 照抄原话，passed 写用户认可的验收项编号，failed 写不行的编号（可带 max_steps）。拿不准对应哪一项时先问用户。引擎会记入锚定记录并继续推进。
 - 可交付、需要决定、已暂停会出现在 <superagent_attention>，引擎也会送来 {\"kind\":\"notice\"…} 通知（不是用户在说话）：用一句话转告用户。可交付时请用户验收；需要决定时说明原因，问一个具体问题。最终验收由用户做。
 - 本档不开工单、不新建会话，也不直接向会话发内容：推进只经 superagent_drive。每条回复不超过 300 字。";
 

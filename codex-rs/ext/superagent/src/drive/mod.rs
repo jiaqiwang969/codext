@@ -11,6 +11,7 @@
 mod anchor;
 mod audit;
 mod draft;
+mod feedback;
 mod lifecycle;
 
 use std::path::PathBuf;
@@ -32,6 +33,7 @@ pub use draft::Focus;
 pub use draft::STEP_LABEL;
 pub use draft::compose;
 pub use draft::focus;
+pub use feedback::Feedback;
 pub use lifecycle::DriveLifecycle;
 
 use crate::core::now_iso;
@@ -347,6 +349,56 @@ impl DriveService {
             self.schedule(thread_id).await?;
         }
         Ok(record)
+    }
+
+    /// The person's acceptance feedback: written into the anchor (`feedback.rs`), kept as a note
+    /// for the next step, and the drive goes on (from a stop too: the person has decided).
+    pub async fn feedback(
+        &self,
+        thread_id: &str,
+        feedback: Feedback,
+    ) -> anyhow::Result<Option<DriveRecord>> {
+        let Some(record) = self.record(thread_id).await? else {
+            return Ok(None);
+        };
+        let request = feedback::record(&record.project_home, &feedback)?;
+        let list = |ids: &[String]| {
+            if ids.is_empty() {
+                "无".to_owned()
+            } else {
+                ids.join("、")
+            }
+        };
+        let note = format!(
+            "用户亲自验收（已记入锚定记录 {request}）：通过 {}；没通过 {}。原话：{}。通过的项把用户的验收登记为证据和决定后关闭；没通过的项按原话修好并重新验证。",
+            list(&feedback.passed),
+            list(&feedback.failed),
+            feedback.text.trim()
+        );
+        let record = self
+            .change(thread_id, |record| {
+                record.notes.push(note);
+                if record.notes.len() > NOTES {
+                    record.notes.remove(0);
+                }
+                record.state = DriveState::Driving;
+                record.unchanged = 0;
+                record.clone()
+            })
+            .await?;
+        if record.is_some() {
+            self.schedule(thread_id).await?;
+        }
+        Ok(record)
+    }
+
+    /// Raises (or lowers) the most steps the drive may send; never below the steps sent.
+    pub async fn set_max_steps(&self, thread_id: &str, max_steps: u32) -> anyhow::Result<()> {
+        self.change(thread_id, |record| {
+            record.max_steps = max_steps.max(record.steps);
+        })
+        .await
+        .map(drop)
     }
 
     /// Releases the session: the record goes and so do the steps still waiting in its queue.

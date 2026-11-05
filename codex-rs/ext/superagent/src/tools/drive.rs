@@ -25,6 +25,7 @@ use crate::cards::truncate_chars;
 use crate::drive::DriveRecord;
 use crate::drive::DriveService;
 use crate::drive::DriveStart;
+use crate::drive::Feedback;
 use crate::drive::Goal;
 
 pub const DRIVE_TOOL: &str = "superagent_drive";
@@ -38,6 +39,7 @@ enum Action {
     Resume,
     Stop,
     History,
+    Feedback,
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,6 +58,12 @@ struct DriveArgs {
     deliverable: Option<String>,
     #[serde(default)]
     acceptance: Option<Vec<String>>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    passed: Option<Vec<String>>,
+    #[serde(default)]
+    failed: Option<Vec<String>>,
 }
 
 type Lookup = Arc<dyn Fn() -> Option<DriveService> + Send + Sync>;
@@ -74,8 +82,8 @@ impl DriveTool {
             (
                 "action".to_owned(),
                 JsonSchema::string_enum(
-                    vec![json!("start"), json!("pause"), json!("resume"), json!("stop"), json!("history")],
-                    Some("start: drive a session toward the goal anchored in its Project; pause: the person takes the session over; resume: hand it back, the next judgment reads the Project and the person's notes again; stop: release it; history: the steps sent so far with their judgments.".to_owned()),
+                    vec![json!("start"), json!("pause"), json!("resume"), json!("stop"), json!("history"), json!("feedback")],
+                    Some("start: drive a session toward the goal anchored in its Project; pause: the person takes the session over; resume: hand it back, the next judgment reads the Project and the person's notes again; stop: release it; history: the steps sent so far with their judgments; feedback: the person tried the result and says which acceptance items passed and which did not, written into the anchor, then the drive goes on.".to_owned()),
                 ),
             ),
             ("thread_id".to_owned(), JsonSchema::string(Some("The session.".to_owned()))),
@@ -90,6 +98,24 @@ impl DriveTool {
             (
                 "max_steps".to_owned(),
                 JsonSchema::integer(Some("start: the most steps to send before pausing; 20 by default.".to_owned())),
+            ),
+            (
+                "text".to_owned(),
+                JsonSchema::string(Some("feedback: the person's words about what they tried, verbatim.".to_owned())),
+            ),
+            (
+                "passed".to_owned(),
+                JsonSchema::array(
+                    JsonSchema::string(None),
+                    Some("feedback: acceptance item ids (A1, ...) the person found met.".to_owned()),
+                ),
+            ),
+            (
+                "failed".to_owned(),
+                JsonSchema::array(
+                    JsonSchema::string(None),
+                    Some("feedback: acceptance item ids the person found not met; they are reopened.".to_owned()),
+                ),
             ),
             (
                 "request".to_owned(),
@@ -188,12 +214,39 @@ impl DriveTool {
                 .map_err(refused)?
                 .map(answer)
                 .ok_or_else(missing),
-            Action::Resume => drive
-                .resume(&args.thread_id)
-                .await
-                .map_err(refused)?
-                .map(answer)
-                .ok_or_else(missing),
+            Action::Resume => {
+                if let Some(max_steps) = args.max_steps {
+                    drive
+                        .set_max_steps(&args.thread_id, max_steps)
+                        .await
+                        .map_err(refused)?;
+                }
+                drive
+                    .resume(&args.thread_id)
+                    .await
+                    .map_err(refused)?
+                    .map(answer)
+                    .ok_or_else(missing)
+            }
+            Action::Feedback => {
+                let feedback = Feedback {
+                    text: args.text.unwrap_or_default(),
+                    passed: args.passed.unwrap_or_default(),
+                    failed: args.failed.unwrap_or_default(),
+                };
+                if let Some(max_steps) = args.max_steps {
+                    drive
+                        .set_max_steps(&args.thread_id, max_steps)
+                        .await
+                        .map_err(refused)?;
+                }
+                drive
+                    .feedback(&args.thread_id, feedback)
+                    .await
+                    .map_err(refused)?
+                    .map(answer)
+                    .ok_or_else(missing)
+            }
             Action::Stop => drive
                 .stop(&args.thread_id)
                 .await

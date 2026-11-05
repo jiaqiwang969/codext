@@ -19,6 +19,7 @@ use codex_superagent_extension::drive::DriveRecord;
 use codex_superagent_extension::drive::DriveService;
 use codex_superagent_extension::drive::DriveStart;
 use codex_superagent_extension::drive::DriveState;
+use codex_superagent_extension::drive::Feedback;
 use codex_superagent_extension::drive::Goal;
 use codex_superagent_extension::drive::Judge;
 use codex_superagent_extension::host::DeliveryMode;
@@ -706,5 +707,81 @@ async fn a_confirmed_goal_anchors_a_project_that_has_none() -> anyhow::Result<()
         .await?;
     let again = codex_superagent_extension::drive::Anchor::read(&home)?;
     assert_eq!(again.deliverable, "按零件号分好目录的图纸");
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_persons_feedback_reopens_items_and_the_drive_goes_on_with_it() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let work = TempDir::new()?;
+    let home = work.path().join("01-snake/.engineering");
+    let goal = Goal {
+        request: "建立一个项目，来做贪吃蛇的测试".to_owned(),
+        deliverable: "可试玩的贪吃蛇".to_owned(),
+        acceptance: vec!["方向键控制".to_owned(), "吃到食物变长加分".to_owned()],
+    };
+    s.drive
+        .start(THREAD, start(home.clone(), Some(goal)))
+        .await?;
+    // The worker closed A2 and recorded a stage; the judgment then drifted and stopped.
+    let path = home.join("route-anchor.json");
+    let mut anchor: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    anchor["acceptance"][1]["status"] = json!("closed");
+    anchor["stages"] = json!([{ "id": "S01", "object_id": "root", "relation": "root",
+        "relation_target": "root", "advances": ["A1"], "outcome": "no_progress" }]);
+    std::fs::write(&path, anchor.to_string())?;
+    s.judge.then(audit("drift", &[], &["A1"], "1"));
+    s.drive.step(THREAD).await?;
+    assert!(matches!(
+        s.record().await?.state,
+        DriveState::NeedsDecision { .. }
+    ));
+
+    let unknown = Feedback {
+        text: "x".to_owned(),
+        passed: vec!["A9".to_owned()],
+        failed: Vec::new(),
+    };
+    assert!(s.drive.feedback(THREAD, unknown).await.is_err());
+
+    let words = "方向键能用，但是吃不到东西，也没有积分";
+    let feedback = Feedback {
+        text: words.to_owned(),
+        passed: vec!["A1".to_owned()],
+        failed: vec!["A2".to_owned()],
+    };
+    s.drive.feedback(THREAD, feedback).await?;
+    s.drive.set_max_steps(THREAD, 8).await?;
+    let anchor: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    assert_eq!(
+        (
+            anchor["requests"][1].clone(),
+            anchor["acceptance"][1]["status"].clone(),
+            anchor["reviews"].clone(),
+        ),
+        (
+            json!({ "id": "U2", "kind": "correction", "text": words,
+                "source": "request-feedback-u2.txt", "affects": ["A2", "A1"] }),
+            json!("open"),
+            json!([{ "id": "R1", "after_stage": "S01", "source": "request-feedback-u2.txt" }]),
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("request-feedback-u2.txt"))?,
+        words
+    );
+    let record = s.record().await?;
+    assert_eq!((record.state, record.max_steps), (DriveState::Driving, 8));
+
+    // The next step goes after the item the person found failing, with their words.
+    s.judge.then(audit("anchored", &[], &["A1", "A2"], "2"));
+    s.drive.step(THREAD).await?;
+    let delivered = s.host.delivered();
+    let step = delivered.last().expect("a step");
+    assert!(step.contains("本步推进验收项 A2"), "{step}");
+    assert!(
+        step.contains("用户亲自验收（已记入锚定记录 U2）：通过 A1；没通过 A2"),
+        "{step}"
+    );
     Ok(())
 }
