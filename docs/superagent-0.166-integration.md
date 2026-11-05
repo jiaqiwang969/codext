@@ -3,10 +3,12 @@
 Updated 2026-11-04. This is the integration contract and work ledger. Source,
 candidate, and installed production versions are tracked separately.
 
-Latest user direction (2026-11-04): Dell has rebooted; resume the Dell work
-before discussing Agent command center integration. Source acquisition and the
-0.166 implementation have now resumed. Production task replay remains separate
-from candidate preparation.
+Latest user direction (2026-11-04): keep ATM stopped and move the design focus to
+Mac Agent command center integration, with one global Router across projects.
+The user requested written requirements, feedback, and research for expert review
+before implementation. See [the review packet](superagent-command-center-review.md).
+The Dell source acquisition and 0.166 candidate work below are completed migration
+records; they do not authorize production replay or implement the new Mac design.
 
 ## Source baselines and availability
 
