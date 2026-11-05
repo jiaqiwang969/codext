@@ -8,6 +8,7 @@
 //! restart neither repeats nor loses a step: a step is recorded as in flight before it is handed
 //! over and cleared when its turn starts; a recovered step that never started is not replayed.
 
+mod anchor;
 mod audit;
 mod draft;
 mod lifecycle;
@@ -20,6 +21,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
 
+pub use anchor::Goal;
 pub use audit::Anchor;
 pub use audit::Audit;
 pub use audit::Judge;
@@ -130,6 +132,19 @@ impl DriveRecord {
             self.thread_id, self.title, self.steps, self.max_steps
         )
     }
+}
+
+/// What a drive starts from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DriveStart {
+    /// The goal's Project workspace, `<project>/.engineering`.
+    pub project_home: PathBuf,
+    pub title: String,
+    /// The most steps to send before pausing; the default when absent.
+    pub max_steps: Option<u32>,
+    /// The goal the person confirmed, anchored when the project has no anchor yet; an existing
+    /// anchor is used as it is.
+    pub goal: Option<Goal>,
 }
 
 /// The drive side of the engine.
@@ -251,15 +266,21 @@ impl DriveService {
 
     /// Takes a session under drive toward the goal anchored in `project_home`; the first step is
     /// judged at once (or when the session's running turn ends).
-    pub async fn start(
-        &self,
-        thread_id: &str,
-        project_home: PathBuf,
-        title: String,
-        max_steps: Option<u32>,
-    ) -> anyhow::Result<DriveRecord> {
+    pub async fn start(&self, thread_id: &str, start: DriveStart) -> anyhow::Result<DriveRecord> {
         ThreadId::from_string(thread_id)
             .map_err(|err| anyhow::anyhow!("会话 id {thread_id} 无效：{err}"))?;
+        let DriveStart {
+            project_home,
+            title,
+            max_steps,
+            goal,
+        } = start;
+        // A project without an anchor gets one from the goal the person confirmed.
+        if let Some(goal) = &goal
+            && workspace(&project_home).is_err()
+        {
+            anchor::create(&project_home, goal)?;
+        }
         workspace(&project_home)?;
         let now = now_iso();
         let record = DriveRecord {

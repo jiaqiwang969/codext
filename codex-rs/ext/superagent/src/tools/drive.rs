@@ -24,6 +24,8 @@ use super::parse_arguments;
 use crate::cards::truncate_chars;
 use crate::drive::DriveRecord;
 use crate::drive::DriveService;
+use crate::drive::DriveStart;
+use crate::drive::Goal;
 
 pub const DRIVE_TOOL: &str = "superagent_drive";
 const PROMPT_CHARS: usize = 1_500;
@@ -48,6 +50,12 @@ struct DriveArgs {
     title: Option<String>,
     #[serde(default)]
     max_steps: Option<u32>,
+    #[serde(default)]
+    request: Option<String>,
+    #[serde(default)]
+    deliverable: Option<String>,
+    #[serde(default)]
+    acceptance: Option<Vec<String>>,
 }
 
 type Lookup = Arc<dyn Fn() -> Option<DriveService> + Send + Sync>;
@@ -82,6 +90,21 @@ impl DriveTool {
             (
                 "max_steps".to_owned(),
                 JsonSchema::integer(Some("start: the most steps to send before pausing; 20 by default.".to_owned())),
+            ),
+            (
+                "request".to_owned(),
+                JsonSchema::string(Some("start, for a project without a route anchor: the person's request, word for word.".to_owned())),
+            ),
+            (
+                "deliverable".to_owned(),
+                JsonSchema::string(Some("start, for a project without a route anchor: one sentence naming what is delivered.".to_owned())),
+            ),
+            (
+                "acceptance".to_owned(),
+                JsonSchema::array(
+                    JsonSchema::string(None),
+                    Some("start, for a project without a route anchor: the acceptance items the person confirmed, each one checkable; the engine anchors them before the first step.".to_owned()),
+                ),
             ),
         ]);
         ToolSpec::Function(ResponsesApiTool {
@@ -119,10 +142,13 @@ impl DriveTool {
                     ));
                 }
                 let project = PathBuf::from(project);
-                let home = if project.join(".engineering").is_dir() {
-                    project.join(".engineering")
-                } else {
+                let home = if project
+                    .file_name()
+                    .is_some_and(|name| name == ".engineering")
+                {
                     project
+                } else {
+                    project.join(".engineering")
                 };
                 let title = args
                     .title
@@ -131,8 +157,27 @@ impl DriveTool {
                     .filter(|title| !title.is_empty())
                     .unwrap_or("目标")
                     .to_owned();
+                let goal = match (args.request, args.deliverable, args.acceptance) {
+                    (Some(request), Some(deliverable), Some(acceptance)) => Some(Goal {
+                        request,
+                        deliverable,
+                        acceptance,
+                    }),
+                    (None, None, None) => None,
+                    _ => {
+                        return Err(FunctionCallError::RespondToModel(
+                            "建立锚定需要 request、deliverable、acceptance 三项一起给".to_owned(),
+                        ));
+                    }
+                };
+                let start = DriveStart {
+                    project_home: home,
+                    title,
+                    max_steps: args.max_steps,
+                    goal,
+                };
                 drive
-                    .start(&args.thread_id, home, title, args.max_steps)
+                    .start(&args.thread_id, start)
                     .await
                     .map(answer)
                     .map_err(refused)

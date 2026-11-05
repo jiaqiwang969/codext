@@ -17,7 +17,9 @@ use codex_superagent_extension::HealthBoard;
 use codex_superagent_extension::drive::Audit;
 use codex_superagent_extension::drive::DriveRecord;
 use codex_superagent_extension::drive::DriveService;
+use codex_superagent_extension::drive::DriveStart;
 use codex_superagent_extension::drive::DriveState;
+use codex_superagent_extension::drive::Goal;
 use codex_superagent_extension::drive::Judge;
 use codex_superagent_extension::host::DeliveryMode;
 use codex_superagent_extension::host::GoalStatus;
@@ -236,6 +238,15 @@ fn workspace(dir: &Path) -> anyhow::Result<PathBuf> {
     Ok(home)
 }
 
+fn start(project_home: PathBuf, goal: Option<Goal>) -> DriveStart {
+    DriveStart {
+        project_home,
+        title: "整理笔记".to_owned(),
+        max_steps: None,
+        goal,
+    }
+}
+
 struct Setup {
     _dir: TempDir,
     _work: TempDir,
@@ -277,12 +288,7 @@ async fn setup() -> anyhow::Result<Setup> {
 impl Setup {
     async fn start(&self) -> anyhow::Result<DriveRecord> {
         self.drive
-            .start(
-                THREAD,
-                self.home.clone(),
-                "整理笔记".to_owned(),
-                /*max_steps*/ None,
-            )
+            .start(THREAD, start(self.home.clone(), None))
             .await
     }
     async fn record(&self) -> anyhow::Result<DriveRecord> {
@@ -509,12 +515,7 @@ async fn start_refuses_a_project_without_a_committed_anchor_and_a_second_start()
     let bare = TempDir::new()?;
     let refused = s
         .drive
-        .start(
-            THREAD,
-            bare.path().to_path_buf(),
-            "x".to_owned(),
-            /*max_steps*/ None,
-        )
+        .start(THREAD, start(bare.path().to_path_buf(), None))
         .await;
     assert!(refused.is_err());
     s.start().await?;
@@ -605,9 +606,7 @@ async fn a_step_that_never_starts_is_withdrawn_and_the_drive_pauses() -> anyhow:
         std::time::Duration::ZERO,
     )
     .await?;
-    drive
-        .start(THREAD, home, "整理笔记".to_owned(), /*max_steps*/ None)
-        .await?;
+    drive.start(THREAD, start(home, None)).await?;
     judge.then(audit("anchored", &[], &["A1"], "1"));
     drive.step(THREAD).await?;
     *FakeHost::lock(&host.queue) = vec![("q1".to_owned(), host.delivered()[0].clone())];
@@ -637,5 +636,75 @@ async fn a_step_that_never_starts_is_withdrawn_and_the_drive_pauses() -> anyhow:
     );
     assert_eq!(FakeHost::lock(&host.queue).len(), 0);
     drop(dir);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_confirmed_goal_anchors_a_project_that_has_none() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let work = TempDir::new()?;
+    let home = work.path().join("231-cad-drawings/.engineering");
+    let goal = Goal {
+        request: "把图纸按零件号整理好".to_owned(),
+        deliverable: "按零件号分好目录的图纸".to_owned(),
+        acceptance: vec![
+            "每张图纸在其零件号目录下".to_owned(),
+            "目录名就是零件号".to_owned(),
+        ],
+    };
+    // Half a goal is refused before anything is written.
+    let partial = Goal {
+        acceptance: Vec::new(),
+        ..goal.clone()
+    };
+    assert!(
+        s.drive
+            .start(THREAD, start(home.clone(), Some(partial)))
+            .await
+            .is_err()
+    );
+    assert!(!home.join("route-anchor.json").exists());
+
+    s.drive
+        .start(THREAD, start(home.clone(), Some(goal.clone())))
+        .await?;
+    assert_eq!(
+        std::fs::read_to_string(home.join("request-root.txt"))?,
+        "把图纸按零件号整理好"
+    );
+    let anchor = codex_superagent_extension::drive::Anchor::read(&home)?;
+    assert_eq!(
+        (anchor.deliverable.as_str(), anchor.acceptance.clone()),
+        (
+            "按零件号分好目录的图纸",
+            vec![
+                (
+                    "A1".to_owned(),
+                    "每张图纸在其零件号目录下".to_owned(),
+                    "open".to_owned()
+                ),
+                (
+                    "A2".to_owned(),
+                    "目录名就是零件号".to_owned(),
+                    "open".to_owned()
+                ),
+            ]
+        )
+    );
+    let project: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join("project.json"))?)?;
+    assert_eq!(project["project_id"], json!("231-cad-drawings"));
+
+    // An existing anchor is used as it is, never rewritten.
+    s.drive.stop(THREAD).await?;
+    let other = Goal {
+        deliverable: "别的交付物".to_owned(),
+        ..goal
+    };
+    s.drive
+        .start(THREAD, start(home.clone(), Some(other)))
+        .await?;
+    let again = codex_superagent_extension::drive::Anchor::read(&home)?;
+    assert_eq!(again.deliverable, "按零件号分好目录的图纸");
     Ok(())
 }
