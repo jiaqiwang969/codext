@@ -151,7 +151,7 @@ pub fn report_spec() -> ToolSpec {
                 ("changes".to_owned(), strings("What changed, one line each.")),
                 ("tests_run".to_owned(), strings("The commands run and their results.")),
                 ("risks".to_owned(), strings("What could still be wrong.")),
-                ("evidence".to_owned(), strings("Paths under ~/org/pm-codext/evidence/<ticket>/.")),
+                ("evidence".to_owned(), strings("Paths of files that prove the result, inside the ticket's working directory.")),
                 ("question".to_owned(), JsonSchema::string(Some("A question a person must answer before the work can go on.".to_owned()))),
                 ("reply_to".to_owned(), JsonSchema::string(Some("The person's message the question replies to.".to_owned()))),
                 ("answers".to_owned(), strings("The people's questions this report answers, by message id.")),
@@ -231,7 +231,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for WorkerTool {
                     if args.state == ReportState::Ready {
                         if args.evidence.is_empty() {
                             return Err(FunctionCallError::RespondToModel(
-                                "ready 需要证据：先把证据写到 ~/org/pm-codext/evidence/<工单名>/ 下，再在 evidence 里给出路径。"
+                                "ready 需要证据：先把证据文件写在工单的工作目录里，再在 evidence 里给出路径。"
                                     .to_owned(),
                             ));
                         }

@@ -140,7 +140,7 @@ pub struct StatusPaths {
 }
 
 impl StatusPaths {
-    /// The A1 layout on dell under the org user's home.
+    /// The state files under the organization's root (`executor_root`).
     pub fn for_home(home: &Path) -> Self {
         Self {
             hook_errors: home.join("org/pm-codext/state/hooks-errors.log"),
@@ -149,17 +149,11 @@ impl StatusPaths {
     }
 }
 
-impl Default for StatusPaths {
-    fn default() -> Self {
-        Self::for_home(&crate::executor_root())
-    }
-}
-
 /// The status now, with the org's files in their usual place.
 pub async fn status(service: &SuperagentService) -> anyhow::Result<Status> {
     status_with(
         service,
-        &StatusPaths::default(),
+        &StatusPaths::for_home(&crate::executor_root(service.dir())),
         Utc::now().timestamp_millis(),
     )
     .await

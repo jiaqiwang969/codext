@@ -39,6 +39,7 @@ pub mod store;
 pub mod tools;
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -197,7 +198,7 @@ impl SuperagentService {
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
                             .clone()
-                            .unwrap_or_else(|| ExecutorConfig::for_home(&executor_root()));
+                            .unwrap_or_else(|| ExecutorConfig::for_home(&executor_root(&self.dir)));
                         // Test knob: run workers under another role file (a pre-flight with
                         // the production role untouched). Unset in the org's service unit.
                         let config = match std::env::var("CODEXT_SUPERAGENT_WORKER_ROLE") {
@@ -231,6 +232,19 @@ impl SuperagentService {
                                     .collect(),
                                 ..config
                             },
+                            _ => config,
+                        };
+                        // Without an explicit pool, workers run under the profile the daemon
+                        // was launched with (the account launchers set it).
+                        let config = match std::env::var("CODEX_ACCOUNT_PROFILE") {
+                            Ok(profile)
+                                if config.profiles.is_empty() && !profile.trim().is_empty() =>
+                            {
+                                ExecutorConfig {
+                                    profiles: vec![profile.trim().to_owned()],
+                                    ..config
+                                }
+                            }
                             _ => config,
                         };
                         let config = match std::env::var("CODEXT_SUPERAGENT_MAX_PER_PROFILE") {
@@ -436,12 +450,13 @@ impl SuperagentService {
     }
 }
 
-pub(crate) fn executor_root() -> PathBuf {
+/// The root of the organization's working files: `CODEXT_SUPERAGENT_ROOT`, else `dir` (the
+/// extension's directory under `CODEX_HOME`), so an install never writes into the user's home.
+pub(crate) fn executor_root(dir: &Path) -> PathBuf {
     std::env::var_os("CODEXT_SUPERAGENT_ROOT")
         .filter(|root| !root.is_empty())
-        .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/home/codext-org"))
+        .unwrap_or_else(|| dir.to_path_buf())
 }
 
 /// Installs the extension: the intake that records the user's turns, the PM's tools on PM

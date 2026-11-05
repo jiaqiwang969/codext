@@ -134,14 +134,15 @@ pub struct ExecutorConfig {
 pub const DEFAULT_TOKEN_BUDGET: i64 = 15_000_000;
 
 impl ExecutorConfig {
-    /// The A1 layout on dell under the org user's home.
+    /// The A1 layout under the organization's root (`executor_root`). There is no default
+    /// account pool: the launch profile or `CODEXT_SUPERAGENT_PROFILES` supplies it.
     pub fn for_home(home: &Path) -> Self {
         Self {
             repo: home.join("src/codext"),
             worktree_root: home.join("wt"),
             base_branch: "superagent/integration".to_owned(),
             create_worktrees: true,
-            profiles: vec!["JannLinegarA0k".to_owned(), "kalliesallerwu".to_owned()],
+            profiles: Vec::new(),
             max_per_profile: 3,
             max_workers: 6,
             max_per_pm: 4,
@@ -618,6 +619,14 @@ impl CodextThreadExecutor {
                     Some(account) => vec![account],
                     None => self.inner.config.profiles.clone(),
                 };
+                if pool.is_empty() {
+                    self.fail_ticket(
+                        ticket_id,
+                        "没有可供 worker 使用的账号：设置 CODEXT_SUPERAGENT_PROFILES，或用带账号的启动器启动 daemon",
+                    )
+                    .await?;
+                    return Ok(());
+                }
                 let Some(account) = accounts::choose(
                     &pool,
                     &self.running_by_profile(),
