@@ -45,6 +45,8 @@ pub const KIND_STEP: &str = "drive-step";
 /// The effect kind that delivers a notice to the Router (`pm.rs`).
 const NOTICE: &str = "notice";
 pub const DEFAULT_MAX_STEPS: u32 = 20;
+/// How long a handed-over step may wait for its turn to start.
+pub const STALL: std::time::Duration = std::time::Duration::from_secs(120);
 /// Judgments in a row that found the Project and the anchor unchanged before the drive stops.
 pub const UNCHANGED_LIMIT: u32 = 2;
 const HISTORY: usize = 20;
@@ -52,6 +54,16 @@ const NOTES: usize = 10;
 
 pub fn drive_key(thread_id: &str) -> String {
     format!("{KEY_PREFIX}{thread_id}")
+}
+
+/// Takes back a step that never reached its session: it no longer counts, and the next step
+/// sent is this one again.
+fn withdraw_step(record: &mut DriveRecord, step: u32) {
+    record.inflight = None;
+    if record.steps == step {
+        record.steps -= 1;
+        record.history.pop();
+    }
 }
 
 /// Who moves a driven session now.
@@ -96,6 +108,9 @@ pub struct DriveRecord {
     pub notes: Vec<String>,
     /// The step handed over whose turn has not started yet.
     pub inflight: Option<u32>,
+    /// The last step whose turn did start.
+    #[serde(default)]
+    pub started: Option<u32>,
     /// The latest steps, oldest first.
     pub history: Vec<Step>,
     pub since: String,
@@ -129,6 +144,8 @@ struct Inner {
     effects: Effects,
     host: Arc<dyn SuperagentHost>,
     judge: Arc<dyn Judge>,
+    /// How long a handed-over step may wait for its turn before the drive pauses.
+    stall: std::time::Duration,
     /// Serializes changes to the records, so a turn's end and a tool call never interleave.
     lock: tokio::sync::Mutex<()>,
 }
@@ -140,9 +157,11 @@ impl DriveService {
         effects: Effects,
         host: Arc<dyn SuperagentHost>,
         judge: Arc<dyn Judge>,
+        stall: std::time::Duration,
     ) -> anyhow::Result<Self> {
         let service = Self {
             inner: Arc::new(Inner {
+                stall,
                 store,
                 effects: effects.clone(),
                 host,
@@ -255,6 +274,7 @@ impl DriveService {
             digest: None,
             notes: Vec::new(),
             inflight: None,
+            started: None,
             history: Vec::new(),
             since: now.clone(),
             updated: now,
@@ -345,9 +365,13 @@ impl DriveService {
 
     /// A turn started on the session: the step in flight reached it.
     pub async fn turn_started(&self, thread_id: &str) -> anyhow::Result<()> {
-        self.change(thread_id, |record| record.inflight = None)
-            .await
-            .map(drop)
+        self.change(thread_id, |record| {
+            if let Some(step) = record.inflight.take() {
+                record.started = Some(step);
+            }
+        })
+        .await
+        .map(drop)
     }
 
     /// A turn ended: a driven session is judged next.
@@ -399,7 +423,14 @@ impl DriveService {
                     self.withdraw_steps(&record.thread_id).await?;
                     let reason =
                         format!("服务重启时第 {step} 步已交出但没有看到开始，没有自动重放");
-                    self.pause(&record.thread_id, &reason).await?;
+                    let state = DriveState::Paused {
+                        reason: reason.clone(),
+                    };
+                    self.change(&record.thread_id, |record| {
+                        withdraw_step(record, step);
+                        record.state = state;
+                    })
+                    .await?;
                     self.notify(
                         &record.thread_id,
                         &record.title,
@@ -426,17 +457,57 @@ impl DriveService {
         else {
             return Ok(());
         };
-        if record.state != DriveState::Driving || record.inflight.is_some() {
+        if record.state != DriveState::Driving {
             return Ok(());
         }
         let thread = ThreadId::from_string(thread_id)?;
+        if let Some(step) = record.inflight {
+            // Handed over and not started: wait, unless it has waited too long.
+            let handed = record
+                .history
+                .last()
+                .and_then(|last| chrono::DateTime::parse_from_rfc3339(&last.at).ok())
+                .map(|at| at.with_timezone(&chrono::Utc));
+            let stalled = handed.is_some_and(|at| {
+                chrono::Utc::now()
+                    .signed_duration_since(at)
+                    .to_std()
+                    .unwrap_or_default()
+                    >= self.inner.stall
+            });
+            if !stalled {
+                return Ok(());
+            }
+            let latest = self.inner.host.session_turns(thread, 1).await?;
+            if latest
+                .first()
+                .is_some_and(|turn| turn.status == "inProgress")
+            {
+                return Ok(());
+            }
+            self.withdraw_steps(thread_id).await?;
+            let paused = DriveState::Paused {
+                reason: format!("第 {step} 步交出后一直没有开始，已撤回；交回后重新判定"),
+            };
+            let state = paused.clone();
+            self.change_locked(thread_id, |record| {
+                withdraw_step(record, step);
+                record.state = state;
+            })
+            .await?;
+            return self.notify(thread_id, &record.title, &paused).await;
+        }
         let latest = self.inner.host.session_turns(thread, 1).await?;
         if let Some(turn) = latest.first() {
             if turn.status == "inProgress" {
                 // its end schedules the judgment again
                 return Ok(());
             }
-            if record.steps > 0 && turn.status != "completed" {
+            // Only the turn of the last step counts against it.
+            if record.steps > 0
+                && record.started == Some(record.steps)
+                && turn.status != "completed"
+            {
                 let reason = format!("第 {} 步没有正常结束（{}）", record.steps, turn.status);
                 return self.settle(&record, DriveState::Paused { reason }).await;
             }
@@ -542,10 +613,17 @@ impl DriveService {
             self.inner.host.resume_thread(thread, /*role*/ None).await?;
             self.inner
                 .host
-                .deliver(thread, prompt, DeliveryMode::Queue)
+                // The session is idle: start its turn now. The persistent queue would hold the
+                // step after an interrupted turn, and a handed-over session should move.
+                .deliver(thread, prompt, DeliveryMode::Steer)
                 .await
         }
         .await;
+        // Look again once the stall time has passed, in case the step never starts.
+        self.inner
+            .effects
+            .enqueue_after(KIND_STEP, thread_id, &json!({}), self.inner.stall)
+            .await?;
         if let Err(err) = delivered {
             let paused = DriveState::Paused {
                 reason: format!("第 {n} 步没能交出：{err:#}"),

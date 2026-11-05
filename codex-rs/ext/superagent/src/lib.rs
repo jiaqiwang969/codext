@@ -347,6 +347,7 @@ impl SuperagentService {
                             Arc::new(drive::Oev2Judge::for_home(
                                 self.dir.parent().unwrap_or(&self.dir),
                             )),
+                            drive::STALL,
                         )
                         .await?;
                         let pm = Arc::new(pm::PmRuntime {

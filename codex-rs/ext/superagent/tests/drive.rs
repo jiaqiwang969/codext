@@ -249,6 +249,7 @@ async fn setup() -> anyhow::Result<Setup> {
         effects.clone(),
         host.clone() as Arc<dyn SuperagentHost>,
         judge.clone() as Arc<dyn Judge>,
+        std::time::Duration::from_secs(3600),
     )
     .await?;
     Ok(Setup {
@@ -307,7 +308,7 @@ async fn a_step_names_the_item_a_correction_affects_and_is_recorded_before_it_is
         FakeHost::lock(&s.host.calls).clone(),
         vec![
             format!("resume:{THREAD}:None"),
-            format!("deliver:{THREAD}:Queue")
+            format!("deliver:{THREAD}:Steer")
         ]
     );
     let record = s.record().await?;
@@ -460,11 +461,22 @@ async fn stop_and_recovery_withdraw_only_the_engines_queued_steps() -> anyhow::R
 
     // A restart before the step's turn started: no replay, the queued step goes.
     s.drive.recover().await?;
+    let record = s.record().await?;
     assert_eq!(
-        s.record().await?.state,
-        DriveState::Paused {
-            reason: "服务重启时第 1 步已交出但没有看到开始，没有自动重放".to_owned()
-        }
+        (
+            record.state,
+            record.steps,
+            record.inflight,
+            record.history.len()
+        ),
+        (
+            DriveState::Paused {
+                reason: "服务重启时第 1 步已交出但没有看到开始，没有自动重放".to_owned()
+            },
+            0,
+            None,
+            0
+        )
     );
     assert_eq!(
         FakeHost::lock(&s.host.queue).clone(),
@@ -565,5 +577,57 @@ async fn delivering_a_step_may_start_its_turn_at_once() -> anyhow::Result<()> {
     tokio::time::timeout(std::time::Duration::from_secs(5), s.drive.step(THREAD)).await??;
     let record = s.record().await?;
     assert_eq!((record.steps, record.inflight), (1, None));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_step_that_never_starts_is_withdrawn_and_the_drive_pauses() -> anyhow::Result<()> {
+    let (dir, store) = open_store().await?;
+    let work = TempDir::new()?;
+    let home = workspace(work.path())?;
+    let host = Arc::new(FakeHost::default());
+    let judge = Arc::new(ScriptedJudge::default());
+    let effects =
+        Effects::new(store.clone(), HealthBoard::new(), FakeClock::at(T0).clock()).await?;
+    let drive = DriveService::install(
+        store,
+        effects,
+        host.clone() as Arc<dyn SuperagentHost>,
+        judge.clone() as Arc<dyn Judge>,
+        std::time::Duration::ZERO,
+    )
+    .await?;
+    drive
+        .start(THREAD, home, "整理笔记".to_owned(), /*max_steps*/ None)
+        .await?;
+    judge.then(audit("anchored", &[], &["A1"], "1"));
+    drive.step(THREAD).await?;
+    *FakeHost::lock(&host.queue) = vec![("q1".to_owned(), host.delivered()[0].clone())];
+    drive.step(THREAD).await?;
+    let record = drive.record(THREAD).await?.expect("a record");
+    assert_eq!(
+        (record.state, record.inflight, record.steps),
+        (
+            DriveState::Paused {
+                reason: "第 1 步交出后一直没有开始，已撤回；交回后重新判定".to_owned()
+            },
+            None,
+            0
+        )
+    );
+    // Handed back, the same step goes again, and an older interrupted turn does not count
+    // against it.
+    host.set_latest("interrupted");
+    drive.resume(THREAD).await?;
+    drive.step(THREAD).await?;
+    let delivered = host.delivered();
+    assert_eq!(delivered.len(), 2);
+    assert!(
+        delivered[1].starts_with("[推进 第1步 · 整理笔记]"),
+        "{}",
+        delivered[1]
+    );
+    assert_eq!(FakeHost::lock(&host.queue).len(), 0);
+    drop(dir);
     Ok(())
 }
