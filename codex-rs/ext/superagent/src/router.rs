@@ -6,9 +6,10 @@
 //!   `superagent_read`, and its messages open no candidates.
 //! - `drive`: the PM side as before: candidates, `superagent_route` and the other PM tools.
 //!
-//! In both levels the Router's context carries its rules and a bounded index of the most recently
-//! active sessions as World State sections: a step is told only what changed since the step
-//! before, and a compacted history gets the full text again.
+//! In both levels the Router's context carries, as World State sections, its rules, a bounded
+//! index of the most recently active sessions and the sessions that wait for the person (an
+//! error, an approval, an answer): a step is told only what changed since the step before, and a
+//! compacted history gets the full text again.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -25,6 +26,8 @@ use codex_extension_api::WorldStateContributionInput;
 use codex_extension_api::WorldStateSectionContribution;
 use codex_extension_api::input_text;
 use serde_json::Value;
+use sha2::Digest;
+use sha2::Sha256;
 
 use crate::SuperagentService;
 use crate::cards::truncate_chars;
@@ -45,10 +48,17 @@ const INDEX_ID: &str = "superagent_index";
 const INDEX_MARKERS: (&str, &str) = ("<superagent_index>", "</superagent_index>");
 const INDEX_UPDATE_MARKERS: (&str, &str) =
     ("<superagent_index_update>", "</superagent_index_update>");
+const ATTENTION_ID: &str = "superagent_attention";
+const ATTENTION_MARKERS: (&str, &str) = ("<superagent_attention>", "</superagent_attention>");
+const ATTENTION_UPDATE_MARKERS: (&str, &str) = (
+    "<superagent_attention_update>",
+    "</superagent_attention_update>",
+);
 
 const OBSERVE_RULES: &str = "\
 你是总 Router，当前处于“只观察”档。
 - 你能看到本机所有会话：<superagent_index> 是按最近活动排序的索引，之后的 <superagent_index_update> 只写变化。细节用 superagent_read 读 `sessions`（翻页）或 `session/<id>`（最近几轮问答的摘要）。读取不会恢复或唤醒任何会话。
+- <superagent_attention> 列出需要用户处理的会话（出错、等批准、等回答），每个问题只出一次，解决后另有说明。用户问“有什么要我处理的”时先看它。
 - 本档不向任何会话发送内容，不开工单，不改文件，不运行会改动系统的命令。
 - 用户问进展时：先读相关会话，再按项目汇报结果、卡点和需要用户决定的事；引用会话 id；没读到的不要猜。
 - 每条回复不超过 300 字。";
@@ -130,14 +140,29 @@ impl ContextContributor for RouterContext {
             {
                 Ok(page) => {
                     let home = std::env::var("HOME").unwrap_or_default();
-                    let rows = page
+                    let rows: Vec<(String, String, String)> = page
                         .sessions
                         .iter()
                         .filter(|session| !pm_threads.contains(&session.id))
                         .take(INDEX_ROWS)
-                        .map(|session| (session.id.clone(), index_row(session, &home)))
+                        .map(|session| {
+                            (
+                                session.id.clone(),
+                                session.status.clone(),
+                                index_row(session, &home),
+                            )
+                        })
                         .collect();
-                    sections.push(index_section(rows));
+                    let waiting = rows
+                        .iter()
+                        .filter_map(|(id, status, row)| {
+                            attention_of(status).map(|reason| (id.clone(), reason, row.clone()))
+                        })
+                        .collect();
+                    sections.push(index_section(
+                        rows.into_iter().map(|(id, _, row)| (id, row)).collect(),
+                    ));
+                    sections.push(attention_section(waiting));
                 }
                 Err(err) => tracing::warn!("superagent: the Router index is unavailable: {err:#}"),
             }
@@ -150,11 +175,21 @@ fn starts_with_marker(role: &str, text: &str, markers: (&str, &str)) -> bool {
     role == "developer" && text.trim_start().starts_with(markers.0)
 }
 
-/// The Router's rules for its level; told again when the level changes or history lost them.
+/// The Router's rules for its level; told again when the level or the rules' text changes, or
+/// history lost them. The snapshot is the level and a short digest of the text.
 pub fn rules_section(mode: RouterMode) -> WorldStateSectionContribution {
+    let digest = Sha256::digest(mode.rules().as_bytes());
+    let snapshot = format!(
+        "{}:{}",
+        mode.name(),
+        digest[..4]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
     WorldStateSectionContribution::new(RULES_ID, move |previous| {
         let fragment = match previous {
-            PreviousWorldStateSection::Known(Value::String(name)) if name == mode.name() => None,
+            PreviousWorldStateSection::Known(Value::String(told)) if *told == snapshot => None,
             PreviousWorldStateSection::Known(_)
             | PreviousWorldStateSection::Unknown
             | PreviousWorldStateSection::Absent => Some(RenderedWorldStateFragment::new(
@@ -163,12 +198,12 @@ pub fn rules_section(mode: RouterMode) -> WorldStateSectionContribution {
                 input_text(mode.rules()),
             )),
         };
-        (Some(Value::String(mode.name().to_owned())), fragment)
+        (Some(Value::String(snapshot.clone())), fragment)
     })
     .with_retained_fragment_matcher(|role, text| starts_with_marker(role, text, RULES_MARKERS))
 }
 
-/// One index row: `id | title | directory | status | last activity | account`.
+/// One index row: `id | title | directory | status | last activity | model/effort | account`.
 pub fn index_row(session: &SessionBrief, home: &str) -> String {
     let title = session
         .name
@@ -190,8 +225,14 @@ pub fn index_row(session: &SessionBrief, home: &str) -> String {
         .map(|at| at.format("%m-%d %H:%M").to_string())
         .unwrap_or_else(|| "-".to_owned());
     let account = session.account_profile.as_deref().unwrap_or("-");
+    let model = match (session.model.as_deref(), session.effort.as_deref()) {
+        (Some(model), Some(effort)) => format!("{model}/{effort}"),
+        (Some(model), None) => model.to_owned(),
+        (None, Some(effort)) => format!("-/{effort}"),
+        (None, None) => "-".to_owned(),
+    };
     format!(
-        "{} | {title} | {cwd} | {} | {at} | {account}",
+        "{} | {title} | {cwd} | {} | {at} | {model} | {account}",
         session.id, session.status
     )
 }
@@ -217,7 +258,7 @@ pub fn index_section(rows: Vec<(String, String)>) -> WorldStateSectionContributi
 
 fn full_index(rows: &[(String, String)]) -> RenderedWorldStateFragment {
     let mut text = format!(
-        "本机会话，按最近活动排序，最多 {INDEX_ROWS} 个（不含 Router 自己）。列：id | 名称或首条消息 | 目录 | 状态 | 最近活动 | 账号\n"
+        "本机会话，按最近活动排序，最多 {INDEX_ROWS} 个（不含 Router 自己）。列：id | 名称或首条消息 | 目录 | 状态 | 最近活动 | 模型/强度 | 账号\n"
     );
     if rows.is_empty() {
         text.push_str("（暂无会话）\n");
@@ -263,4 +304,67 @@ fn index_update(
         INDEX_UPDATE_MARKERS,
         input_text(text),
     ))
+}
+
+/// What a session waits for from the person, by its status: an error, an approval or an answer.
+pub fn attention_of(status: &str) -> Option<&'static str> {
+    if status == "systemError" {
+        Some("出错")
+    } else if status.contains("waitingOnApproval") {
+        Some("等你批准")
+    } else if status.contains("waitingOnUserInput") {
+        Some("等你回答")
+    } else {
+        None
+    }
+}
+
+/// The sessions that need the person. `waiting` is (id, reason, index row). The snapshot keeps
+/// the reason by id, so each problem is told once, when it appears, and again when it is resolved.
+pub fn attention_section(
+    waiting: Vec<(String, &'static str, String)>,
+) -> WorldStateSectionContribution {
+    WorldStateSectionContribution::new(ATTENTION_ID, move |previous| {
+        let snapshot: serde_json::Map<String, Value> = waiting
+            .iter()
+            .map(|(id, reason, _)| (id.clone(), Value::String((*reason).to_owned())))
+            .collect();
+        let line = |reason: &str, row: &str| format!("{reason}：{row}\n");
+        let fragment = match previous {
+            PreviousWorldStateSection::Known(Value::Object(before)) => {
+                let mut text = String::new();
+                for (id, reason, row) in &waiting {
+                    if before.get(id).and_then(Value::as_str) != Some(*reason) {
+                        text.push_str(&line(reason, row));
+                    }
+                }
+                let resolved: Vec<&str> = before
+                    .keys()
+                    .map(String::as_str)
+                    .filter(|id| !waiting.iter().any(|(waiting_id, _, _)| waiting_id == id))
+                    .collect();
+                if !resolved.is_empty() {
+                    text.push_str(&format!("已不再等你：{}\n", resolved.join("、")));
+                }
+                (!text.is_empty()).then(|| {
+                    RenderedWorldStateFragment::new(
+                        "developer",
+                        ATTENTION_UPDATE_MARKERS,
+                        input_text(format!("需要你处理的会话有变化：\n{text}")),
+                    )
+                })
+            }
+            PreviousWorldStateSection::Known(_)
+            | PreviousWorldStateSection::Unknown
+            | PreviousWorldStateSection::Absent => (!waiting.is_empty()).then(|| {
+                let mut text = String::from("需要你处理的会话（每个问题只列一次）：\n");
+                for (_, reason, row) in &waiting {
+                    text.push_str(&line(reason, row));
+                }
+                RenderedWorldStateFragment::new("developer", ATTENTION_MARKERS, input_text(text))
+            }),
+        };
+        (Some(Value::Object(snapshot)), fragment)
+    })
+    .with_retained_fragment_matcher(|role, text| starts_with_marker(role, text, ATTENTION_MARKERS))
 }

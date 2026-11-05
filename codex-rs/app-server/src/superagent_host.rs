@@ -157,11 +157,28 @@ impl SuperagentHost for AppServerSuperagentHost {
                     name: text(thread, "name"),
                     preview: text(thread, "preview").unwrap_or_default(),
                     cwd: text(thread, "cwd").unwrap_or_default(),
+                    // `active:waitingOnApproval` when the session waits for the person.
                     status: thread
                         .get("status")
-                        .and_then(|status| text(status, "type"))
+                        .map(|status| {
+                            let kind = text(status, "type").unwrap_or_default();
+                            let flags: Vec<&str> = status
+                                .get("activeFlags")
+                                .and_then(JsonValue::as_array)
+                                .into_iter()
+                                .flatten()
+                                .filter_map(JsonValue::as_str)
+                                .collect();
+                            if flags.is_empty() {
+                                kind
+                            } else {
+                                format!("{kind}:{}", flags.join(","))
+                            }
+                        })
                         .unwrap_or_default(),
                     updated_at: thread.get("updatedAt").and_then(JsonValue::as_i64),
+                    model: text(thread, "model"),
+                    effort: text(thread, "reasoningEffort"),
                     account_profile: thread
                         .get("extra")
                         .and_then(|extra| text(extra, "accountProfile")),

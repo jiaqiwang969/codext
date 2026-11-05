@@ -58,8 +58,13 @@ pub struct SessionBrief {
     pub name: Option<String>,
     pub preview: String,
     pub cwd: String,
+    /// The thread status type, with its active flags after a colon when it has any
+    /// (`active:waitingOnApproval`).
     pub status: String,
     pub updated_at: Option<i64>,
+    /// The model and reasoning effort the session last ran with.
+    pub model: Option<String>,
+    pub effort: Option<String>,
     pub account_profile: Option<String>,
 }
 

@@ -95,6 +95,8 @@ impl ReadTool {
                                 "cwd": session.cwd,
                                 "status": session.status,
                                 "updatedAt": session.updated_at,
+                                "model": session.model,
+                                "effort": session.effort,
                                 "account": session.account_profile,
                             })
                         })
