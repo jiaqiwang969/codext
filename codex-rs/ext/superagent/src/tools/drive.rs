@@ -119,7 +119,7 @@ impl DriveTool {
                     ));
                 }
                 let project = PathBuf::from(project);
-                let home = if project.join(".engineering/HEAD.json").exists() {
+                let home = if project.join(".engineering").is_dir() {
                     project.join(".engineering")
                 } else {
                     project
