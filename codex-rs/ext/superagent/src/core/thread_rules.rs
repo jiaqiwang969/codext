@@ -51,16 +51,21 @@ pub fn build_thread(branch: &str) -> ThreadRef {
     }
 }
 
-/// Whether `token` has the shape of a ticket's display name: `tNNN_short_name`.
+/// Whether `token` has the shape of a ticket's display name: `t`, at least three digits, `_` and a
+/// short name. Numbers are padded to three digits and grow past `t999` (`tickets::display_name`).
 pub fn is_ticket_name(token: &str) -> bool {
-    let bytes = token.as_bytes();
-    bytes.len() > 5
-        && bytes[0] == b't'
-        && bytes[1..4].iter().all(u8::is_ascii_digit)
-        && bytes[4] == b'_'
-        && bytes[5..]
-            .iter()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_')
+    let Some(rest) = token.strip_prefix('t') else {
+        return false;
+    };
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    let Some(name) = rest[digits..].strip_prefix('_') else {
+        return false;
+    };
+    digits >= 3
+        && !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
 /// The ticket names in a text, in order, without repeats.
