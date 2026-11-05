@@ -648,7 +648,7 @@ async fn a_confirmed_goal_anchors_a_project_that_has_none() -> anyhow::Result<()
         request: "把图纸按零件号整理好".to_owned(),
         deliverable: "按零件号分好目录的图纸".to_owned(),
         acceptance: vec![
-            "每张图纸在其零件号目录下".to_owned(),
+            "A1：每张图纸在其零件号目录下".to_owned(),
             "目录名就是零件号".to_owned(),
         ],
     };

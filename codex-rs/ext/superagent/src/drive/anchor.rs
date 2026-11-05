@@ -47,6 +47,23 @@ impl Goal {
     }
 }
 
+/// An acceptance item without a leading label of its own (`A1：`, `A2.`): the anchor numbers them.
+fn without_label(statement: &str) -> &str {
+    let statement = statement.trim();
+    let rest = statement.strip_prefix(['A', 'a']).unwrap_or(statement);
+    let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    if rest.len() == statement.len() || digits == 0 {
+        return statement;
+    }
+    let after = &rest[digits..];
+    let stripped = after.trim_start_matches(['：', ':', '.', '、', ')', '）', ' ']);
+    if stripped.len() == after.len() || stripped.is_empty() {
+        statement
+    } else {
+        stripped.trim_start()
+    }
+}
+
 /// The Project id: the project directory's name in lowercase ASCII words, else `project`.
 fn project_id(project_home: &Path) -> String {
     let name = project_home
@@ -96,7 +113,7 @@ pub fn create(project_home: &Path, goal: &Goal) -> anyhow::Result<()> {
         "functions": [{ "id": "F1", "statement": deliverable, "structures": ["root"] }],
         "acceptance": goal.acceptance.iter().zip(&items).map(|(statement, id)| json!({
             "id": id,
-            "statement": statement.trim(),
+            "statement": without_label(statement),
             "functions": ["F1"],
             "status": "open",
             "decisions": [],
