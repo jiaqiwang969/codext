@@ -24,10 +24,10 @@ fn text_of(fragment: Option<RenderedWorldStateFragment>) -> Option<String> {
 }
 
 #[test]
-fn only_the_word_drive_turns_routing_on() -> anyhow::Result<()> {
+fn only_drive_and_org_leave_observing_and_only_org_routes_requests() -> anyhow::Result<()> {
     let dir = TempDir::new()?;
     let mut seen = vec![RouterMode::read(dir.path())];
-    for text in ["drive\n", "observe", "Drive", ""] {
+    for text in ["drive\n", "org", "observe", "Drive", ""] {
         std::fs::write(dir.path().join(MODE_FILE), text)?;
         seen.push(RouterMode::read(dir.path()));
     }
@@ -36,10 +36,17 @@ fn only_the_word_drive_turns_routing_on() -> anyhow::Result<()> {
         vec![
             RouterMode::Observe,
             RouterMode::Drive,
+            RouterMode::Org,
             RouterMode::Observe,
             RouterMode::Observe,
             RouterMode::Observe,
         ]
+    );
+    assert_eq!(
+        seen.iter()
+            .map(|mode| mode.routes_requests())
+            .collect::<Vec<_>>(),
+        vec![false, false, true, false, false, false]
     );
     Ok(())
 }

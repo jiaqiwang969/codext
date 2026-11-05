@@ -26,7 +26,6 @@ use crate::core::thread_rules::SOURCE;
 use crate::core::thread_rules::Spoken;
 use crate::core::thread_rules::place;
 use crate::ids::key;
-use crate::router::RouterMode;
 
 /// The user's id as the one allowed sender.
 pub const USER: &str = "user";
@@ -216,8 +215,9 @@ pub async fn record_turn(
         return;
     };
     let spoken = if service.pm_threads().is_pm(thread_id) {
-        // The observing Router routes nothing, so its messages open no candidates.
-        if service.router_mode() == RouterMode::Observe {
+        // Only the organizing Router routes requests; at the other levels its messages open no
+        // candidates.
+        if !service.router_mode().routes_requests() {
             return;
         }
         Spoken::Pm {

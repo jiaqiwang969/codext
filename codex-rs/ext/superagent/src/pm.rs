@@ -453,8 +453,8 @@ pub fn pm_tools(
     tools
 }
 
-/// The extension contribution: PM threads get the PM tools (only `superagent_read` while the
-/// Router observes), other threads nothing from here.
+/// The extension contribution: PM threads get the tools of the Router's level (`router.rs`),
+/// other threads nothing from here.
 pub struct PmExtension {
     service: Arc<SuperagentService>,
 }
@@ -483,7 +483,15 @@ impl ToolContributor for PmExtension {
                 runtime.store.clone(),
                 Arc::clone(&runtime.host),
             ))],
-            RouterMode::Drive => {
+            // Driving reads and drives; it opens no tickets.
+            RouterMode::Drive => vec![
+                Arc::new(ReadTool::for_pm(
+                    runtime.store.clone(),
+                    Arc::clone(&runtime.host),
+                )),
+                Arc::new(DriveTool::new(crate::drive_lookup(&self.service))),
+            ],
+            RouterMode::Org => {
                 let mut tools = pm_tools(&runtime);
                 tools.push(Arc::new(DriveTool::new(crate::drive_lookup(&self.service))));
                 tools

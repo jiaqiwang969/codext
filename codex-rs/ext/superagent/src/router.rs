@@ -4,9 +4,12 @@
 //! - `observe` (the default, also when the file is missing or unreadable): the Router sees every
 //!   session and reports on them, but the engine sends nothing on its behalf. It gets only
 //!   `superagent_read`, and its messages open no candidates.
-//! - `drive`: the PM side as before: candidates, `superagent_route` and the other PM tools.
+//! - `drive`: the Router drives sessions toward anchored goals with `superagent_drive`; its own
+//!   messages still open no candidates, so it never routes a request into a ticket by mistake.
+//! - `org`: the organization as before (candidates, `superagent_route`, tickets and workers), with
+//!   `superagent_drive` beside it.
 //!
-//! In both levels the Router's context carries, as World State sections, its rules, a bounded
+//! In every level the Router's context carries, as World State sections, its rules, a bounded
 //! index of the most recently active sessions and the sessions that wait for the person (an
 //! error, an approval, an answer): a step is told only what changed since the step before, and a
 //! compacted history gets the full text again.
@@ -74,21 +77,32 @@ const DRIVE_RULES: &str = "\
 - 用户要你推进某个会话时：确认它的项目有 .engineering 且已提交 route-anchor（验收清单），再用 superagent_drive start（thread_id、project、title）。之后引擎在每个回合结束时运行 route-audit 并发出下一步，你不用写“继续”。没有锚定记录时，告诉用户先在那个会话里建立 route-anchor 并确认验收清单。
 - 用户说自己来：superagent_drive pause；说交回：resume；不再推进：stop；问发过什么：history。
 - 可交付、需要决定、已暂停会出现在 <superagent_attention>，引擎也会送来 {\"kind\":\"notice\"…} 通知（不是用户在说话）：用一句话转告用户。可交付时请用户验收；需要决定时说明原因，问一个具体问题。最终验收由用户做。
-- 候选卡、superagent_route 等 PM 工具照旧可用。每条回复不超过 300 字。";
+- 本档不开工单、不新建会话，也不直接向会话发内容：推进只经 superagent_drive。每条回复不超过 300 字。";
+
+const ORG_RULES: &str = "\
+你是总 Router，当前处于“组织”档：除了 superagent_drive 推进已有会话（规则同推进档），还可以用候选卡和 superagent_route 开工单，由引擎新建 worker 完成。
+- 上下文里的 <superagent_index>、<superagent_attention>、<superagent_drives> 已经是最新清单，不用读。
+- 用户要推进某个已有会话时，用 superagent_drive；用户提出新的工作时，按候选卡用 superagent_route。
+- 引擎送来的通知、转达卡不是用户在说话：用一句话转告结论和需要用户做的事。每条回复不超过 300 字。";
 
 /// The Router's level.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RouterMode {
     Observe,
     Drive,
+    Org,
 }
 
 impl RouterMode {
-    /// Reads the level from `<dir>/router-mode`: only the word `drive` turns routing on.
+    /// Reads the level from `<dir>/router-mode`: `drive` or `org`; anything else observes.
     pub fn read(dir: &Path) -> Self {
-        match std::fs::read_to_string(dir.join(MODE_FILE)) {
-            Ok(text) if text.trim() == "drive" => Self::Drive,
-            _ => Self::Observe,
+        match std::fs::read_to_string(dir.join(MODE_FILE))
+            .as_deref()
+            .map(str::trim)
+        {
+            Ok("drive") => Self::Drive,
+            Ok("org") => Self::Org,
+            Ok(_) | Err(_) => Self::Observe,
         }
     }
 
@@ -96,6 +110,15 @@ impl RouterMode {
         match self {
             Self::Observe => "observe",
             Self::Drive => "drive",
+            Self::Org => "org",
+        }
+    }
+
+    /// Whether the Router's own messages become candidates for tickets.
+    pub fn routes_requests(self) -> bool {
+        match self {
+            Self::Org => true,
+            Self::Observe | Self::Drive => false,
         }
     }
 
@@ -103,6 +126,7 @@ impl RouterMode {
         match self {
             Self::Observe => OBSERVE_RULES,
             Self::Drive => DRIVE_RULES,
+            Self::Org => ORG_RULES,
         }
     }
 }
