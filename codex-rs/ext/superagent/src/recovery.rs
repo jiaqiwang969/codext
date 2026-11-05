@@ -27,11 +27,10 @@
 //! `request_processors/daemon_continuation.rs:23` starts one continuation turn for each interrupted
 //! one. Worker threads are persistent root threads, so they would qualify, and there is no
 //! per-thread opt-out: a continuation turn on a worker whose ticket this module just blocked, or
-//! restarted with a recovery note, would run beside the engine's own resume. In A1 the org runs
-//! `codex-sa app-server --listen unix://…` without the daemon supervisor, so that path is off and
-//! this module is the only resume. Before the daemon mode is adopted, the snapshot must skip the
-//! threads bound to tickets (the executor's session records), which is an app-server change at
-//! `daemon_snapshot.rs:24–27`.
+//! restarted with a recovery note, would run beside the engine's own resume. The snapshot therefore skips the
+//! threads the organization drives (`SuperagentService::owns_thread`: PM threads and the worker
+//! threads of open tickets, `daemon_snapshot.rs`), and shutdown stops the engine's scheduling
+//! before the snapshot is taken, so this module stays the only resume for them.
 
 use crate::core::now_iso;
 use crate::executor::CodextThreadExecutor;

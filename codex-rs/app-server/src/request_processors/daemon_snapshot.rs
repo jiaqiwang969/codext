@@ -22,6 +22,13 @@ impl ThreadRequestProcessor {
             let Ok(thread) = self.thread_manager.get_thread(thread_id).await else {
                 continue;
             };
+            // The organization reconciles its own threads at startup; a daemon restore would
+            // resume and continue them beside it (ext/superagent/src/recovery.rs).
+            if let Some(superagent) = &self.superagent
+                && superagent.owns_thread(&thread_id.to_string()).await
+            {
+                continue;
+            }
             let config = thread.config_snapshot().await;
             if !config.ephemeral
                 && config.parent_thread_id.is_none()

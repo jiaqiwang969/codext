@@ -944,10 +944,16 @@ impl MessageProcessor {
             .await;
     }
 
-    pub(crate) async fn drain_background_tasks(&self) {
+    /// Stops the organization from creating or dispatching work. Shutdown calls it before the
+    /// daemon snapshot, so no delivery starts after the snapshot was taken.
+    pub(crate) async fn drain_superagent(&self) {
         if let Some(service) = &self.superagent {
             service.drain().await;
         }
+    }
+
+    pub(crate) async fn drain_background_tasks(&self) {
+        self.drain_superagent().await;
         self.models_refresh_worker.shutdown();
         if let Some(worker) = &self.turn_cost_worker {
             worker.shutdown();

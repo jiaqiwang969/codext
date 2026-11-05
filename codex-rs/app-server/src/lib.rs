@@ -600,12 +600,6 @@ pub async fn run_main_with_transport_options(
     };
     config.validate_windows_mxc_requirement()?;
     config.auth_config().validate()?;
-    if managed_daemon && config.features.enabled(Feature::Superagent) {
-        return Err(std::io::Error::new(
-            ErrorKind::InvalidInput,
-            "superagent requires a dedicated app-server --listen endpoint; managed daemon continuation is not compatible with organization recovery",
-        ));
-    }
     let auth_manager =
         AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false)
             .await
@@ -1079,6 +1073,7 @@ pub async fn run_main_with_transport_options(
                 let recovery_file = recovery_file.clone();
                 // Run independently: snapshot locks can require the event loop to make progress.
                 let task = tokio::spawn(async move {
+                    processor.drain_superagent().await;
                     let saved = processor.daemon_recovery_snapshot().await;
                     if let Err(err) = daemon_thread_recovery::snapshot(recovery_file, saved).await {
                         warn!("failed to save threads during daemon shutdown: {err}");

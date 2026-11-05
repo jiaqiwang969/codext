@@ -392,6 +392,34 @@ impl SuperagentService {
         &self.pm_threads
     }
 
+    /// Whether the organization drives this thread: a PM thread, or the worker thread of a ticket
+    /// that has not ended. Codext's own automatic drivers (daemon recovery, Goal continuation)
+    /// leave such threads to the engine's reconciliation. A failed lookup answers true, so an
+    /// uncertain thread is not continued twice.
+    pub async fn owns_thread(&self, thread_id: &str) -> bool {
+        if self.pm_threads.is_pm(thread_id) {
+            return true;
+        }
+        let Some(runtime) = self.runtime() else {
+            return false;
+        };
+        let ticket_id = match runtime.engine.worker_ticket(thread_id).await {
+            Ok(Some(ticket_id)) => ticket_id,
+            Ok(None) => return false,
+            Err(err) => {
+                tracing::warn!("superagent: could not read the owner of {thread_id}: {err:#}");
+                return true;
+            }
+        };
+        match runtime.store.ticket(&ticket_id).await {
+            Ok(ticket) => ticket.is_some_and(|ticket| ticket.ended.is_none()),
+            Err(err) => {
+                tracing::warn!("superagent: could not read ticket {ticket_id}: {err:#}");
+                true
+            }
+        }
+    }
+
     /// The extension's directory under `CODEX_HOME`.
     pub fn dir(&self) -> &PathBuf {
         &self.dir
