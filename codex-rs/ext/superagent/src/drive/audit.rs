@@ -198,12 +198,15 @@ pub struct Oev2Judge {
 }
 
 impl Oev2Judge {
-    /// `CODEXT_SUPERAGENT_OEV2_ROOT`, else the skill under `codex_home`.
+    /// `CODEXT_SUPERAGENT_OEV2_ROOT`, else the skill under `codex_home`, with symlinks resolved.
     pub fn for_home(codex_home: &Path) -> Self {
         let root = std::env::var_os("CODEXT_SUPERAGENT_OEV2_ROOT")
             .filter(|root| !root.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| codex_home.join("skills/ontology-engineering-unified"));
+        // oev2 checks its root against the installation it was built for: a path through a
+        // symlink (the lab links its skills to the daily ones) is refused as another root.
+        let root = std::fs::canonicalize(&root).unwrap_or(root);
         let bin = std::env::var_os("CODEXT_SUPERAGENT_OEV2_BIN")
             .filter(|bin| !bin.is_empty())
             .map(PathBuf::from)
