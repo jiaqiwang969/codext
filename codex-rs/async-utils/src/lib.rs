@@ -5,8 +5,14 @@ pub use backoff::backoff;
 use std::future::Future;
 use tokio_util::sync::CancellationToken;
 
-/// Stack budget for threads that poll Codex async work.
-pub const THREAD_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
+/// Stack budget for threads that poll Codex async work. Unoptimized builds keep large async
+/// state on the stack (entering a session from the agents panel overflowed 16 MiB in the folder
+/// trust check), so they reserve more; the reservation is only committed as it is used.
+pub const THREAD_STACK_SIZE_BYTES: usize = if cfg!(debug_assertions) {
+    64 * 1024 * 1024
+} else {
+    16 * 1024 * 1024
+};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CancelErr {
