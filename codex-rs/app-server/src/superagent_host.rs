@@ -228,6 +228,18 @@ impl SuperagentHost for AppServerSuperagentHost {
                             .to_owned(),
                         ..TurnBrief::default()
                     };
+                    if let Some(error) = turn.get("error").filter(|error| !error.is_null()) {
+                        brief.error = error
+                            .get("message")
+                            .and_then(JsonValue::as_str)
+                            .map(str::to_owned);
+                        // A unit kind serializes as its name, one with fields as `{name: {...}}`.
+                        brief.error_kind = match error.get("codexErrorInfo") {
+                            Some(JsonValue::String(kind)) => Some(kind.clone()),
+                            Some(JsonValue::Object(kind)) => kind.keys().next().cloned(),
+                            Some(_) | None => None,
+                        };
+                    }
                     for item in turn
                         .get("items")
                         .and_then(JsonValue::as_array)

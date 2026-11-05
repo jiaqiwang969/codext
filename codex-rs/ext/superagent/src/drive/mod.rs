@@ -10,6 +10,7 @@
 //! it is handed over and cleared when its turn starts; a recovered step that never started is not
 //! replayed.
 
+mod accounts;
 mod anchor;
 mod audit;
 mod context;
@@ -17,6 +18,7 @@ mod feedback;
 mod lifecycle;
 mod report;
 mod say;
+mod switch;
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -27,6 +29,13 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
 
+pub use accounts::AccountInfo;
+pub use accounts::AccountSource;
+pub use accounts::Cooldown;
+pub use accounts::StatusHelper;
+pub use accounts::Trouble;
+pub use accounts::choose;
+pub use accounts::parse_pool;
 pub use anchor::Goal;
 pub use audit::Anchor;
 pub use audit::Audit;
@@ -161,6 +170,9 @@ pub struct DriveRecord {
     /// The worker's last conclusion.
     #[serde(default)]
     pub report: Option<Report>,
+    /// The account the drive last moved the session to.
+    #[serde(default)]
+    pub account: Option<String>,
     /// Judgments in a row that found the same Project and anchor digests.
     pub unchanged: u32,
     /// (Project, anchor) digests of the last judgment.
@@ -188,8 +200,13 @@ impl DriveRecord {
             DriveState::Deliverable { summary } => format!("可交付，等你验收：{summary}"),
             DriveState::NeedsDecision { reason } => format!("需要你决定：{reason}"),
         };
+        let account = self
+            .account
+            .as_deref()
+            .map(|account| format!(" | 账号 {account}"))
+            .unwrap_or_default();
         format!(
-            "{} | {} | 第 {}/{} 步 | {state}",
+            "{} | {} | 第 {}/{} 步 | {state}{account}",
             self.thread_id,
             truncate_chars(&self.title, 40),
             self.steps,
@@ -236,6 +253,10 @@ struct Inner {
     effects: Effects,
     host: Arc<dyn SuperagentHost>,
     judge: Arc<dyn Judge>,
+    /// The account pool, for moving a session whose account cannot carry a step.
+    accounts: Option<Arc<dyn AccountSource>>,
+    /// How long an account cools down after the model was at capacity on it.
+    capacity_cooldown: std::time::Duration,
     /// How long a handed-over step may wait for its turn before the drive pauses.
     stall: std::time::Duration,
     /// Serializes changes to the records, so a turn's end and a tool call never interleave.
@@ -249,11 +270,14 @@ impl DriveService {
         effects: Effects,
         host: Arc<dyn SuperagentHost>,
         judge: Arc<dyn Judge>,
+        accounts: Option<Arc<dyn AccountSource>>,
         stall: std::time::Duration,
     ) -> anyhow::Result<Self> {
         let service = Self {
             inner: Arc::new(Inner {
                 stall,
+                accounts,
+                capacity_cooldown: accounts::CAPACITY_COOLDOWN,
                 store,
                 effects: effects.clone(),
                 host,
@@ -419,6 +443,7 @@ impl DriveService {
             request: request.trim().to_owned(),
             corrections: Vec::new(),
             report: None,
+            account: None,
             unchanged: 0,
             digest: None,
             notes: Vec::new(),
@@ -665,7 +690,7 @@ impl DriveService {
     /// turn's conclusion is recorded and handed to the Router, after the audit for an anchored
     /// goal, which may stop the drive (deliverable, drift, no progress).
     pub async fn step(&self, thread_id: &str) -> anyhow::Result<()> {
-        let _lock = self.inner.lock.lock().await;
+        let lock = self.inner.lock.lock().await;
         let Some(record) = self
             .inner
             .store
@@ -697,7 +722,32 @@ impl DriveService {
                     return Ok(());
                 }
                 if turn.status != "completed" {
-                    let reason = format!("第 {} 步没有正常结束（{}）", record.steps, turn.status);
+                    // The account could not carry the step: move the session and send it again.
+                    if let Some(trouble) = accounts::trouble(turn)
+                        && self.inner.accounts.is_some()
+                    {
+                        let state = DriveState::Paused {
+                            reason: format!(
+                                "第 {} 步{}，{}",
+                                record.steps,
+                                trouble.describe(),
+                                switch::SWITCHING
+                            ),
+                        };
+                        self.change_locked(thread_id, |record| record.state = state)
+                            .await?;
+                        drop(lock);
+                        return self.retry_elsewhere(record, thread, trouble).await;
+                    }
+                    let reason = match &turn.error {
+                        Some(error) => format!(
+                            "第 {} 步没有正常结束（{}：{}）",
+                            record.steps,
+                            turn.status,
+                            truncate_chars(error, 200)
+                        ),
+                        None => format!("第 {} 步没有正常结束（{}）", record.steps, turn.status),
+                    };
                     return self.settle(&record, DriveState::Paused { reason }, None).await;
                 }
             }

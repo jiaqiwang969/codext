@@ -347,6 +347,8 @@ impl SuperagentService {
                             Arc::new(drive::Oev2Judge::for_home(
                                 self.dir.parent().unwrap_or(&self.dir),
                             )),
+                            drive::StatusHelper::for_home(self.dir.parent().unwrap_or(&self.dir))
+                                .map(|helper| Arc::new(helper) as Arc<dyn drive::AccountSource>),
                             drive::STALL,
                         )
                         .await?;

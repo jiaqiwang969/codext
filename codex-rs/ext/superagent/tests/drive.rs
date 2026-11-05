@@ -15,6 +15,8 @@ use codex_protocol::ThreadId;
 use codex_superagent_extension::BoxFut;
 use codex_superagent_extension::Effects;
 use codex_superagent_extension::HealthBoard;
+use codex_superagent_extension::drive::AccountInfo;
+use codex_superagent_extension::drive::AccountSource;
 use codex_superagent_extension::drive::Audit;
 use codex_superagent_extension::drive::DriveRecord;
 use codex_superagent_extension::drive::DriveService;
@@ -49,6 +51,8 @@ struct FakeHost {
     latest: Mutex<Option<TurnBrief>>,
     turns: Mutex<u32>,
     opened: Mutex<Vec<(PathBuf, Option<String>)>>,
+    /// The accounts the session was bound to, in order; the last one is its current account.
+    bound: Mutex<Vec<String>>,
     /// Like the real host, delivering to an idle session starts its turn: the drive's turn-start
     /// hook runs inside `deliver`.
     on_deliver: Mutex<Option<DriveService>>,
@@ -61,6 +65,18 @@ impl FakeHost {
     fn delivered(&self) -> Vec<String> {
         Self::lock(&self.delivered).clone()
     }
+    /// The step's turn failed with an error of `kind`.
+    fn fail(&self, kind: &str, message: &str) {
+        let mut turns = Self::lock(&self.turns);
+        *turns += 1;
+        *Self::lock(&self.latest) = Some(TurnBrief {
+            id: format!("turn-{turns}"),
+            status: "failed".to_owned(),
+            error: Some(message.to_owned()),
+            error_kind: Some(kind.to_owned()),
+            ..TurnBrief::default()
+        });
+    }
     /// A new turn of the session ended (or runs) with the worker's last words.
     fn finish(&self, status: &str, conclusion: &str) {
         let mut turns = Self::lock(&self.turns);
@@ -70,6 +86,7 @@ impl FakeHost {
             status: status.to_owned(),
             user: Vec::new(),
             assistant: vec!["先看看目录".to_owned(), conclusion.to_owned()],
+            ..TurnBrief::default()
         });
     }
 }
@@ -80,9 +97,14 @@ impl SuperagentHost for FakeHost {
         Box::pin(async { Ok(ThreadId::from_string(OPENED)?) })
     }
     fn thread_profile(&self, _thread: ThreadId) -> BoxFut<'_, anyhow::Result<Option<String>>> {
-        Box::pin(async { Ok(Some("lab-account".to_owned())) })
+        let current = Self::lock(&self.bound)
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "lab-account".to_owned());
+        Box::pin(async move { Ok(Some(current)) })
     }
-    fn bind_profile(&self, _thread: ThreadId, _profile: String) -> BoxFut<'_, anyhow::Result<()>> {
+    fn bind_profile(&self, _thread: ThreadId, profile: String) -> BoxFut<'_, anyhow::Result<()>> {
+        Self::lock(&self.bound).push(profile);
         Box::pin(async { Ok(()) })
     }
     fn resume_thread(
@@ -198,6 +220,29 @@ impl Judge for ScriptedJudge {
     }
 }
 
+/// The account pool the switching reads.
+#[derive(Default)]
+struct FakeAccounts {
+    pool: Mutex<Vec<AccountInfo>>,
+}
+
+impl AccountSource for FakeAccounts {
+    fn accounts(&self) -> BoxFut<'_, anyhow::Result<Vec<AccountInfo>>> {
+        let pool = FakeHost::lock(&self.pool).clone();
+        Box::pin(async move { Ok(pool) })
+    }
+}
+
+fn account(name: &str, plan: &str, remaining: f64, resets_in_hours: i64) -> AccountInfo {
+    AccountInfo {
+        name: name.to_owned(),
+        plan: plan.to_owned(),
+        usable: true,
+        remaining,
+        resets_at: Some(chrono::Utc::now().timestamp() + resets_in_hours * 3600),
+    }
+}
+
 fn audit(status: &str, verified: &[&str], open: &[&str], digest: &str) -> Audit {
     let ids = |ids: &[&str]| ids.iter().map(|id| (*id).to_owned()).collect();
     Audit {
@@ -281,6 +326,7 @@ struct Setup {
     home: PathBuf,
     host: Arc<FakeHost>,
     judge: Arc<ScriptedJudge>,
+    accounts: Arc<FakeAccounts>,
     effects: Effects,
     drive: DriveService,
 }
@@ -292,6 +338,7 @@ async fn setup_with(stall: std::time::Duration) -> anyhow::Result<Setup> {
     let home = workspace(work.path())?;
     let host = Arc::new(FakeHost::default());
     let judge = Arc::new(ScriptedJudge::default());
+    let accounts = Arc::new(FakeAccounts::default());
     let effects =
         Effects::new(store.clone(), HealthBoard::new(), FakeClock::at(T0).clock()).await?;
     let drive = DriveService::install(
@@ -299,10 +346,11 @@ async fn setup_with(stall: std::time::Duration) -> anyhow::Result<Setup> {
         effects.clone(),
         host.clone() as Arc<dyn SuperagentHost>,
         judge.clone() as Arc<dyn Judge>,
+        Some(accounts.clone() as Arc<dyn AccountSource>),
         stall,
     )
     .await?;
-    Ok(Setup { _dir: dir, work, home, host, judge, effects, drive })
+    Ok(Setup { _dir: dir, work, home, host, judge, accounts, effects, drive })
 }
 
 async fn setup() -> anyhow::Result<Setup> {
@@ -822,5 +870,120 @@ async fn while_a_step_runs_say_is_steered_into_it_and_interrupt_pauses() -> anyh
     );
     s.drive.turn_interrupted(THREAD).await?;
     assert_eq!(s.record().await?.state, paused.state, "the hook keeps the Router's reason");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_step_failing_on_its_account_goes_again_on_the_account_that_resets_soonest()
+-> anyhow::Result<()> {
+    let s = setup().await?;
+    *FakeHost::lock(&s.accounts.pool) = vec![
+        account("free-soonest", "free", 100.0, 1),
+        account("almost-empty", "pro", 2.0, 2),
+        account("later", "pro", 90.0, 48),
+        account("sooner", "pro", 80.0, 24),
+        account("lab-account", "pro", 60.0, 6),
+    ];
+    s.start().await?;
+
+    // The model is at capacity on the session's account: it cools down, the next goes.
+    s.drive.turn_started(THREAD).await?;
+    s.host.fail("serverOverloaded", "Selected model is at capacity. Please try a different model.");
+    s.drive.step(THREAD).await?;
+    let record = s.record().await?;
+    assert_eq!(
+        (record.state.clone(), record.steps, record.inflight, record.account.clone()),
+        (DriveState::Driving, 1, Some(1), Some("sooner".to_owned()))
+    );
+    assert_eq!(FakeHost::lock(&s.host.bound).clone(), vec!["sooner".to_owned()]);
+    assert_eq!(s.host.delivered(), vec![FIRST.to_owned(), FIRST.to_owned()], "the same step again");
+    let cooling = s.drive.cooldowns().await?;
+    let until = cooling.get("lab-account").expect("cooling down").until;
+    let left = until - chrono::Utc::now().timestamp();
+    assert!((14 * 60..=15 * 60).contains(&left), "{left}");
+    let notices = s.notices().await?;
+    assert!(notices.last().expect("a notice").contains("已换到 sooner"), "{notices:?}");
+
+    // Out of quota there too: it cools down until its reset, and the step goes on the next.
+    s.drive.turn_started(THREAD).await?;
+    s.host.fail("usageLimitExceeded", "You've hit your usage limit.");
+    s.drive.step(THREAD).await?;
+    assert_eq!(s.record().await?.account.as_deref(), Some("later"));
+    let sooner_reset = FakeHost::lock(&s.accounts.pool)[3].resets_at;
+    assert_eq!(s.drive.cooldowns().await?.get("sooner").map(|c| c.until), sooner_reset);
+
+    // Nothing left that is paid, has quota and is not cooling down: the drive pauses.
+    s.drive.turn_started(THREAD).await?;
+    s.host.fail("serverOverloaded", "Selected model is at capacity. Please try a different model.");
+    s.drive.step(THREAD).await?;
+    match s.record().await?.state {
+        DriveState::Paused { reason } => assert!(reason.contains("没有可换的账号"), "{reason}"),
+        other => panic!("not paused: {other:?}"),
+    }
+    assert_eq!(s.host.delivered().len(), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn other_failures_pause_with_their_error_and_the_router_can_switch_accounts()
+-> anyhow::Result<()> {
+    let s = setup().await?;
+    *FakeHost::lock(&s.accounts.pool) = vec![
+        account("lab-account", "pro", 60.0, 6),
+        account("sooner", "pro", 80.0, 24),
+        account("later", "pro", 90.0, 48),
+    ];
+    s.start().await?;
+    s.drive.turn_started(THREAD).await?;
+    s.host.fail("contextWindowExceeded", "context window exceeded");
+    s.drive.step(THREAD).await?;
+    assert_eq!(
+        s.record().await?.state,
+        DriveState::Paused {
+            reason: "第 1 步没有正常结束（failed：context window exceeded）".to_owned()
+        }
+    );
+    assert!(FakeHost::lock(&s.host.bound).is_empty());
+
+    let (record, label) = s.drive.switch_account(THREAD, Some("later".to_owned())).await?;
+    assert!(label.starts_with("later（剩 90%"), "{label}");
+    assert_eq!(record.and_then(|record| record.account), Some("later".to_owned()));
+    let (_, label) = s.drive.switch_account(THREAD, None).await?;
+    assert!(label.starts_with("lab-account"), "the next by reset time, not the current one: {label}");
+    assert!(s.drive.switch_account(THREAD, Some("nobody".to_owned())).await.is_err());
+
+    s.host.finish("inProgress", "在做");
+    let busy = s.drive.switch_account(THREAD, None).await;
+    assert!(format!("{:#}", busy.expect_err("running")).contains("先 interrupt"));
+    Ok(())
+}
+
+#[test]
+fn the_account_status_report_reads_as_a_pool() -> anyhow::Result<()> {
+    let report = json!({ "accounts": [
+        { "account": "kalliesallerwu", "status": "live", "auth_status": "ready", "plan": "pro",
+          "quota": [ { "remaining_percent": 84.0, "resets_at": 1793935156 },
+                     { "remaining_percent": 40.0, "resets_at": 1793900000 } ], "error": null },
+        { "account": "OmarGuthorn8", "status": "live", "auth_status": "ready", "plan": "free",
+          "quota": [ { "remaining_percent": 100.0, "resets_at": 1796000000 } ], "error": null },
+        { "account": "broken", "status": "error", "auth_status": "expired", "plan": "pro",
+          "quota": [], "error": "refresh failed" },
+    ]});
+    let pool = codex_superagent_extension::drive::parse_pool(&report);
+    assert_eq!(
+        pool,
+        vec![
+            AccountInfo { name: "kalliesallerwu".to_owned(), plan: "pro".to_owned(), usable: true,
+                remaining: 40.0, resets_at: Some(1793900000) },
+            AccountInfo { name: "OmarGuthorn8".to_owned(), plan: "free".to_owned(), usable: true,
+                remaining: 100.0, resets_at: Some(1796000000) },
+            AccountInfo { name: "broken".to_owned(), plan: "pro".to_owned(), usable: false,
+                remaining: 0.0, resets_at: None },
+        ]
+    );
+    let chosen = codex_superagent_extension::drive::choose(
+        &pool, &std::collections::BTreeMap::new(), 0, None,
+    );
+    assert_eq!(chosen.map(|account| account.name.as_str()), Some("kalliesallerwu"));
     Ok(())
 }

@@ -325,6 +325,7 @@ impl SuperagentHost for FakeHost {
             status: "completed".to_owned(),
             user: vec!["现在进展到哪了？".to_owned()],
             assistant: vec!["长".repeat(700)],
+            ..TurnBrief::default()
         };
         Box::pin(async move { Ok(std::iter::repeat_n(turn, limit as usize).collect()) })
     }

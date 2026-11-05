@@ -42,6 +42,8 @@ enum Action {
     Start,
     Say,
     Interrupt,
+    #[serde(rename = "switch_account")]
+    SwitchAccount,
     Pause,
     Resume,
     Stop,
@@ -62,6 +64,8 @@ struct DriveArgs {
     serves: Option<String>,
     #[serde(default)]
     correction: Option<String>,
+    #[serde(default)]
+    account: Option<String>,
     #[serde(default)]
     project: Option<String>,
     #[serde(default)]
@@ -112,11 +116,15 @@ impl DriveTool {
             (
                 "action".to_owned(),
                 JsonSchema::string_enum(
-                    vec![json!("start"), json!("say"), json!("interrupt"), json!("feedback"), json!("pause"), json!("resume"), json!("stop"), json!("history")],
-                    Some("start: take a session under drive (or open a new session in `folder`) and send it the first message `text`; say: answer the worker's last conclusion with `text`, quoting in `builds_on` and `serves` what it follows from (while the worker's turn runs, the text is said into it instead); interrupt: stop the running step because the person found it going wrong, then resume and say the next thing; feedback: the person's acceptance feedback on an anchored goal; pause: the person takes the session over; resume: hand it back; stop: release it; history: the person's words, the last conclusion and every step with its basis.".to_owned()),
+                    vec![json!("start"), json!("say"), json!("interrupt"), json!("switch_account"), json!("feedback"), json!("pause"), json!("resume"), json!("stop"), json!("history")],
+                    Some("start: take a session under drive (or open a new session in `folder`) and send it the first message `text`; say: answer the worker's last conclusion with `text`, quoting in `builds_on` and `serves` what it follows from (while the worker's turn runs, the text is said into it instead); interrupt: stop the running step because the person found it going wrong, then resume and say the next thing; switch_account: move a session (driven or not) to another account, `account` or else the next by quota reset time — the engine also does this by itself when a step fails on quota or model capacity; feedback: the person's acceptance feedback on an anchored goal; pause: the person takes the session over; resume: hand it back; stop: release it; history: the person's words, the last conclusion and every step with its basis.".to_owned()),
                 ),
             ),
             ("thread_id".to_owned(), JsonSchema::string(Some("The session; start may leave it out and give `folder` to open a new one.".to_owned()))),
+            (
+                "account".to_owned(),
+                JsonSchema::string(Some("switch_account: the account to move to, as `codex-account-next list` names it; leave out to take the next by quota reset time.".to_owned())),
+            ),
             (
                 "folder".to_owned(),
                 JsonSchema::string(Some("start of a simple request: the absolute path of the folder the session works in; created when missing.".to_owned())),
@@ -310,6 +318,18 @@ impl DriveTool {
                     .map_err(refused)?
                     .map(answer)
                     .ok_or_else(|| missing(&id))
+            }
+            Action::SwitchAccount => {
+                let id = thread_id()?;
+                let (record, account) = drive
+                    .switch_account(&id, args.account.clone())
+                    .await
+                    .map_err(refused)?;
+                Ok(json!({
+                    "thread_id": id,
+                    "account": account,
+                    "drive": record.map(|record| record.line()),
+                }))
             }
             Action::Pause => {
                 let id = thread_id()?;

@@ -84,6 +84,12 @@ pub struct TurnBrief {
     pub status: String,
     pub user: Vec<String>,
     pub assistant: Vec<String>,
+    /// Why a failed turn failed, as the person saw it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The error's kind (`codexErrorInfo`, such as `usageLimitExceeded` or `serverOverloaded`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
 }
 
 /// Drives threads through the host's normal admission, account, and lifecycle checks.
