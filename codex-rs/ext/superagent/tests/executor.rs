@@ -31,6 +31,7 @@ use codex_superagent_extension::core::TicketEndBy;
 use codex_superagent_extension::core::TicketInput;
 use codex_superagent_extension::core::TicketOutcome;
 use codex_superagent_extension::core::latest_assignment;
+use codex_superagent_extension::core::worker_thread_key;
 use codex_superagent_extension::executor::CodextThreadExecutor;
 use codex_superagent_extension::executor::EngineForExecutor;
 use codex_superagent_extension::executor::Executor;
@@ -587,6 +588,13 @@ async fn launches_a_worker_thread_delivers_the_assignment_and_reads_the_turn() -
         s.executor.ticket_of_thread(&thread),
         Some("t017".to_owned())
     );
+    // Intake places a person's input in the worker thread through this index (decision #9).
+    assert_eq!(
+        s.store
+            .kv_get::<String>(&worker_thread_key(&thread))
+            .await?,
+        Some("t017".to_owned())
+    );
     assert!(
         s.executor.inflight_for(&thread).await?.is_some(),
         "inflight written before the delivery"
@@ -628,6 +636,26 @@ async fn continues_the_same_thread_after_a_restart() -> anyhow::Result<()> {
     );
     assert_eq!(executor.ticket_of_thread(&thread), Some("t017".to_owned()));
     assert!(s.engine.has("assignment_started:t017:t017-1"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn restore_backfills_the_worker_thread_index_of_an_older_ledger() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let t = ticket("t017");
+    launch(&s, &s.executor, &s.effects, &t).await?;
+    let thread = thread_of(&s, "t017").await?;
+    // A ledger written before the index existed has the session but not the index.
+    s.store
+        .atomic(async |tx| tx.kv_delete(&worker_thread_key(&thread)).await)
+        .await?;
+    restart(&s).await?;
+    assert_eq!(
+        s.store
+            .kv_get::<String>(&worker_thread_key(&thread))
+            .await?,
+        Some("t017".to_owned())
+    );
     Ok(())
 }
 

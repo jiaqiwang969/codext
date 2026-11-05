@@ -22,6 +22,7 @@ pub use engine::EngineForPm;
 pub use engine::EngineOptions;
 pub use engine::PrepareTicket;
 pub use engine::refusal;
+pub use engine::worker_thread_key;
 pub use errors::UserError;
 pub use errors::UserErrorCode;
 pub use model::*;

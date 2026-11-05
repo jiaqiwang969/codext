@@ -806,13 +806,17 @@ impl Engine {
             .await
     }
 
-    /// The ticket whose worker runs in a thread, from the index the executor writes (`worker-thread:<thread id>`).
+    /// The ticket whose worker runs in a thread, from the index the executor writes with the
+    /// ticket's session record (`worker_thread_key`).
     pub async fn worker_ticket(&self, thread_id: &str) -> anyhow::Result<Option<String>> {
-        self.inner
-            .store
-            .kv_get(&format!("worker-thread:{thread_id}"))
-            .await
+        self.inner.store.kv_get(&worker_thread_key(thread_id)).await
     }
+}
+
+/// The kv key of the reverse index from a worker's thread to its ticket. Intake reads it to place
+/// a person's input in a worker thread on that ticket; the executor writes it with the session.
+pub fn worker_thread_key(thread_id: &str) -> String {
+    format!("worker-thread:{thread_id}")
 }
 
 /// What the PM asks of the engine (prototype `EngineForMainSession`).

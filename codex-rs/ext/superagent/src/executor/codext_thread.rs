@@ -45,6 +45,7 @@ use crate::core::Ticket;
 use crate::core::TicketInput;
 use crate::core::latest_assignment;
 use crate::core::waits_for_person;
+use crate::core::worker_thread_key;
 use crate::effects::Clock;
 use crate::effects::EffectError;
 use crate::effects::Effects;
@@ -406,6 +407,18 @@ impl CodextThreadExecutor {
         Ok(())
     }
 
+    /// Writes a ticket's session record together with the reverse index from its thread, so a
+    /// person's input in the worker thread is placed on the ticket (decision #9).
+    async fn save_session(
+        tx: &mut Tx,
+        ticket_id: &str,
+        record: &SessionRecord,
+    ) -> anyhow::Result<()> {
+        tx.kv_set(&session_key(ticket_id), record).await?;
+        tx.kv_set(&worker_thread_key(&record.thread_id), &ticket_id.to_owned())
+            .await
+    }
+
     async fn delete_inflight(tx: &mut Tx, thread_id: &str) -> anyhow::Result<()> {
         sqlx::query("DELETE FROM inflight WHERE thread_id = ?")
             .bind(thread_id)
@@ -568,12 +581,11 @@ impl CodextThreadExecutor {
                     record.tokens_at_start = self.tokens_used(thread).await;
                 }
                 self.remember(ticket_id, &record);
-                let key = session_key(ticket_id);
                 let saved = record.clone();
                 self.inner
                     .store
                     .atomic(async |tx| {
-                        tx.kv_set(&key, &saved).await?;
+                        Self::save_session(tx, ticket_id, &saved).await?;
                         engine
                             .assignment_started(tx, ticket_id, assignment_id)
                             .await
@@ -637,12 +649,11 @@ impl CodextThreadExecutor {
                     turns: 0,
                     tokens_at_start,
                 };
-                let key = session_key(ticket_id);
                 let saved = record.clone();
                 self.inner
                     .store
                     .atomic(async |tx| {
-                        tx.kv_set(&key, &saved).await?;
+                        Self::save_session(tx, ticket_id, &saved).await?;
                         engine
                             .assignment_started(tx, ticket_id, assignment_id)
                             .await
@@ -827,12 +838,11 @@ impl CodextThreadExecutor {
         match self.inner.host.deliver(thread, text, mode).await {
             Ok(()) => {
                 record.turns += 1;
-                let key = session_key(ticket_id);
                 self.remember(ticket_id, &record);
                 self.inner
                     .store
                     .atomic(async |tx| {
-                        tx.kv_set(&key, &record).await?;
+                        Self::save_session(tx, ticket_id, &record).await?;
                         engine
                             .inputs_delivered(tx, ticket_id, assignment_id, &ids)
                             .await
@@ -1641,6 +1651,15 @@ impl CodextThreadExecutor {
         for ticket in tickets {
             if ticket.ended.is_some() {
                 continue;
+            }
+            // Ledgers written before the reverse index existed lack it; restore it so a person's
+            // input in the worker thread is placed on the ticket again.
+            if let Some(record) = self.session(&ticket.id).await? {
+                let ticket_id = ticket.id.clone();
+                self.inner
+                    .store
+                    .atomic(async |tx| Self::save_session(tx, &ticket_id, &record).await)
+                    .await?;
             }
             let Some(assignment) = latest_assignment(&ticket).cloned() else {
                 continue;
