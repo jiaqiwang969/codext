@@ -303,6 +303,22 @@ impl DriveService {
                     .retry(5_000, 60_000),
             )
             .await?;
+        let mover = service.clone();
+        effects
+            .handle(
+                switch::KIND_ROUTER,
+                Arc::new(move |_payload, thread_id| {
+                    let mover = mover.clone();
+                    Box::pin(async move {
+                        mover
+                            .router_turn_failed(&thread_id)
+                            .await
+                            .map_err(|err| EffectError::Later(format!("{err:#}")))
+                    })
+                }),
+                HandlerOptions::default().retry(10_000, 120_000),
+            )
+            .await?;
         Ok(service)
     }
 

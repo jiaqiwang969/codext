@@ -501,6 +501,7 @@ where
     C: Send + Sync + 'static,
 {
     let drives = drive_lookup(&service);
+    let routers = Arc::downgrade(&service);
     registry.turn_input_contributor(Arc::new(intake::SuperagentIntake::new(&service)));
     registry.automatic_turn_arbiter(Arc::new(arbiter::SuperagentArbiter::new(&service)));
     registry.tool_contributor(Arc::new(pm::PmExtension::new(Arc::clone(&service))));
@@ -515,7 +516,14 @@ where
     ))));
     registry.turn_lifecycle_contributor(Arc::new(executor::ExecutorLifecycle::new(lookup)));
     registry.prompt_contributor(Arc::new(drive::DriveContext::new(Arc::clone(&drives))));
-    registry.turn_lifecycle_contributor(Arc::new(drive::DriveLifecycle::new(drives)));
+    registry.turn_lifecycle_contributor(Arc::new(drive::DriveLifecycle::new(
+        drives,
+        Arc::new(move |thread_id: &str| {
+            routers
+                .upgrade()
+                .is_some_and(|service| service.pm_threads().is_pm(thread_id))
+        }),
+    )));
 }
 
 /// The drive loop of a running engine, looked up on each use.

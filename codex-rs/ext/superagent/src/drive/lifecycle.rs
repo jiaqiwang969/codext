@@ -13,14 +13,17 @@ use codex_protocol::protocol::TurnAbortReason;
 use super::DriveService;
 
 type Lookup = Arc<dyn Fn() -> Option<DriveService> + Send + Sync>;
+/// Whether a thread is a Router (PM) thread.
+type IsRouter = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 pub struct DriveLifecycle {
     drive: Lookup,
+    is_router: IsRouter,
 }
 
 impl DriveLifecycle {
-    pub fn new(drive: Lookup) -> Self {
-        Self { drive }
+    pub fn new(drive: Lookup, is_router: IsRouter) -> Self {
+        Self { drive, is_router }
     }
 }
 
@@ -40,10 +43,18 @@ impl TurnLifecycleContributor for DriveLifecycle {
     fn on_turn_stop<'a>(&'a self, input: TurnStopInput<'a>) -> ExtensionFuture<'a, ()> {
         let drive = (self.drive)();
         let thread_id = input.thread_store.level_id().to_owned();
+        let router = (self.is_router)(&thread_id);
         Box::pin(async move {
-            if let Some(drive) = drive
-                && let Err(err) = drive.turn_stopped(&thread_id).await
-            {
+            let Some(drive) = drive else {
+                return;
+            };
+            // A Router turn that failed on its account moves the Router (`switch.rs`).
+            let result = if router {
+                drive.router_turn_ended(&thread_id).await
+            } else {
+                drive.turn_stopped(&thread_id).await
+            };
+            if let Err(err) = result {
                 tracing::warn!("superagent drive: turn end of {thread_id}: {err:#}");
             }
         })

@@ -987,3 +987,44 @@ fn the_account_status_report_reads_as_a_pool() -> anyhow::Result<()> {
     assert_eq!(chosen.map(|account| account.name.as_str()), Some("kalliesallerwu"));
     Ok(())
 }
+
+#[tokio::test]
+async fn a_router_turn_failing_on_its_account_moves_the_router_and_hands_it_the_words_again()
+-> anyhow::Result<()> {
+    let s = setup().await?;
+    *FakeHost::lock(&s.accounts.pool) = vec![
+        account("lab-account", "pro", 60.0, 6),
+        account("sooner", "pro", 80.0, 24),
+    ];
+    let words = "看看 solidcraft 上游最近有什么新进展";
+    let mut turns = FakeHost::lock(&s.host.turns);
+    *turns += 1;
+    drop(turns);
+    *FakeHost::lock(&s.host.latest) = Some(TurnBrief {
+        id: "router-turn-1".to_owned(),
+        status: "failed".to_owned(),
+        user: vec![words.to_owned()],
+        error: Some("Selected model is at capacity. Please try a different model.".to_owned()),
+        error_kind: Some("serverOverloaded".to_owned()),
+        ..TurnBrief::default()
+    });
+    s.drive.router_turn_failed(THREAD).await?;
+    assert_eq!(FakeHost::lock(&s.host.bound).clone(), vec!["sooner".to_owned()]);
+    let sent = s.host.delivered();
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0].starts_with("[通知] Router 的账号模型满载"), "{}", sent[0]);
+    assert!(sent[0].contains("已换到 sooner") && sent[0].ends_with(words), "{}", sent[0]);
+    assert_eq!(
+        FakeHost::lock(&s.host.calls).last().map(String::as_str),
+        Some(&format!("deliver:{THREAD}:Steer")[..])
+    );
+    assert!(s.drive.cooldowns().await?.contains_key("lab-account"));
+    // The same failed turn reported again moves nothing.
+    s.drive.router_turn_failed(THREAD).await?;
+    assert_eq!(s.host.delivered().len(), 1);
+    // A turn that ended normally is left alone.
+    s.host.finish("completed", "好的");
+    s.drive.router_turn_failed(THREAD).await?;
+    assert_eq!(FakeHost::lock(&s.host.bound).len(), 1);
+    Ok(())
+}

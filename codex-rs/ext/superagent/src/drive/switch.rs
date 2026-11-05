@@ -15,6 +15,13 @@ use super::accounts;
 use super::accounts::Cooldown;
 use super::accounts::Trouble;
 use crate::core::now_iso;
+use crate::host::DeliveryMode;
+
+/// The effect kind that moves the Router itself to another account after a failed turn.
+pub const KIND_ROUTER: &str = "drive-router-account";
+/// The ledger key of the Router turns already moved, so one failure moves the Router once.
+const ROUTER_MOVED_KEY: &str = "drive-router-moved";
+const ROUTER_MOVED: usize = 50;
 
 /// How the pause while an account is being switched ends; only such a pause is resumed by it.
 pub const SWITCHING: &str = "正在换号";
@@ -262,5 +269,96 @@ impl DriveService {
             })
             .await?;
         Ok((record, next.label()))
+    }
+
+    /// A Router turn ended: look at it soon, outside the turn's hook.
+    pub async fn router_turn_ended(&self, thread_id: &str) -> anyhow::Result<()> {
+        self.inner
+            .effects
+            .enqueue_now(KIND_ROUTER, thread_id, &json!({}))
+            .await
+    }
+
+    /// The Router's last turn failed on its account (quota used up, model at capacity): that
+    /// account cools down, the Router moves to the next account by reset time, and what the turn
+    /// was about (the person's words or an engine notice) is handed to it again with a line on
+    /// the switch. Each failed turn moves the Router once.
+    pub async fn router_turn_failed(&self, thread_id: &str) -> anyhow::Result<()> {
+        let Some(source) = self.inner.accounts.clone() else {
+            return Ok(());
+        };
+        let thread = ThreadId::from_string(thread_id)?;
+        let latest = self.inner.host.session_turns(thread, 1).await?;
+        let Some(turn) = latest.first() else {
+            return Ok(());
+        };
+        if turn.status == "inProgress" {
+            return Ok(());
+        }
+        let Some(trouble) = accounts::trouble(turn) else {
+            return Ok(());
+        };
+        let turn_id = turn.id.clone();
+        let first_time = self
+            .inner
+            .store
+            .atomic(async |tx| {
+                let mut moved: Vec<String> =
+                    tx.kv_get(ROUTER_MOVED_KEY).await?.unwrap_or_default();
+                if moved.contains(&turn_id) {
+                    return Ok(false);
+                }
+                moved.push(turn_id);
+                if moved.len() > ROUTER_MOVED {
+                    moved.remove(0);
+                }
+                tx.kv_set(ROUTER_MOVED_KEY, &moved).await?;
+                Ok(true)
+            })
+            .await?;
+        if !first_time {
+            return Ok(());
+        }
+        let words = turn.user.join("\n\n").trim().to_owned();
+        let now = now();
+        let current = self.inner.host.thread_profile(thread).await.unwrap_or(None);
+        let pool = source.accounts().await?;
+        if let Some(name) = &current {
+            let until = match trouble {
+                Trouble::UsageLimit => pool
+                    .iter()
+                    .find(|account| &account.name == name)
+                    .and_then(|account| account.resets_at)
+                    .filter(|at| *at > now)
+                    .unwrap_or(now + accounts::QUOTA_COOLDOWN.as_secs() as i64),
+                Trouble::Capacity => now + self.inner.capacity_cooldown.as_secs() as i64,
+            };
+            self.cool_down(name, until, trouble.describe()).await?;
+        }
+        let cooling = self.cooldowns().await?;
+        let Some(next) = accounts::choose(&pool, &cooling, now, current.as_deref()).cloned() else {
+            tracing::warn!(
+                "superagent: the Router's account cannot carry its turn ({}) and no account is free",
+                trouble.describe()
+            );
+            return Ok(());
+        };
+        self.inner
+            .host
+            .bind_profile(thread, next.name.clone())
+            .await?;
+        if words.is_empty() {
+            return Ok(());
+        }
+        let from = current.unwrap_or_else(|| "原账号".to_owned());
+        let text = format!(
+            "[通知] Router 的账号{}（{from}），已换到 {}。下面是刚才没处理完的话，请接着处理：\n{words}",
+            trouble.describe(),
+            next.label()
+        );
+        self.inner
+            .host
+            .deliver(thread, text, DeliveryMode::Steer)
+            .await
     }
 }
