@@ -926,6 +926,11 @@ impl CodextThreadExecutor {
         {
             lines.push(self.render_input(input).await?);
         }
+        // A follow-up keeps the mandate in view: a person naming the ticket does not widen it
+        // (11/03 case B4). It goes last, so the delivery still starts with its engine label.
+        if !initial && !lines.is_empty() && !ticket.mandate.scope.is_empty() {
+            lines.push(format!("（授权范围不变：{}）", ticket.mandate.scope));
+        }
         Ok(lines.join("\n"))
     }
 

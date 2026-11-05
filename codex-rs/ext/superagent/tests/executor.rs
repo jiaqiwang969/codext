@@ -1130,7 +1130,8 @@ async fn full_slots_queue_a_launch_until_one_frees() -> anyhow::Result<()> {
 #[tokio::test]
 async fn a_persons_message_reaches_an_idle_worker() -> anyhow::Result<()> {
     let s = setup().await?;
-    let t = ticket("t017");
+    let mut t = ticket("t017");
+    t.mandate.scope = "fix t017".to_owned();
     launch(&s, &s.executor, &s.effects, &t).await?;
     let thread = thread_of(&s, "t017").await?;
     s.executor.turn_started(&thread, "turn-1").await?;
@@ -1170,6 +1171,13 @@ async fn a_persons_message_reaches_an_idle_worker() -> anyhow::Result<()> {
             .is_some_and(|c| c.contains(":Queue:[输入 i2]")),
         "{:?}",
         s.host.calls()
+    );
+    // The follow-up keeps the mandate in view, after the input (case B4).
+    let follow_up = s.host.texts.lock().unwrap().last().cloned();
+    assert_eq!(
+        follow_up.as_deref().and_then(|text| text.lines().last()),
+        Some("（授权范围不变：fix t017）"),
+        "{follow_up:?}"
     );
     assert!(
         s.executor.slots().holds("t017"),
