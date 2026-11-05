@@ -37,8 +37,8 @@ Exported Git source contains no account credentials or conversation transcripts.
 | --- | --- | --- |
 | Preserve PM binding at launcher entry | Installed on Mac | `d16bdb73f8`; explicit profile selection only |
 | Acquire exact build-27 source | Complete | Full commit, verified bundle, clean worktree inventory |
-| Reimplement organization extension on 0.166 | Implemented; Mac build passed | Optional extension, new host lifecycle, unchanged ledger migrations |
-| Linux candidate | In progress | Separate build and runtime directory on Dell |
+| Reimplement organization extension on 0.166 | Implemented; Mac and Linux builds passed | `c2fd5a6e7c`; optional extension, new host lifecycle, unchanged ledger migrations |
+| Linux candidate | Packaged; startup and restart checks passed | Separate build, package, state directory, and Unix socket on Dell |
 | Validate production account routing and recovery | Pending operational acceptance | No claim of live gateway or worker validation from compilation |
 | Restore sealed deployment | Not performed | Production pointer, databases, stop markers, and service state retained |
 
@@ -77,11 +77,49 @@ uses Rust 1.95.0 and the verified target-specific V8 artifacts. Config schema is
 regenerated; Bazel lock update and check pass. The protocol schema writer is
 exposed through a test target, so the unchanged experimental `superagent/status`
 contract is copied from build-27 into the reviewed 0.166 precomputed export tree;
-the stable wire export is unchanged. Mac runtime smoke checks pass with a local, non-model provider: the disabled
+the stable wire export is unchanged. Mac runtime smoke checks pass with a local,
+non-model provider: the disabled
 feature creates no organization ledger; the enabled service opens both unchanged
 migrations, reports two registered PM groups, and returns healthy status after
 process restart. All three app-server processes exit normally. No model turn was
 submitted. These checks do not validate live gateway routing or worker execution.
+
+## Dell candidate receipt
+
+The exact implementation is `c2fd5a6e7c3e95fce0fcef2724dfd3ac77e0b895`.
+The source worktree is `/home/codext-org/wt/superagent-0.166-c2fd5a6e7c` and
+the build record is `/home/codext-org/build/superagent-0.166-20261104`.
+Rust 1.95.0 built the CLI, code-mode host, exec-server, and bwrap successfully.
+The canonical package builder produced:
+
+`/home/codext-org/.local/libexec/codex-candidates/codext-v0.166.0-superagent-c2fd5a6e7c3e`
+
+The CLI reports 0.166.0 and its SHA-256 is
+`15d18f55f0f548750339ce85b8ab5f51bb51f5245e5445a3131c4a069fafcb58`.
+The packaged bwrap matches the digest embedded during compilation. Companion
+hashes and logs are in the build record and the local verification directory's
+`dell/evidence-manifest.json`.
+
+Using that package over an isolated Unix WebSocket, startup and restart both
+report two registered PM groups, healthy status, and both ledger migrations.
+Both processes exit normally. No model turn or worker task was submitted. Dell's
+existing `/etc/codex/managed_config.toml` enforces `superagent = true`, so a local
+`false` cannot exercise disabled mode there; the Mac check covers that case.
+The managed configuration was not changed.
+
+Production remains stopped and disabled, including its watchdog. `STABLE` still
+names the build-27 directory; manual-stop/no-failover markers remain. Read-only
+inspection found no pending effects or inflight deliveries and one open
+assignment in running/waiting state. The system Python's SQLite 3.37 cannot parse
+the ledger's existing JSON expressions; a compatible reader confirmed the counts
+without changing the database. That older-reader error is not evidence of
+corruption.
+
+ATM and its reverse tunnel remain stopped. Live Router-to-worker acceptance and
+production promotion are still pending. Before promotion, preserve the previous
+pointer, configuration, profile bindings, and all SQLite databases with any
+WAL/SHM files while the organization is stopped. Rollback needs the matching old
+state as well as the old binary; 0.166 can migrate shared state databases.
 
 ## Launcher contract
 
