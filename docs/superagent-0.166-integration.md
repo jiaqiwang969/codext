@@ -115,8 +115,10 @@ the ledger's existing JSON expressions; a compatible reader confirmed the counts
 without changing the database. That older-reader error is not evidence of
 corruption.
 
-ATM and its reverse tunnel remain stopped. Live Router-to-worker acceptance and
-production promotion are still pending. Before promotion, preserve the previous
+The user explicitly chose to keep ATM stopped after candidate validation on
+2026-11-04. ATM and its reverse tunnel remain stopped; live Router-to-worker
+acceptance and production promotion are deferred. The next discussion concerns
+Agent command center requirements, not production restart. Before promotion, preserve the previous
 pointer, configuration, profile bindings, and all SQLite databases with any
 WAL/SHM files while the organization is stopped. Rollback needs the matching old
 state as well as the old binary; 0.166 can migrate shared state databases.
