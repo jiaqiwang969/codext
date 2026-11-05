@@ -432,6 +432,18 @@ pub async fn install_pm_handlers(runtime: Arc<PmRuntime>) -> anyhow::Result<()> 
     Ok(())
 }
 
+/// Every tool a Router thread can be given at any level (`router.rs`); the host's tool policy
+/// for PM threads allows exactly these, so a tool missing here never reaches the model.
+pub const ROUTER_TOOLS: &[&str] = &[
+    crate::tools::read::READ_TOOL,
+    crate::tools::pm::ROUTE_TOOL,
+    crate::tools::pm::TICKET_NOTE_TOOL,
+    crate::tools::pm::TICKET_RETRY_TOOL,
+    crate::tools::pm::REQUEST_STATUS_TOOL,
+    crate::tools::pm::TRIGGER_REQUEUE_TOOL,
+    crate::tools::drive::DRIVE_TOOL,
+];
+
 /// The tools a PM thread gets.
 pub fn pm_tools(
     runtime: &Arc<PmRuntime>,

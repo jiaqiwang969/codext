@@ -58,23 +58,18 @@ pub(crate) struct AppServerSuperagentHost {
     pub(crate) turn_processor: OnceLock<TurnRequestProcessor>,
 }
 
-/// What a PM thread may call: the superagent tools and the plan tool, nothing that dispatches work
-/// natively (design decision #7). Captured by core when the thread starts or resumes.
+/// What a PM thread may call: the Router's superagent tools and the plan tool, nothing that
+/// dispatches work natively (design decision #7). Captured by core when the thread starts or
+/// resumes.
 fn pm_tool_policy() -> ToolPolicy {
     ToolPolicy {
         allowed_tools: Some(
-            [
-                "superagent_route",
-                "superagent_read",
-                "superagent_ticket_note",
-                "superagent_ticket_retry",
-                "superagent_request_status",
-                "superagent_trigger_requeue",
-                "update_plan",
-            ]
-            .into_iter()
-            .map(ToolName::plain)
-            .collect(),
+            codex_superagent_extension::pm::ROUTER_TOOLS
+                .iter()
+                .copied()
+                .chain(["update_plan"])
+                .map(ToolName::plain)
+                .collect(),
         ),
         ..ToolPolicy::default()
     }
