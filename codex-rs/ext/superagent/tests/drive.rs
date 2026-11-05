@@ -1,5 +1,6 @@
-//! The drive loop: each judgment either sends one step written from the anchor and the audit, or
-//! stops and says why; a step in flight is never sent twice, not even across a restart.
+//! The drive loop: the Router's words go to the session; each finished turn's conclusion comes
+//! back to the Router, after the audit for an anchored goal; a step the Router says is checked
+//! against the records first; a step in flight is never sent twice, not even across a restart.
 
 mod common;
 
@@ -21,7 +22,9 @@ use codex_superagent_extension::drive::DriveStart;
 use codex_superagent_extension::drive::DriveState;
 use codex_superagent_extension::drive::Feedback;
 use codex_superagent_extension::drive::Goal;
+use codex_superagent_extension::drive::DriveMode;
 use codex_superagent_extension::drive::Judge;
+use codex_superagent_extension::drive::Say;
 use codex_superagent_extension::host::DeliveryMode;
 use codex_superagent_extension::host::GoalStatus;
 use codex_superagent_extension::host::SuperagentHost;
@@ -35,13 +38,17 @@ use serde_json::json;
 use tempfile::TempDir;
 
 const THREAD: &str = "019a0000-0000-7000-8000-00000000d001";
+const ROUTER: &str = "019a0000-0000-7000-8000-00000000d0aa";
+const OPENED: &str = "019a0000-0000-7000-8000-00000000d002";
 
 #[derive(Default)]
 struct FakeHost {
     calls: Mutex<Vec<String>>,
     delivered: Mutex<Vec<String>>,
     queue: Mutex<Vec<(String, String)>>,
-    latest: Mutex<Option<String>>,
+    latest: Mutex<Option<TurnBrief>>,
+    turns: Mutex<u32>,
+    opened: Mutex<Vec<(PathBuf, Option<String>)>>,
     /// Like the real host, delivering to an idle session starts its turn: the drive's turn-start
     /// hook runs inside `deliver`.
     on_deliver: Mutex<Option<DriveService>>,
@@ -54,14 +61,26 @@ impl FakeHost {
     fn delivered(&self) -> Vec<String> {
         Self::lock(&self.delivered).clone()
     }
-    fn set_latest(&self, status: &str) {
-        *Self::lock(&self.latest) = Some(status.to_owned());
+    /// A new turn of the session ended (or runs) with the worker's last words.
+    fn finish(&self, status: &str, conclusion: &str) {
+        let mut turns = Self::lock(&self.turns);
+        *turns += 1;
+        *Self::lock(&self.latest) = Some(TurnBrief {
+            id: format!("turn-{turns}"),
+            status: status.to_owned(),
+            user: Vec::new(),
+            assistant: vec!["先看看目录".to_owned(), conclusion.to_owned()],
+        });
     }
 }
 
 impl SuperagentHost for FakeHost {
-    fn start_thread(&self, _spec: ThreadSpec) -> BoxFut<'_, anyhow::Result<ThreadId>> {
-        Box::pin(async { anyhow::bail!("the drive loop starts no thread") })
+    fn start_thread(&self, spec: ThreadSpec) -> BoxFut<'_, anyhow::Result<ThreadId>> {
+        Self::lock(&self.opened).push((spec.cwd, spec.profile));
+        Box::pin(async { Ok(ThreadId::from_string(OPENED)?) })
+    }
+    fn thread_profile(&self, _thread: ThreadId) -> BoxFut<'_, anyhow::Result<Option<String>>> {
+        Box::pin(async { Ok(Some("lab-account".to_owned())) })
     }
     fn bind_profile(&self, _thread: ThreadId, _profile: String) -> BoxFut<'_, anyhow::Result<()>> {
         Box::pin(async { Ok(()) })
@@ -107,17 +126,7 @@ impl SuperagentHost for FakeHost {
         _limit: u32,
     ) -> BoxFut<'_, anyhow::Result<Vec<TurnBrief>>> {
         let latest = Self::lock(&self.latest).clone();
-        Box::pin(async move {
-            Ok(latest
-                .map(|status| TurnBrief {
-                    id: "turn-1".to_owned(),
-                    status,
-                    user: Vec::new(),
-                    assistant: Vec::new(),
-                })
-                .into_iter()
-                .collect())
-        })
+        Box::pin(async move { Ok(latest.into_iter().collect()) })
     }
     fn queued(&self, _thread: ThreadId) -> BoxFut<'_, anyhow::Result<Vec<(String, String)>>> {
         let queue = Self::lock(&self.queue).clone();
@@ -239,18 +248,36 @@ fn workspace(dir: &Path) -> anyhow::Result<PathBuf> {
     Ok(home)
 }
 
-fn start(project_home: PathBuf, goal: Option<Goal>) -> DriveStart {
+const REQUEST: &str = "整理笔记目录，按主题分好";
+const FIRST: &str = "把 notes 里的笔记按主题分进子目录，做完告诉我怎么检查。";
+
+fn simple(folder: PathBuf) -> DriveStart {
     DriveStart {
-        project_home,
+        project_home: folder,
         title: "整理笔记".to_owned(),
+        mode: DriveMode::Simple,
         max_steps: None,
+        request: REQUEST.to_owned(),
+        goal: None,
+        first: FIRST.to_owned(),
+    }
+}
+
+fn anchored(project_home: PathBuf, goal: Option<Goal>) -> DriveStart {
+    DriveStart {
+        mode: DriveMode::Anchored,
+        request: goal
+            .as_ref()
+            .map(|goal| goal.request.clone())
+            .unwrap_or_else(|| "整理笔记目录".to_owned()),
         goal,
+        ..simple(project_home)
     }
 }
 
 struct Setup {
     _dir: TempDir,
-    _work: TempDir,
+    work: TempDir,
     home: PathBuf,
     host: Arc<FakeHost>,
     judge: Arc<ScriptedJudge>,
@@ -258,8 +285,8 @@ struct Setup {
     drive: DriveService,
 }
 
-/// The effect queue is not started: each test runs the judgments itself, in order.
-async fn setup() -> anyhow::Result<Setup> {
+/// The effect queue is not started: each test runs the looks itself, in order.
+async fn setup_with(stall: std::time::Duration) -> anyhow::Result<Setup> {
     let (dir, store) = open_store().await?;
     let work = TempDir::new()?;
     let home = workspace(work.path())?;
@@ -272,186 +299,267 @@ async fn setup() -> anyhow::Result<Setup> {
         effects.clone(),
         host.clone() as Arc<dyn SuperagentHost>,
         judge.clone() as Arc<dyn Judge>,
-        std::time::Duration::from_secs(3600),
+        stall,
     )
     .await?;
-    Ok(Setup {
-        _dir: dir,
-        _work: work,
-        home,
-        host,
-        judge,
-        effects,
-        drive,
-    })
+    Ok(Setup { _dir: dir, work, home, host, judge, effects, drive })
+}
+
+async fn setup() -> anyhow::Result<Setup> {
+    setup_with(std::time::Duration::from_secs(3600)).await
 }
 
 impl Setup {
+    /// A simple drive in the work folder.
     async fn start(&self) -> anyhow::Result<DriveRecord> {
-        self.drive
-            .start(THREAD, start(self.home.clone(), None))
-            .await
+        self.drive.start(THREAD, simple(self.work.path().to_owned())).await
+    }
+    async fn start_anchored(&self) -> anyhow::Result<DriveRecord> {
+        self.drive.start(THREAD, anchored(self.home.clone(), None)).await
     }
     async fn record(&self) -> anyhow::Result<DriveRecord> {
         Ok(self.drive.record(THREAD).await?.expect("a drive record"))
     }
-    /// The step's turn starts and ends normally.
-    async fn turn(&self) -> anyhow::Result<()> {
+    /// The step's turn starts and ends normally with the worker's conclusion; then the engine
+    /// looks at it.
+    async fn turn(&self, conclusion: &str) -> anyhow::Result<()> {
         self.drive.turn_started(THREAD).await?;
-        self.host.set_latest("completed");
-        self.drive.turn_stopped(THREAD).await
+        self.host.finish("completed", conclusion);
+        self.drive.turn_stopped(THREAD).await?;
+        self.drive.step(THREAD).await
+    }
+    async fn notices(&self) -> anyhow::Result<Vec<String>> {
+        Ok(self
+            .effects
+            .queued("notice")
+            .await?
+            .into_iter()
+            .map(|(_, payload)| payload["summary"].as_str().unwrap_or_default().to_owned())
+            .collect())
+    }
+}
+
+fn say(text: &str, builds_on: &str, serves: &str) -> Say {
+    Say {
+        text: text.to_owned(),
+        builds_on: builds_on.to_owned(),
+        serves: serves.to_owned(),
+        correction: None,
     }
 }
 
 #[tokio::test]
-async fn a_step_names_the_item_a_correction_affects_and_is_recorded_before_it_is_sent()
+async fn start_sends_the_routers_first_message_and_records_it_in_flight() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let mut plain = simple(s.work.path().to_owned());
+    plain.first = "推进验收项 A1：按工程本体写阶段声明".to_owned();
+    let refused = s.drive.start(THREAD, plain).await;
+    assert!(format!("{:#}", refused.expect_err("jargon")).contains("方法名或编号"));
+    let mut wordless = simple(s.work.path().to_owned());
+    wordless.request = " ".to_owned();
+    assert!(s.drive.start(THREAD, wordless).await.is_err());
+    assert!(s.host.delivered().is_empty());
+
+    let record = s.start().await?;
+    assert_eq!(s.host.delivered(), vec![FIRST.to_owned()]);
+    assert_eq!(
+        (record.mode, record.steps, record.inflight, record.request.as_str()),
+        (DriveMode::Simple, 1, Some(1), REQUEST)
+    );
+    assert_eq!(record.history[0].text, FIRST);
+    assert!(s.start().await.is_err(), "a second start is refused");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_finished_turn_hands_its_conclusion_to_the_router_and_sends_nothing() -> anyhow::Result<()>
+{
+    let s = setup().await?;
+    s.start().await?;
+    s.turn("分好了 3 个主题目录；浏览器在沙箱里打不开，没法真实试看").await?;
+    let record = s.record().await?;
+    assert_eq!(
+        record.state,
+        DriveState::Reported {
+            summary: "分好了 3 个主题目录；浏览器在沙箱里打不开，没法真实试看".to_owned()
+        }
+    );
+    let report = record.report.expect("a report");
+    assert_eq!((report.turn.as_str(), report.audit), ("turn-1", None));
+    assert_eq!(s.host.delivered().len(), 1, "the engine wrote no step");
+    let notices = s.notices().await?;
+    assert_eq!(notices.len(), 1);
+    assert!(notices[0].contains("第 1 步结束"), "{}", notices[0]);
+    assert!(notices[0].contains("浏览器在沙箱里打不开"), "{}", notices[0]);
+    assert!(notices[0].contains("superagent_drive say"), "{}", notices[0]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn say_goes_out_only_on_a_basis_found_in_the_records() -> anyhow::Result<()> {
+    let s = setup().await?;
+    s.start().await?;
+    let next = "浏览器开不了就用命令行列出目录树自己核对，每个笔记只在一个主题里。";
+    // While the step is with the worker, nothing more goes.
+    let early = s.drive.say(THREAD, say(next, "打不开", "按主题分好")).await;
+    assert!(format!("{:#}", early.expect_err("busy")).contains("等它交了结论"));
+    s.turn("分好了 3 个主题目录；浏览器在沙箱里打不开").await?;
+
+    let cases = [
+        (say(next, "全部做完了", "按主题分好"), "builds_on"),
+        (say(next, "浏览器在沙箱里打不开", "做一个网站"), "serves"),
+        (say("验收项 A1 还没闭合", "浏览器在沙箱里打不开", "按主题分好"), "方法名或编号"),
+    ];
+    for (bad, why) in cases {
+        let refused = s.drive.say(THREAD, bad).await;
+        assert!(format!("{:#}", refused.expect_err(why)).contains(why), "{why}");
+    }
+    assert_eq!(s.host.delivered().len(), 1);
+
+    let record = s
+        .drive
+        .say(THREAD, say(next, "浏览器 在沙箱里，打不开", "按主题分好"))
+        .await?
+        .expect("a record");
+    assert_eq!(s.host.delivered().last().map(String::as_str), Some(next));
+    assert_eq!((record.steps, record.inflight), (2, Some(2)));
+    let step = record.history.last().expect("step 2");
+    assert_eq!(
+        (step.builds_on.as_str(), step.serves.as_str()),
+        ("浏览器 在沙箱里，打不开", "按主题分好")
+    );
+
+    // The same words again, without anything new, do not go.
+    s.turn("还是打不开浏览器").await?;
+    let again = s.drive.say(THREAD, say(next, "还是打不开浏览器", "按主题分好")).await;
+    assert!(format!("{:#}", again.expect_err("repeat")).contains("和第 2 步说的一样"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_persons_words_are_checked_before_they_are_passed_on() -> anyhow::Result<()> {
+    let s = setup().await?;
+    s.start().await?;
+    s.turn("分好了 3 个主题目录").await?;
+    let words = "主题目录名用英文，日期放前面";
+    let next = "目录名改成英文，日期放在前面，改完再列一遍目录树。";
+    let unheard = Say {
+        correction: Some(words.to_owned()),
+        ..say(next, "目录名用英文", "按主题分好")
+    };
+    let refused = s.drive.say(THREAD, unheard.clone()).await;
+    assert!(format!("{:#}", refused.expect_err("unheard")).contains("原话"));
+
+    s.drive.heard(&format!("{words}。")).await?;
+    let record = s.drive.say(THREAD, unheard).await?.expect("a record");
+    assert_eq!(record.corrections, vec![words.to_owned()]);
+    assert_eq!(s.host.delivered().last().map(String::as_str), Some(next));
+    Ok(())
+}
+
+#[tokio::test]
+async fn what_the_person_types_into_the_session_is_kept_but_not_the_drives_own_step()
 -> anyhow::Result<()> {
     let s = setup().await?;
     s.start().await?;
-    assert_eq!(s.effects.queued("drive-step").await?.len(), 1);
-    s.judge.then(audit("anchored", &[], &["A1", "A2"], "1"));
+    s.drive.person_input(THREAD, FIRST).await?;
+    s.drive.person_input(THREAD, "子目录名用英文").await?;
+    assert_eq!(s.record().await?.notes, vec!["子目录名用英文".to_owned()]);
+    s.turn("分好了").await?;
+    assert!(s.notices().await?[0].contains("用户在会话里说过：子目录名用英文"));
+    // The person's own later turn replaces the conclusion the Router reads.
+    s.host.finish("completed", "按你说的改成英文了");
+    s.drive.turn_stopped(THREAD).await?;
     s.drive.step(THREAD).await?;
-
-    let delivered = s.host.delivered();
-    assert_eq!(delivered.len(), 1);
-    let prompt = &delivered[0];
-    assert!(prompt.starts_with("[推进 第1步 · 整理笔记]\n"), "{prompt}");
-    assert!(
-        prompt.contains("本步推进验收项 A2：根目录有索引文件（当前 open）"),
-        "{prompt}"
-    );
-    assert!(prompt.contains("其余未闭合：A1；已核实：无"), "{prompt}");
-    assert!(prompt.contains("回填到 route-anchor"), "{prompt}");
-    assert_eq!(
-        FakeHost::lock(&s.host.calls).clone(),
-        vec![format!("step:{THREAD}")]
-    );
-    let record = s.record().await?;
-    assert_eq!(
-        (
-            record.steps,
-            record.inflight,
-            record.history[0].focus.as_str()
-        ),
-        (1, Some(1), "A2")
-    );
-    assert!(s.drive.drives(THREAD).await?);
-
-    // The step is in flight: judging again sends nothing; nor while its turn runs.
-    s.drive.step(THREAD).await?;
-    s.drive.turn_started(THREAD).await?;
-    s.host.set_latest("inProgress");
-    s.drive.step(THREAD).await?;
-    assert_eq!(s.host.delivered().len(), 1);
+    let report = s.record().await?.report.expect("a report");
+    assert_eq!((report.turn.as_str(), report.text.as_str()), ("turn-2", "按你说的改成英文了"));
     Ok(())
 }
 
 #[tokio::test]
-async fn two_steps_without_a_back_filled_stage_stop_the_drive() -> anyhow::Result<()> {
+async fn an_anchored_turn_is_judged_and_the_audit_may_stop_the_drive() -> anyhow::Result<()> {
     let s = setup().await?;
-    s.start().await?;
-    s.judge.then(audit("anchored", &[], &["A1"], "same"));
-    s.drive.step(THREAD).await?;
-    for _ in 0..2 {
-        s.turn().await?;
-        s.drive.step(THREAD).await?;
-    }
-    assert_eq!(s.host.delivered().len(), 2);
-    let record = s.record().await?;
-    assert_eq!(
-        (record.state, record.unchanged),
-        (
-            DriveState::NeedsDecision {
-                reason: "连续 2 步 Project 和锚定记录都没有变化：worker 没有回填阶段".to_owned()
-            },
-            2
-        )
-    );
-    assert!(!s.drive.drives(THREAD).await?);
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_verified_delivery_or_a_drift_stops_without_a_step() -> anyhow::Result<()> {
-    let s = setup().await?;
-    s.start().await?;
+    s.start_anchored().await?;
     s.judge.then(audit("anchored", &["A1"], &["A2"], "1"));
-    s.drive.step(THREAD).await?;
-    s.turn().await?;
-    s.judge.then(audit("anchored", &["A1", "A2"], &[], "2"));
-    s.drive.step(THREAD).await?;
-    assert_eq!(s.host.delivered().len(), 1);
-    let notices = s.effects.queued("notice").await?;
+    s.turn("分好了主题目录，索引还没写").await?;
+    let record = s.record().await?;
+    assert!(matches!(record.state, DriveState::Reported { .. }));
     assert_eq!(
-        notices
-            .iter()
-            .map(|(key, payload)| (key.clone(), payload["summary"].clone()))
-            .collect::<Vec<_>>(),
-        vec![(
-            format!("drive:{THREAD}"),
-            json!(format!(
-                "会话 {THREAD}（整理笔记）可交付，等你验收：anchored；已核实 A1、A2；未闭合 无；不一致 无"
-            ))
-        )]
+        record.report.and_then(|report| report.audit).as_deref(),
+        Some("anchored；已核实 A1；未闭合 A2；不一致 无")
     );
+    // The basis may quote an acceptance item of the anchor.
+    s.drive
+        .say(THREAD, say("接着写根目录的索引，按日期排。", "索引还没写", "根目录有索引文件"))
+        .await?;
+
+    s.judge.then(audit("anchored", &["A1", "A2"], &[], "2"));
+    s.turn("索引写好了").await?;
     assert_eq!(
         s.record().await?.state,
         DriveState::Deliverable {
             summary: "anchored；已核实 A1、A2；未闭合 无；不一致 无".to_owned()
         }
     );
+    let notices = s.notices().await?;
+    assert!(notices.last().expect("a notice").contains("可交付，等用户验收"));
 
     s.drive.resume(THREAD).await?;
+    s.drive
+        .say(THREAD, say("把索引里的日期格式统一一下。", "索引写好了", "索引要按日期"))
+        .await?;
     let mut drift = audit("drift", &[], &["A2"], "3");
     drift.findings = vec!["code=no_progress_streak stage=S02".to_owned()];
     s.judge.then(drift);
-    s.drive.step(THREAD).await?;
+    s.turn("改了格式").await?;
     assert_eq!(
         s.record().await?.state,
         DriveState::NeedsDecision {
             reason: "偏移：code=no_progress_streak stage=S02".to_owned()
         }
     );
-    assert_eq!(s.host.delivered().len(), 1);
+    assert_eq!(s.host.delivered().len(), 3);
     Ok(())
 }
 
 #[tokio::test]
-async fn the_persons_words_reach_the_next_step_once() -> anyhow::Result<()> {
+async fn the_step_cap_pauses_and_only_a_raised_cap_lets_the_router_go_on() -> anyhow::Result<()> {
     let s = setup().await?;
-    s.start().await?;
-    s.judge.then(audit("anchored", &[], &["A1"], "1"));
-    s.drive.step(THREAD).await?;
-    s.drive.person_input(THREAD, "子目录名用英文").await?;
-    s.turn().await?;
-    s.judge.then(audit("anchored", &[], &["A1"], "2"));
-    s.drive.step(THREAD).await?;
-    let delivered = s.host.delivered();
-    assert!(
-        delivered[1].contains("- 子目录名用英文\n"),
-        "{}",
-        delivered[1]
+    let start = DriveStart {
+        max_steps: Some(1),
+        ..simple(s.work.path().to_owned())
+    };
+    s.drive.start(THREAD, start).await?;
+    s.turn("分好了，还差索引").await?;
+    assert_eq!(
+        s.record().await?.state,
+        DriveState::Paused {
+            reason: "已推进 1 步，达到上限；放宽要问用户".to_owned()
+        }
     );
-    assert_eq!(s.record().await?.notes, Vec::<String>::new());
+    let next = say("接着写索引。", "还差索引", "按主题分好");
+    let refused = s.drive.say(THREAD, next.clone()).await;
+    assert!(format!("{:#}", refused.expect_err("cap")).contains("已推进 1/1 步"));
+    s.drive.set_max_steps(THREAD, 3).await?;
+    s.drive.resume(THREAD).await?;
+    s.drive.say(THREAD, next).await?;
+    assert_eq!(s.record().await?.steps, 2);
     Ok(())
 }
 
 #[tokio::test]
-async fn an_interruption_or_a_failed_step_pauses_and_resume_drives_again() -> anyhow::Result<()> {
+async fn an_interruption_or_a_failed_turn_pauses_the_drive() -> anyhow::Result<()> {
     let s = setup().await?;
     s.start().await?;
-    s.judge.then(audit("anchored", &[], &["A1"], "1"));
-    s.drive.step(THREAD).await?;
     s.drive.turn_started(THREAD).await?;
     s.drive.turn_interrupted(THREAD).await?;
     assert!(matches!(s.record().await?.state, DriveState::Paused { .. }));
-    // The person's own interruption is not told back to them.
-    assert_eq!(s.effects.queued("notice").await?.len(), 0);
-    assert!(!s.drive.drives(THREAD).await?);
+    assert_eq!(s.notices().await?.len(), 0, "the person's own pause is not told back");
 
-    s.drive.resume(THREAD).await?;
-    assert!(s.drive.drives(THREAD).await?);
-    s.host.set_latest("failed");
+    s.drive.stop(THREAD).await?;
+    s.start().await?;
+    s.drive.turn_started(THREAD).await?;
+    s.host.finish("failed", "出错了");
     s.drive.step(THREAD).await?;
     assert_eq!(
         s.record().await?.state,
@@ -459,68 +567,85 @@ async fn an_interruption_or_a_failed_step_pauses_and_resume_drives_again() -> an
             reason: "第 1 步没有正常结束（failed）".to_owned()
         }
     );
-    assert_eq!(s.host.delivered().len(), 1);
     Ok(())
 }
 
 #[tokio::test]
-async fn stop_and_recovery_withdraw_only_the_engines_queued_steps() -> anyhow::Result<()> {
-    let s = setup().await?;
+async fn a_step_that_never_starts_is_withdrawn_and_the_drive_pauses() -> anyhow::Result<()> {
+    let s = setup_with(std::time::Duration::ZERO).await?;
     s.start().await?;
-    s.judge.then(audit("anchored", &[], &["A1"], "1"));
-    s.drive.step(THREAD).await?;
     *FakeHost::lock(&s.host.queue) = vec![
-        ("q1".to_owned(), s.host.delivered()[0].clone()),
-        ("q2".to_owned(), "我自己排的消息".to_owned()),
+        ("q1".to_owned(), FIRST.to_owned()),
+        ("q2".to_owned(), "用户自己排的话".to_owned()),
     ];
-
-    // A restart before the step's turn started: no replay, the queued step goes.
-    s.drive.recover().await?;
+    s.drive.step(THREAD).await?;
     let record = s.record().await?;
     assert_eq!(
-        (
-            record.state,
-            record.steps,
-            record.inflight,
-            record.history.len()
-        ),
+        (record.state, record.inflight, record.steps),
         (
             DriveState::Paused {
-                reason: "服务重启时第 1 步已交出但没有看到开始，没有自动重放".to_owned()
+                reason: "第 1 步交出后一直没有开始，已撤回".to_owned()
             },
-            0,
             None,
             0
         )
     );
     assert_eq!(
         FakeHost::lock(&s.host.queue).clone(),
-        vec![("q2".to_owned(), "我自己排的消息".to_owned())]
-    );
-
-    FakeHost::lock(&s.host.queue).push(("q3".to_owned(), "[推进 第9步 · 旧]".to_owned()));
-    let released = s.drive.stop(THREAD).await?;
-    assert!(released.is_some());
-    assert_eq!(s.drive.record(THREAD).await?, None);
-    assert_eq!(
-        FakeHost::lock(&s.host.queue).clone(),
-        vec![("q2".to_owned(), "我自己排的消息".to_owned())]
+        vec![("q2".to_owned(), "用户自己排的话".to_owned())]
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn start_refuses_a_project_without_a_committed_anchor_and_a_second_start()
--> anyhow::Result<()> {
+async fn recovery_and_stop_withdraw_only_the_drives_queued_steps() -> anyhow::Result<()> {
     let s = setup().await?;
-    let bare = TempDir::new()?;
-    let refused = s
-        .drive
-        .start(THREAD, start(bare.path().to_path_buf(), None))
-        .await;
-    assert!(refused.is_err());
     s.start().await?;
-    assert!(s.start().await.is_err());
+    *FakeHost::lock(&s.host.queue) = vec![
+        ("q1".to_owned(), FIRST.to_owned()),
+        ("q2".to_owned(), "用户自己排的话".to_owned()),
+    ];
+    // A restart before the step's turn started: no replay, the queued step goes.
+    s.drive.recover().await?;
+    let record = s.record().await?;
+    assert_eq!((record.steps, record.inflight), (0, None));
+    assert!(matches!(record.state, DriveState::Paused { .. }));
+    assert_eq!(FakeHost::lock(&s.host.queue).len(), 1);
+    assert_eq!(s.host.delivered().len(), 1, "nothing was sent again");
+
+    FakeHost::lock(&s.host.queue).push(("q3".to_owned(), "[推进 第9步 · 旧]".to_owned()));
+    s.drive.stop(THREAD).await?;
+    assert_eq!(
+        FakeHost::lock(&s.host.queue).clone(),
+        vec![("q2".to_owned(), "用户自己排的话".to_owned())]
+    );
+    assert!(s.drive.record(THREAD).await?.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn handing_over_a_step_may_start_its_turn_at_once() -> anyhow::Result<()> {
+    let s = setup().await?;
+    *FakeHost::lock(&s.host.on_deliver) = Some(s.drive.clone());
+    tokio::time::timeout(std::time::Duration::from_secs(5), s.start()).await??;
+    let record = s.record().await?;
+    assert_eq!((record.steps, record.inflight, record.started), (1, None, Some(1)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_new_session_opens_in_its_folder_under_the_routers_account() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let folder = s.work.path().join("01-snake");
+    let relative = s.drive.open_session(Path::new("01-snake"), Some(ROUTER)).await;
+    assert!(relative.is_err());
+    let thread = s.drive.open_session(&folder, Some(ROUTER)).await?;
+    assert_eq!(thread, OPENED);
+    assert!(folder.is_dir());
+    assert_eq!(
+        FakeHost::lock(&s.host.opened).clone(),
+        vec![(folder, Some("lab-account".to_owned()))]
+    );
     Ok(())
 }
 
@@ -534,11 +659,7 @@ fn without_a_commit_the_plain_anchor_and_the_latest_project_record_are_read() ->
     std::fs::write(home.join("project.json"), "{}")?;
     let plain = codex_superagent_extension::drive::workspace(home)?;
     assert_eq!(
-        (
-            plain.project.as_str(),
-            plain.anchor.as_str(),
-            plain.committed
-        ),
+        (plain.project.as_str(), plain.anchor.as_str(), plain.committed),
         ("project.json", "route-anchor.json", false)
     );
     for name in ["project-r2.json", "project-r10.json"] {
@@ -566,77 +687,12 @@ fn an_audit_report_reads_as_its_delivery_scope() -> anyhow::Result<()> {
     });
     let audit = Audit::parse(&report)?;
     assert!(audit.deliverable());
-    assert_eq!(
-        audit.summary(),
-        "anchored；已核实 A1、A2、A3；未闭合 无；不一致 无"
-    );
+    assert_eq!(audit.summary(), "anchored；已核实 A1、A2、A3；未闭合 无；不一致 无");
     let failure = json!({
         "schema": "oev2.command-failure/1",
         "error": { "code": "invalid_contract", "reason": "input_or_output_contract_unavailable" },
     });
     assert!(Audit::parse(&failure).is_err());
-    Ok(())
-}
-
-#[tokio::test]
-async fn delivering_a_step_may_start_its_turn_at_once() -> anyhow::Result<()> {
-    let s = setup().await?;
-    *FakeHost::lock(&s.host.on_deliver) = Some(s.drive.clone());
-    s.start().await?;
-    s.judge.then(audit("anchored", &[], &["A1"], "1"));
-    tokio::time::timeout(std::time::Duration::from_secs(5), s.drive.step(THREAD)).await??;
-    let record = s.record().await?;
-    assert_eq!((record.steps, record.inflight), (1, None));
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_step_that_never_starts_is_withdrawn_and_the_drive_pauses() -> anyhow::Result<()> {
-    let (dir, store) = open_store().await?;
-    let work = TempDir::new()?;
-    let home = workspace(work.path())?;
-    let host = Arc::new(FakeHost::default());
-    let judge = Arc::new(ScriptedJudge::default());
-    let effects =
-        Effects::new(store.clone(), HealthBoard::new(), FakeClock::at(T0).clock()).await?;
-    let drive = DriveService::install(
-        store,
-        effects,
-        host.clone() as Arc<dyn SuperagentHost>,
-        judge.clone() as Arc<dyn Judge>,
-        std::time::Duration::ZERO,
-    )
-    .await?;
-    drive.start(THREAD, start(home, None)).await?;
-    judge.then(audit("anchored", &[], &["A1"], "1"));
-    drive.step(THREAD).await?;
-    *FakeHost::lock(&host.queue) = vec![("q1".to_owned(), host.delivered()[0].clone())];
-    drive.step(THREAD).await?;
-    let record = drive.record(THREAD).await?.expect("a record");
-    assert_eq!(
-        (record.state, record.inflight, record.steps),
-        (
-            DriveState::Paused {
-                reason: "第 1 步交出后一直没有开始，已撤回；交回后重新判定".to_owned()
-            },
-            None,
-            0
-        )
-    );
-    // Handed back, the same step goes again, and an older interrupted turn does not count
-    // against it.
-    host.set_latest("interrupted");
-    drive.resume(THREAD).await?;
-    drive.step(THREAD).await?;
-    let delivered = host.delivered();
-    assert_eq!(delivered.len(), 2);
-    assert!(
-        delivered[1].starts_with("[推进 第1步 · 整理笔记]"),
-        "{}",
-        delivered[1]
-    );
-    assert_eq!(FakeHost::lock(&host.queue).len(), 0);
-    drop(dir);
     Ok(())
 }
 
@@ -648,70 +704,42 @@ async fn a_confirmed_goal_anchors_a_project_that_has_none() -> anyhow::Result<()
     let goal = Goal {
         request: "把图纸按零件号整理好".to_owned(),
         deliverable: "按零件号分好目录的图纸".to_owned(),
-        acceptance: vec![
-            "A1：每张图纸在其零件号目录下".to_owned(),
-            "目录名就是零件号".to_owned(),
-        ],
+        acceptance: vec!["A1：每张图纸在其零件号目录下".to_owned(), "目录名就是零件号".to_owned()],
     };
-    // Half a goal is refused before anything is written.
     let partial = Goal {
         acceptance: Vec::new(),
         ..goal.clone()
     };
-    assert!(
-        s.drive
-            .start(THREAD, start(home.clone(), Some(partial)))
-            .await
-            .is_err()
-    );
+    assert!(s.drive.start(THREAD, anchored(home.clone(), Some(partial))).await.is_err());
     assert!(!home.join("route-anchor.json").exists());
 
-    s.drive
-        .start(THREAD, start(home.clone(), Some(goal.clone())))
-        .await?;
-    assert_eq!(
-        std::fs::read_to_string(home.join("request-root.txt"))?,
-        "把图纸按零件号整理好"
-    );
+    s.drive.start(THREAD, anchored(home.clone(), Some(goal.clone()))).await?;
+    assert_eq!(std::fs::read_to_string(home.join("request-root.txt"))?, "把图纸按零件号整理好");
     let anchor = codex_superagent_extension::drive::Anchor::read(&home)?;
     assert_eq!(
         (anchor.deliverable.as_str(), anchor.acceptance.clone()),
         (
             "按零件号分好目录的图纸",
             vec![
-                (
-                    "A1".to_owned(),
-                    "每张图纸在其零件号目录下".to_owned(),
-                    "open".to_owned()
-                ),
-                (
-                    "A2".to_owned(),
-                    "目录名就是零件号".to_owned(),
-                    "open".to_owned()
-                ),
+                ("A1".to_owned(), "每张图纸在其零件号目录下".to_owned(), "open".to_owned()),
+                ("A2".to_owned(), "目录名就是零件号".to_owned(), "open".to_owned()),
             ]
         )
     );
-    let project: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(home.join("project.json"))?)?;
-    assert_eq!(project["project_id"], json!("231-cad-drawings"));
-
     // An existing anchor is used as it is, never rewritten.
     s.drive.stop(THREAD).await?;
     let other = Goal {
         deliverable: "别的交付物".to_owned(),
         ..goal
     };
-    s.drive
-        .start(THREAD, start(home.clone(), Some(other)))
-        .await?;
+    s.drive.start(THREAD, anchored(home.clone(), Some(other))).await?;
     let again = codex_superagent_extension::drive::Anchor::read(&home)?;
     assert_eq!(again.deliverable, "按零件号分好目录的图纸");
     Ok(())
 }
 
 #[tokio::test]
-async fn the_persons_feedback_reopens_items_and_the_drive_goes_on_with_it() -> anyhow::Result<()> {
+async fn the_persons_feedback_reopens_items_and_waits_for_the_router() -> anyhow::Result<()> {
     let s = setup().await?;
     let work = TempDir::new()?;
     let home = work.path().join("01-snake/.engineering");
@@ -720,10 +748,7 @@ async fn the_persons_feedback_reopens_items_and_the_drive_goes_on_with_it() -> a
         deliverable: "可试玩的贪吃蛇".to_owned(),
         acceptance: vec!["方向键控制".to_owned(), "吃到食物变长加分".to_owned()],
     };
-    s.drive
-        .start(THREAD, start(home.clone(), Some(goal)))
-        .await?;
-    // The worker closed A2 and recorded a stage; the judgment then drifted and stopped.
+    s.drive.start(THREAD, anchored(home.clone(), Some(goal))).await?;
     let path = home.join("route-anchor.json");
     let mut anchor: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
     anchor["acceptance"][1]["status"] = json!("closed");
@@ -731,18 +756,8 @@ async fn the_persons_feedback_reopens_items_and_the_drive_goes_on_with_it() -> a
         "relation_target": "root", "advances": ["A1"], "outcome": "no_progress" }]);
     std::fs::write(&path, anchor.to_string())?;
     s.judge.then(audit("drift", &[], &["A1"], "1"));
-    s.drive.step(THREAD).await?;
-    assert!(matches!(
-        s.record().await?.state,
-        DriveState::NeedsDecision { .. }
-    ));
-
-    let unknown = Feedback {
-        text: "x".to_owned(),
-        passed: vec!["A9".to_owned()],
-        failed: Vec::new(),
-    };
-    assert!(s.drive.feedback(THREAD, unknown).await.is_err());
+    s.turn("方向键做好了，请你在浏览器里试玩").await?;
+    assert!(matches!(s.record().await?.state, DriveState::NeedsDecision { .. }));
 
     let words = "方向键能用，但是吃不到东西，也没有积分";
     let feedback = Feedback {
@@ -750,38 +765,22 @@ async fn the_persons_feedback_reopens_items_and_the_drive_goes_on_with_it() -> a
         passed: vec!["A1".to_owned()],
         failed: vec!["A2".to_owned()],
     };
+    // Only the person's own words go into the anchor.
+    assert!(s.drive.feedback(THREAD, feedback.clone()).await.is_err());
+    s.drive.heard(words).await?;
     s.drive.feedback(THREAD, feedback).await?;
-    s.drive.set_max_steps(THREAD, 8).await?;
     let anchor: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
     assert_eq!(
-        (
-            anchor["requests"][1].clone(),
-            anchor["acceptance"][1]["status"].clone(),
-            anchor["reviews"].clone(),
-        ),
-        (
-            json!({ "id": "U2", "kind": "correction", "text": words,
-                "source": "request-feedback-u2.txt", "affects": ["A2", "A1"] }),
-            json!("open"),
-            json!([{ "id": "R1", "after_stage": "S01", "source": "request-feedback-u2.txt" }]),
-        )
-    );
-    assert_eq!(
-        std::fs::read_to_string(home.join("request-feedback-u2.txt"))?,
-        words
+        (anchor["requests"][1]["text"].clone(), anchor["acceptance"][1]["status"].clone()),
+        (json!(words), json!("open"))
     );
     let record = s.record().await?;
-    assert_eq!((record.state, record.max_steps), (DriveState::Driving, 8));
-
-    // The next step goes after the item the person found failing, with their words.
-    s.judge.then(audit("anchored", &[], &["A1", "A2"], "2"));
-    s.drive.step(THREAD).await?;
-    let delivered = s.host.delivered();
-    let step = delivered.last().expect("a step");
-    assert!(step.contains("本步推进验收项 A2"), "{step}");
-    assert!(
-        step.contains("用户亲自验收（已记入锚定记录 U2）：通过 A1；没通过 A2"),
-        "{step}"
-    );
+    assert_eq!(record.corrections, vec![words.to_owned()]);
+    assert!(matches!(record.state, DriveState::Reported { .. }));
+    assert_eq!(s.host.delivered().len(), 1, "the Router speaks next, not the engine");
+    s.drive
+        .say(THREAD, say("先把吃食物和计分做上，用命令行测试自己跑通。", "吃不到东西", "吃到食物变长加分"))
+        .await?;
+    assert_eq!(s.host.delivered().len(), 2);
     Ok(())
 }

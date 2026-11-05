@@ -1,8 +1,11 @@
-//! `superagent_drive`: the Router takes a session under drive toward an anchored goal, pauses it
-//! when the person takes over, resumes it when they hand it back, stops it, or reads the steps
-//! the engine sent. Offered only while the Router drives (`router-mode` = `drive`).
+//! `superagent_drive`: the Router keeps a session moving on the person's behalf. It starts a
+//! drive with the person's words and its own first message (opening a folder and a session when
+//! there is none), answers each conclusion the worker reports with `say` (the engine checks the
+//! basis), passes on acceptance feedback, pauses, hands back, stops, or reads what was said.
+//! Offered while the Router drives (`router-mode` = `drive` or `org`).
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -22,11 +25,13 @@ use serde_json::json;
 use super::json_output;
 use super::parse_arguments;
 use crate::cards::truncate_chars;
+use crate::drive::DriveMode;
 use crate::drive::DriveRecord;
 use crate::drive::DriveService;
 use crate::drive::DriveStart;
 use crate::drive::Feedback;
 use crate::drive::Goal;
+use crate::drive::Say;
 
 pub const DRIVE_TOOL: &str = "superagent_drive";
 const PROMPT_CHARS: usize = 1_500;
@@ -35,6 +40,7 @@ const PROMPT_CHARS: usize = 1_500;
 #[serde(rename_all = "lowercase")]
 enum Action {
     Start,
+    Say,
     Pause,
     Resume,
     Stop,
@@ -45,7 +51,16 @@ enum Action {
 #[derive(Debug, Deserialize)]
 struct DriveArgs {
     action: Action,
-    thread_id: String,
+    #[serde(default)]
+    thread_id: Option<String>,
+    #[serde(default)]
+    folder: Option<String>,
+    #[serde(default)]
+    builds_on: Option<String>,
+    #[serde(default)]
+    serves: Option<String>,
+    #[serde(default)]
+    correction: Option<String>,
     #[serde(default)]
     project: Option<String>,
     #[serde(default)]
@@ -68,13 +83,27 @@ struct DriveArgs {
 
 type Lookup = Arc<dyn Fn() -> Option<DriveService> + Send + Sync>;
 
+/// The Project workspace of a project directory (or the workspace itself).
+fn workspace_of(project: &Path) -> PathBuf {
+    if project
+        .file_name()
+        .is_some_and(|name| name == ".engineering")
+    {
+        project.to_owned()
+    } else {
+        project.join(".engineering")
+    }
+}
+
 pub struct DriveTool {
     drive: Lookup,
+    /// The Router thread that calls; a session it opens runs under the same account.
+    caller: Option<String>,
 }
 
 impl DriveTool {
-    pub fn new(drive: Lookup) -> Self {
-        Self { drive }
+    pub fn new(drive: Lookup, caller: Option<String>) -> Self {
+        Self { drive, caller }
     }
 
     fn spec() -> ToolSpec {
@@ -82,14 +111,30 @@ impl DriveTool {
             (
                 "action".to_owned(),
                 JsonSchema::string_enum(
-                    vec![json!("start"), json!("pause"), json!("resume"), json!("stop"), json!("history"), json!("feedback")],
-                    Some("start: drive a session toward the goal anchored in its Project; pause: the person takes the session over; resume: hand it back, the next judgment reads the Project and the person's notes again; stop: release it; history: the steps sent so far with their judgments; feedback: the person tried the result and says which acceptance items passed and which did not, written into the anchor, then the drive goes on.".to_owned()),
+                    vec![json!("start"), json!("say"), json!("feedback"), json!("pause"), json!("resume"), json!("stop"), json!("history")],
+                    Some("start: take a session under drive (or open a new session in `folder`) and send it the first message `text`; say: answer the worker's last conclusion with `text`, quoting in `builds_on` and `serves` what it follows from; feedback: the person's acceptance feedback on an anchored goal; pause: the person takes the session over; resume: hand it back; stop: release it; history: the person's words, the last conclusion and every step with its basis.".to_owned()),
                 ),
             ),
-            ("thread_id".to_owned(), JsonSchema::string(Some("The session.".to_owned()))),
+            ("thread_id".to_owned(), JsonSchema::string(Some("The session; start may leave it out and give `folder` to open a new one.".to_owned()))),
+            (
+                "folder".to_owned(),
+                JsonSchema::string(Some("start of a simple request: the absolute path of the folder the session works in; created when missing.".to_owned())),
+            ),
+            (
+                "builds_on".to_owned(),
+                JsonSchema::string(Some("say: words copied from the worker's last conclusion (or the person's words) this message follows from.".to_owned())),
+            ),
+            (
+                "serves".to_owned(),
+                JsonSchema::string(Some("say: words copied from the person's request (or a correction, or an acceptance item) this message serves.".to_owned())),
+            ),
+            (
+                "correction".to_owned(),
+                JsonSchema::string(Some("say: what the person just told you about this goal, verbatim; kept with the goal.".to_owned())),
+            ),
             (
                 "project".to_owned(),
-                JsonSchema::string(Some("start: the project directory, or its .engineering workspace; it must have a committed route anchor.".to_owned())),
+                JsonSchema::string(Some("start of an anchored goal: the project directory, or its .engineering workspace.".to_owned())),
             ),
             (
                 "title".to_owned(),
@@ -101,7 +146,7 @@ impl DriveTool {
             ),
             (
                 "text".to_owned(),
-                JsonSchema::string(Some("feedback: the person's words about what they tried, verbatim.".to_owned())),
+                JsonSchema::string(Some("start, say: the message to the session, in plain words; feedback: the person's words about what they tried, verbatim.".to_owned())),
             ),
             (
                 "passed".to_owned(),
@@ -119,7 +164,7 @@ impl DriveTool {
             ),
             (
                 "request".to_owned(),
-                JsonSchema::string(Some("start, for a project without a route anchor: the person's request, word for word.".to_owned())),
+                JsonSchema::string(Some("start: the person's request, word for word, with their answers to your questions.".to_owned())),
             ),
             (
                 "deliverable".to_owned(),
@@ -135,12 +180,12 @@ impl DriveTool {
         ]);
         ToolSpec::Function(ResponsesApiTool {
             name: DRIVE_TOOL.to_owned(),
-            description: "Drive a session toward its anchored goal: after each of its turns the engine runs route-audit and sends the next step, or stops when the goal is deliverable, drifts, or needs the person.".to_owned(),
+            description: "Keep a session moving on the person's behalf: after each of its turns the engine hands you the worker's conclusion (and, for an anchored goal, the route-audit result); you tell the person or answer the worker with say.".to_owned(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(
                 properties,
-                Some(vec!["action".to_owned(), "thread_id".to_owned()]),
+                Some(vec!["action".to_owned()]),
                 Some(false.into()),
             ),
             output_schema: None,
@@ -155,27 +200,31 @@ impl DriveTool {
             ));
         };
         let refused = |err: anyhow::Error| FunctionCallError::RespondToModel(format!("{err:#}"));
+        let given = args
+            .thread_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned);
+        let thread_id = || {
+            given.clone().ok_or_else(|| {
+                FunctionCallError::RespondToModel("需要 thread_id：说的是哪个会话".to_owned())
+            })
+        };
         let missing =
-            || FunctionCallError::RespondToModel(format!("会话 {} 不在推进记录里", args.thread_id));
+            |id: &str| FunctionCallError::RespondToModel(format!("会话 {id} 不在推进记录里"));
         let answer =
             |record: DriveRecord| json!({ "thread_id": record.thread_id, "drive": record.line() });
+        let path = |value: &Option<String>| {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        };
         match args.action {
             Action::Start => {
-                let project = args.project.as_deref().map(str::trim).unwrap_or_default();
-                if project.is_empty() {
-                    return Err(FunctionCallError::RespondToModel(
-                        "start 需要 project：项目目录或它的 .engineering".to_owned(),
-                    ));
-                }
-                let project = PathBuf::from(project);
-                let home = if project
-                    .file_name()
-                    .is_some_and(|name| name == ".engineering")
-                {
-                    project
-                } else {
-                    project.join(".engineering")
-                };
+                let request = args.request.clone().unwrap_or_default();
                 let title = args
                     .title
                     .as_deref()
@@ -183,82 +232,129 @@ impl DriveTool {
                     .filter(|title| !title.is_empty())
                     .unwrap_or("目标")
                     .to_owned();
-                let goal = match (args.request, args.deliverable, args.acceptance) {
-                    (Some(request), Some(deliverable), Some(acceptance)) => Some(Goal {
-                        request,
+                let goal = match (args.deliverable, args.acceptance) {
+                    (Some(deliverable), Some(acceptance)) => Some(Goal {
+                        request: request.clone(),
                         deliverable,
                         acceptance,
                     }),
-                    (None, None, None) => None,
+                    (None, None) => None,
                     _ => {
                         return Err(FunctionCallError::RespondToModel(
-                            "建立锚定需要 request、deliverable、acceptance 三项一起给".to_owned(),
+                            "建立锚定需要 deliverable 和 acceptance 一起给".to_owned(),
                         ));
+                    }
+                };
+                let folder = path(&args.folder);
+                let (mode, home) = match (path(&args.project), &folder, &goal) {
+                    (Some(project), _, _) => (DriveMode::Anchored, workspace_of(&project)),
+                    (None, Some(folder), Some(_)) => (DriveMode::Anchored, workspace_of(folder)),
+                    (None, Some(folder), None) => (DriveMode::Simple, folder.clone()),
+                    (None, None, _) => {
+                        return Err(FunctionCallError::RespondToModel(
+                            "start 需要 folder（会话在哪个文件夹做）；有锚定的工程项目给 project"
+                                .to_owned(),
+                        ));
+                    }
+                };
+                let thread_id = match given.clone() {
+                    Some(id) => id,
+                    None => {
+                        let folder = folder.clone().ok_or_else(|| {
+                            FunctionCallError::RespondToModel(
+                                "新开会话需要 folder：在哪个文件夹做".to_owned(),
+                            )
+                        })?;
+                        drive
+                            .open_session(&folder, self.caller.as_deref())
+                            .await
+                            .map_err(refused)?
                     }
                 };
                 let start = DriveStart {
                     project_home: home,
                     title,
+                    mode,
                     max_steps: args.max_steps,
+                    request,
                     goal,
+                    first: args.text.clone().unwrap_or_default(),
                 };
                 drive
-                    .start(&args.thread_id, start)
+                    .start(&thread_id, start)
                     .await
                     .map(answer)
                     .map_err(refused)
             }
-            Action::Pause => drive
-                .pause(&args.thread_id, "你接管了这个会话")
-                .await
-                .map_err(refused)?
-                .map(answer)
-                .ok_or_else(missing),
+            Action::Say => {
+                let id = thread_id()?;
+                let say = Say {
+                    text: args.text.unwrap_or_default(),
+                    builds_on: args.builds_on.unwrap_or_default(),
+                    serves: args.serves.unwrap_or_default(),
+                    correction: args.correction,
+                };
+                drive
+                    .say(&id, say)
+                    .await
+                    .map_err(refused)?
+                    .map(answer)
+                    .ok_or_else(|| missing(&id))
+            }
+            Action::Pause => {
+                let id = thread_id()?;
+                drive
+                    .pause(&id, "你接管了这个会话")
+                    .await
+                    .map_err(refused)?
+                    .map(answer)
+                    .ok_or_else(|| missing(&id))
+            }
             Action::Resume => {
+                let id = thread_id()?;
                 if let Some(max_steps) = args.max_steps {
                     drive
-                        .set_max_steps(&args.thread_id, max_steps)
+                        .set_max_steps(&id, max_steps)
                         .await
                         .map_err(refused)?;
                 }
                 drive
-                    .resume(&args.thread_id)
+                    .resume(&id)
                     .await
                     .map_err(refused)?
                     .map(answer)
-                    .ok_or_else(missing)
+                    .ok_or_else(|| missing(&id))
             }
             Action::Feedback => {
+                let id = thread_id()?;
                 let feedback = Feedback {
                     text: args.text.unwrap_or_default(),
                     passed: args.passed.unwrap_or_default(),
                     failed: args.failed.unwrap_or_default(),
                 };
-                if let Some(max_steps) = args.max_steps {
-                    drive
-                        .set_max_steps(&args.thread_id, max_steps)
-                        .await
-                        .map_err(refused)?;
-                }
                 drive
-                    .feedback(&args.thread_id, feedback)
+                    .feedback(&id, feedback)
                     .await
                     .map_err(refused)?
                     .map(answer)
-                    .ok_or_else(missing)
+                    .ok_or_else(|| missing(&id))
             }
-            Action::Stop => drive
-                .stop(&args.thread_id)
-                .await
-                .map_err(refused)?
-                .map(|record| json!({ "thread_id": record.thread_id, "drive": "已释放" }))
-                .ok_or_else(missing),
-            Action::History => {
-                let record = drive
-                    .record(&args.thread_id)
+            Action::Stop => {
+                let id = thread_id()?;
+                drive
+                    .stop(&id)
                     .await
                     .map_err(refused)?
-                    .ok_or_else(missing)?;
+                    .map(|record| json!({ "thread_id": record.thread_id, "drive": "已释放" }))
+                    .ok_or_else(|| missing(&id))
+            }
+            Action::History => {
+                let id = thread_id()?;
+                let record = drive
+                    .record(&id)
+                    .await
+                    .map_err(refused)?
+                    .ok_or_else(|| missing(&id))?;
                 let steps: Vec<Value> = record
                     .history
                     .iter()
@@ -266,13 +362,25 @@ impl DriveTool {
                         json!({
                             "n": step.n,
                             "at": step.at,
+                            "text": truncate_chars(&step.text, PROMPT_CHARS),
+                            "builds_on": step.builds_on,
+                            "serves": step.serves,
                             "audit": step.audit,
-                            "focus": step.focus,
-                            "prompt": truncate_chars(&step.prompt, PROMPT_CHARS),
                         })
                     })
                     .collect();
-                Ok(json!({ "drive": record.line(), "steps": steps }))
+                Ok(json!({
+                    "drive": record.line(),
+                    "request": record.request,
+                    "corrections": record.corrections,
+                    "notes": record.notes,
+                    "report": record.report.as_ref().map(|report| json!({
+                        "turn": report.turn,
+                        "text": truncate_chars(&report.text, PROMPT_CHARS),
+                        "audit": report.audit,
+                    })),
+                    "steps": steps,
+                }))
             }
         }
     }

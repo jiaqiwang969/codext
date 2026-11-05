@@ -512,6 +512,7 @@ where
         &lookup,
     ))));
     registry.turn_lifecycle_contributor(Arc::new(executor::ExecutorLifecycle::new(lookup)));
+    registry.prompt_contributor(Arc::new(drive::DriveContext::new(Arc::clone(&drives))));
     registry.turn_lifecycle_contributor(Arc::new(drive::DriveLifecycle::new(drives)));
 }
 

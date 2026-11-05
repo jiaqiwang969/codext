@@ -501,11 +501,17 @@ impl ToolContributor for PmExtension {
                     runtime.store.clone(),
                     Arc::clone(&runtime.host),
                 )),
-                Arc::new(DriveTool::new(crate::drive_lookup(&self.service))),
+                Arc::new(DriveTool::new(
+                    crate::drive_lookup(&self.service),
+                    Some(thread_store.level_id().to_owned()),
+                )),
             ],
             RouterMode::Org => {
                 let mut tools = pm_tools(&runtime);
-                tools.push(Arc::new(DriveTool::new(crate::drive_lookup(&self.service))));
+                tools.push(Arc::new(DriveTool::new(
+                    crate::drive_lookup(&self.service),
+                    Some(thread_store.level_id().to_owned()),
+                )));
                 tools
             }
         }

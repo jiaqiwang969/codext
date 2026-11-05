@@ -141,6 +141,11 @@ pub trait SuperagentHost: Send + Sync {
         let _ = (cursor, limit);
         Box::pin(async { Ok(SessionPage::default()) })
     }
+    /// The account profile a thread runs under, when the host knows it.
+    fn thread_profile(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<Option<String>>> {
+        let _ = thread;
+        Box::pin(async { Ok(None) })
+    }
     /// A session's latest turns, newest first, read from its history without resuming it.
     fn session_turns(
         &self,
@@ -314,6 +319,10 @@ mod ledger {
             limit: u32,
         ) -> BoxFut<'_, anyhow::Result<SessionPage>> {
             self.inner.list_sessions(cursor, limit)
+        }
+
+        fn thread_profile(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<Option<String>>> {
+            self.inner.thread_profile(thread)
         }
 
         fn session_turns(

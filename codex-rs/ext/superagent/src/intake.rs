@@ -46,7 +46,7 @@ const ENGINE_LABELS: &[&str] = &[
     "[规则变化 ",
     "[重开 ",
     "[备注 ",
-    crate::drive::STEP_LABEL,
+    crate::drive::LEGACY_STEP_LABEL,
 ];
 
 pub fn engine_delivery(text: &str) -> bool {
@@ -216,7 +216,18 @@ pub async fn record_turn(
     };
     let spoken = if service.pm_threads().is_pm(thread_id) {
         // Only the organizing Router routes requests; at the other levels its messages open no
-        // candidates.
+        // candidates. Whatever the level, the person's words are logged for the drives, so a
+        // correction the Router passes on can be checked against what was said.
+        let words = text.trim();
+        if let Some(drive) = &runtime.drive
+            && !words.is_empty()
+            && !service.ledger().delivered(words)
+            && !engine_delivery(words)
+            && !words.starts_with("{\"kind\"")
+            && let Err(err) = drive.heard(words).await
+        {
+            tracing::warn!("superagent intake could not log the Router's input: {err:#}");
+        }
         if !service.router_mode().routes_requests() {
             return;
         }

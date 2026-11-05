@@ -814,7 +814,7 @@ async fn pm_threads_come_from_the_file_and_only_they_get_tools() -> anyhow::Resu
         .collect();
     // The host's tool policy for PM threads allows ROUTER_TOOLS only: every tool a Router can be
     // given must be there, the drive tool included.
-    let drive = codex_superagent_extension::tools::drive::DriveTool::new(Arc::new(|| None));
+    let drive = codex_superagent_extension::tools::drive::DriveTool::new(Arc::new(|| None), /*caller*/ None);
     let mut offered = names.clone();
     offered.push(
         codex_extension_api::ToolExecutor::<codex_extension_api::ToolCall<'_>>::tool_name(&drive)

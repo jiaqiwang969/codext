@@ -186,6 +186,15 @@ impl SuperagentHost for AppServerSuperagentHost {
         })
     }
 
+    fn thread_profile(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<Option<String>>> {
+        Box::pin(async move {
+            Ok(self
+                .thread_manager()?
+                .auth_profile_id_for_thread(thread)
+                .await)
+        })
+    }
+
     fn session_turns(
         &self,
         thread: ThreadId,
