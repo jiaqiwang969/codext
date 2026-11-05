@@ -41,6 +41,7 @@ const PROMPT_CHARS: usize = 1_500;
 enum Action {
     Start,
     Say,
+    Interrupt,
     Pause,
     Resume,
     Stop,
@@ -111,8 +112,8 @@ impl DriveTool {
             (
                 "action".to_owned(),
                 JsonSchema::string_enum(
-                    vec![json!("start"), json!("say"), json!("feedback"), json!("pause"), json!("resume"), json!("stop"), json!("history")],
-                    Some("start: take a session under drive (or open a new session in `folder`) and send it the first message `text`; say: answer the worker's last conclusion with `text`, quoting in `builds_on` and `serves` what it follows from; feedback: the person's acceptance feedback on an anchored goal; pause: the person takes the session over; resume: hand it back; stop: release it; history: the person's words, the last conclusion and every step with its basis.".to_owned()),
+                    vec![json!("start"), json!("say"), json!("interrupt"), json!("feedback"), json!("pause"), json!("resume"), json!("stop"), json!("history")],
+                    Some("start: take a session under drive (or open a new session in `folder`) and send it the first message `text`; say: answer the worker's last conclusion with `text`, quoting in `builds_on` and `serves` what it follows from (while the worker's turn runs, the text is said into it instead); interrupt: stop the running step because the person found it going wrong, then resume and say the next thing; feedback: the person's acceptance feedback on an anchored goal; pause: the person takes the session over; resume: hand it back; stop: release it; history: the person's words, the last conclusion and every step with its basis.".to_owned()),
                 ),
             ),
             ("thread_id".to_owned(), JsonSchema::string(Some("The session; start may leave it out and give `folder` to open a new one.".to_owned()))),
@@ -296,6 +297,15 @@ impl DriveTool {
                 };
                 drive
                     .say(&id, say)
+                    .await
+                    .map_err(refused)?
+                    .map(answer)
+                    .ok_or_else(|| missing(&id))
+            }
+            Action::Interrupt => {
+                let id = thread_id()?;
+                drive
+                    .interrupt(&id)
                     .await
                     .map_err(refused)?
                     .map(answer)

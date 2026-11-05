@@ -21,6 +21,7 @@ use super::drive_key;
 use super::push_limited;
 use crate::cards::truncate_chars;
 use crate::core::now_iso;
+use crate::host::DeliveryMode;
 
 /// The ledger key of the person's latest words to the Router.
 const HEARD_KEY: &str = "drive-heard";
@@ -167,13 +168,30 @@ impl DriveService {
         else {
             return Ok(None);
         };
+        // While the step's turn runs, the message is said into it (the person corrected course);
+        // the worker reads it at its next move. Otherwise it starts the next step.
+        let steering = match record.state {
+            DriveState::Driving => {
+                anyhow::ensure!(
+                    record.inflight.is_none(),
+                    "第 {} 步刚交出、还没开始，稍等再说",
+                    record.steps
+                );
+                let latest = self.inner.host.session_turns(thread, 1).await?;
+                anyhow::ensure!(
+                    latest.first().is_some_and(|turn| turn.status == "inProgress"),
+                    "第 {} 步刚结束，正在读它的结论，稍等再说",
+                    record.steps
+                );
+                true
+            }
+            DriveState::Reported { .. }
+            | DriveState::Paused { .. }
+            | DriveState::Deliverable { .. }
+            | DriveState::NeedsDecision { .. } => false,
+        };
         anyhow::ensure!(
-            record.state != DriveState::Driving,
-            "第 {} 步还在 worker 手里，等它交了结论再说",
-            record.steps
-        );
-        anyhow::ensure!(
-            record.steps < record.max_steps,
+            steering || record.steps < record.max_steps,
             "已推进 {}/{} 步：要继续先问用户，同意后用 resume 带 max_steps 放宽",
             record.steps,
             record.max_steps
@@ -219,7 +237,7 @@ impl DriveService {
                 previous.n
             );
         }
-        let n = record.steps + 1;
+        let n = if steering { record.steps } else { record.steps + 1 };
         let step = Step {
             n,
             at: now_iso(),
@@ -231,14 +249,17 @@ impl DriveService {
             text: text.clone(),
             builds_on: truncate_chars(say.builds_on.trim(), 300),
             serves: truncate_chars(say.serves.trim(), 300),
+            steered: steering,
         };
         let changed = self
             .change_locked(thread_id, |record| {
-                record.steps = n;
-                record.inflight = Some(n);
-                record.state = DriveState::Driving;
+                if !steering {
+                    record.steps = n;
+                    record.inflight = Some(n);
+                    record.state = DriveState::Driving;
+                    record.notes.clear();
+                }
                 record.corrections = corrections;
-                record.notes.clear();
                 record.history.push(step);
                 if record.history.len() > super::HISTORY {
                     record.history.remove(0);
@@ -247,8 +268,26 @@ impl DriveService {
             })
             .await?;
         drop(lock);
-        self.hand_over(thread_id, thread, &record.title, n, text)
-            .await?;
+        if steering {
+            // Outside the lock: the host reports the steered input back through the intake.
+            if let Err(err) = self
+                .inner
+                .host
+                .deliver(thread, text, DeliveryMode::Steer)
+                .await
+            {
+                self.change(thread_id, |record| {
+                    if record.history.last().is_some_and(|step| step.steered) {
+                        record.history.pop();
+                    }
+                })
+                .await?;
+                return Err(err.context(format!("没能插进第 {n} 步")));
+            }
+        } else {
+            self.hand_over(thread_id, thread, &record.title, n, text)
+                .await?;
+        }
         match changed {
             Some(_) => self.record(thread_id).await,
             None => Ok(None),

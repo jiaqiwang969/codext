@@ -400,9 +400,9 @@ async fn say_goes_out_only_on_a_basis_found_in_the_records() -> anyhow::Result<(
     let s = setup().await?;
     s.start().await?;
     let next = "浏览器开不了就用命令行列出目录树自己核对，每个笔记只在一个主题里。";
-    // While the step is with the worker, nothing more goes.
+    // Handed over and not started yet: nothing more goes.
     let early = s.drive.say(THREAD, say(next, "打不开", "按主题分好")).await;
-    assert!(format!("{:#}", early.expect_err("busy")).contains("等它交了结论"));
+    assert!(format!("{:#}", early.expect_err("busy")).contains("还没开始"));
     s.turn("分好了 3 个主题目录；浏览器在沙箱里打不开").await?;
 
     let cases = [
@@ -782,5 +782,45 @@ async fn the_persons_feedback_reopens_items_and_waits_for_the_router() -> anyhow
         .say(THREAD, say("先把吃食物和计分做上，用命令行测试自己跑通。", "吃不到东西", "吃到食物变长加分"))
         .await?;
     assert_eq!(s.host.delivered().len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn while_a_step_runs_say_is_steered_into_it_and_interrupt_pauses() -> anyhow::Result<()> {
+    let s = setup().await?;
+    s.start().await?;
+    let next = say("方向错了，换成另一个仓库重新查。", "整理笔记目录，按主题分好", "按主题分好");
+    // Handed over but not started: too early.
+    let early = s.drive.say(THREAD, next.clone()).await;
+    assert!(format!("{:#}", early.expect_err("not started")).contains("还没开始"));
+    s.drive.turn_started(THREAD).await?;
+    s.host.finish("inProgress", "在查");
+    let record = s.drive.say(THREAD, next.clone()).await?.expect("a record");
+    let last = record.history.last().expect("the steered step");
+    assert_eq!((record.steps, record.state.clone(), last.n, last.steered), (1, DriveState::Driving, 1, true));
+    assert_eq!(
+        FakeHost::lock(&s.host.calls).last().map(String::as_str),
+        Some(&format!("deliver:{THREAD}:Steer")[..])
+    );
+    // The steered words come back as the session's input and are not kept as a note.
+    s.drive.person_input(THREAD, &next.text).await?;
+    assert!(s.record().await?.notes.is_empty());
+    // The turn ends normally afterwards: its conclusion is read as usual.
+    s.host.finish("completed", "换好了");
+    s.drive.step(THREAD).await?;
+    assert!(matches!(s.record().await?.state, DriveState::Reported { .. }));
+
+    // The Router stops a running step: the drive pauses and the host interrupts the turn.
+    s.drive.say(THREAD, say("接着做。", "换好了", "按主题分好")).await?;
+    s.drive.turn_started(THREAD).await?;
+    let paused = s.drive.interrupt(THREAD).await?.expect("a record");
+    assert_eq!(
+        paused.state,
+        DriveState::Paused {
+            reason: "第 2 步被打断；交回后说下一句".to_owned()
+        }
+    );
+    s.drive.turn_interrupted(THREAD).await?;
+    assert_eq!(s.record().await?.state, paused.state, "the hook keeps the Router's reason");
     Ok(())
 }

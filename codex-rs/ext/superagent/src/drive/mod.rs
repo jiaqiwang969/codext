@@ -123,6 +123,9 @@ pub struct Step {
     /// The words of the request (or a correction, or an acceptance item) the step serves.
     #[serde(default)]
     pub serves: String,
+    /// Said into the running turn of step `n` (the person corrected course), not a turn of its own.
+    #[serde(default)]
+    pub steered: bool,
 }
 
 /// The worker's conclusion at the end of a turn.
@@ -428,6 +431,7 @@ impl DriveService {
                 text: first.clone(),
                 builds_on: String::new(),
                 serves: truncate_chars(request.trim(), 200),
+                steered: false,
             }],
             since: now.clone(),
             updated: now,
@@ -576,6 +580,27 @@ impl DriveService {
             self.schedule(thread_id).await?;
         }
         Ok(())
+    }
+
+    /// The Router stops the running step (the person found it going wrong): the turn is
+    /// interrupted and the drive pauses until the Router hands it back and says the next thing.
+    pub async fn interrupt(&self, thread_id: &str) -> anyhow::Result<Option<DriveRecord>> {
+        let thread = ThreadId::from_string(thread_id)
+            .map_err(|err| anyhow::anyhow!("会话 id {thread_id} 无效：{err}"))?;
+        let record = self
+            .change(thread_id, |record| {
+                if record.state == DriveState::Driving {
+                    record.state = DriveState::Paused {
+                        reason: format!("第 {} 步被打断；交回后说下一句", record.steps),
+                    };
+                }
+                record.clone()
+            })
+            .await?;
+        if record.is_some() {
+            self.inner.host.interrupt(thread).await?;
+        }
+        Ok(record)
     }
 
     /// The person interrupted a driven turn: that is taking the session over.
