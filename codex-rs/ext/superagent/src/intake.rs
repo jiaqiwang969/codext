@@ -223,7 +223,6 @@ pub async fn record_turn(
             && !words.is_empty()
             && !service.ledger().delivered(words)
             && !engine_delivery(words)
-            && !words.starts_with("{\"kind\"")
             && let Err(err) = drive.heard(words).await
         {
             tracing::warn!("superagent intake could not log the Router's input: {err:#}");

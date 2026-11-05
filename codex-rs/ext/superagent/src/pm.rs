@@ -13,7 +13,6 @@ use codex_extension_api::ToolExecutor;
 use codex_protocol::ThreadId;
 use serde::Deserialize;
 use serde_json::Value;
-use serde_json::json;
 
 use crate::BoxFut;
 use crate::SuperagentService;
@@ -415,7 +414,10 @@ pub async fn install_pm_handlers(runtime: Arc<PmRuntime>) -> anyhow::Result<()> 
                         None => None,
                     },
                 };
-                let text = json!({ "kind": "notice", "name": name, "summary": payload.summary, "notice": payload.value }).to_string();
+                // A card the person can read in the Router's window too: the engine's label,
+                // then the producer's lines. The structured value stays in the ledger.
+                let _ = name;
+                let text = format!("[通知] {}", payload.summary.trim());
                 runtime
                     .deliver_to_pm_for(pm.as_deref(), text, DeliveryMode::Queue)
                     .await

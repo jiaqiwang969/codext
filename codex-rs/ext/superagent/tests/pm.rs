@@ -789,13 +789,13 @@ async fn a_candidate_card_reaches_the_pm_thread_once_and_the_engine_hears_it_was
         later.iter().any(|v| v["kind"] == "worker_report"),
         "{later:?}"
     );
-    let notice = later
-        .iter()
-        .find(|v| v["kind"] == "notice")
-        .cloned()
-        .unwrap_or_default();
-    assert_eq!(notice["summary"], "Ticket t1 ended");
-    assert_eq!(notice["name"], "ended:t1");
+    // A notice is a card the person can read in the PM's window too.
+    assert!(
+        delivered[1..]
+            .iter()
+            .any(|(_, text, _)| text == "[通知] Ticket t1 ended"),
+        "{delivered:?}"
+    );
     Ok(())
 }
 

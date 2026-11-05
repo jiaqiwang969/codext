@@ -78,44 +78,42 @@ pub fn judged(record: &DriveRecord, conclusion: &str, audit: &Audit, unchanged: 
     }
 }
 
-/// The notice the Router reads, or `None` when there is nothing to tell (a step is out).
+/// The notice the Router reads (and the person sees in the Router's window), or `None` when
+/// there is nothing to tell (a step is out). A short header line, then the conclusion as the
+/// worker wrote it, then where the original is and what to do next.
 pub fn notice(record: &DriveRecord, state: &DriveState) -> Option<String> {
-    let head = format!("会话 {}（{}）", record.thread_id, record.title);
-    let conclusion = record
-        .report
-        .as_ref()
-        .map(|report| {
-            let mut text = format!(
-                "worker 的结论：{}",
-                truncate_chars(&report.text, NOTICE_CHARS)
-            );
-            if let Some(audit) = &report.audit {
-                text.push_str(&format!("\n判定：{audit}"));
-            }
-            text
-        })
-        .unwrap_or_default();
-    let notes = if record.notes.is_empty() {
-        String::new()
-    } else {
-        format!("\n用户在会话里说过：{}", record.notes.join(" / "))
-    };
-    let read = format!("原文：superagent_read session/{}", record.thread_id);
-    let text = match state {
+    let title = &record.title;
+    let (head, next) = match state {
         DriveState::Driving => return None,
-        DriveState::Reported { .. } => format!(
-            "{head}第 {} 步结束。\n{conclusion}{notes}\n{read}\n转告用户，或用 superagent_drive say 回它。",
-            record.steps
+        DriveState::Reported { .. } => (
+            format!("推进 · {title} · 第 {} 步结束", record.steps),
+            "转告用户，或用 superagent_drive say 回它。",
         ),
-        DriveState::Deliverable { summary } => {
-            format!("{head}可交付，等用户验收：{summary}\n{conclusion}\n{read}")
-        }
-        DriveState::NeedsDecision { reason } => {
-            format!("{head}的推进需要用户决定：{reason}\n{conclusion}{notes}\n{read}")
-        }
-        DriveState::Paused { reason } => {
-            format!("{head}的推进已暂停：{reason}\n{conclusion}{notes}")
-        }
+        DriveState::Deliverable { summary } => (
+            format!("推进 · {title} · 可交付，等用户验收（{summary}）"),
+            "请用户验收；用户的反馈用 superagent_drive feedback 记入。",
+        ),
+        DriveState::NeedsDecision { reason } => (
+            format!("推进 · {title} · 需要用户决定：{reason}"),
+            "向用户说明原因，问一个具体问题。",
+        ),
+        DriveState::Paused { reason } => (
+            format!("推进 · {title} · 已暂停：{reason}"),
+            "告诉用户；用户要继续时用 superagent_drive resume。",
+        ),
     };
-    Some(text.trim_end().to_owned())
+    let mut lines = vec![head, format!("会话 {}", record.thread_id)];
+    if let Some(report) = &record.report {
+        lines.push("worker 的结论：".to_owned());
+        lines.push(truncate_chars(report.text.trim(), NOTICE_CHARS));
+        if let Some(audit) = &report.audit {
+            lines.push(format!("判定：{audit}"));
+        }
+    }
+    if !record.notes.is_empty() {
+        lines.push(format!("用户在会话里说过：{}", record.notes.join(" / ")));
+    }
+    lines.push(format!("原文：superagent_read session/{}", record.thread_id));
+    lines.push(format!("接下来：{next}"));
+    Some(lines.join("\n"))
 }
