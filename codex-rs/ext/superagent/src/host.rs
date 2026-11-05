@@ -125,6 +125,12 @@ pub trait SuperagentHost: Send + Sync {
         text: String,
         mode: DeliveryMode,
     ) -> BoxFut<'_, anyhow::Result<()>>;
+    /// Starts a drive step on an idle session: a new turn under the drive's own sandbox (writes
+    /// inside the session's working directory, network allowed, no approvals) and the `drive`
+    /// trigger, whatever the session ran with before. A host without per-turn settings steers it.
+    fn start_step(&self, thread: ThreadId, text: String) -> BoxFut<'_, anyhow::Result<()>> {
+        self.deliver(thread, text, DeliveryMode::Steer)
+    }
     /// One page of the host's root sessions, newest first, read from stored metadata without
     /// loading any thread. A host without a session store has none.
     fn list_sessions(
@@ -295,6 +301,11 @@ mod ledger {
         ) -> BoxFut<'_, anyhow::Result<()>> {
             self.ledger.note(&text);
             self.inner.deliver(thread, text, mode)
+        }
+
+        fn start_step(&self, thread: ThreadId, text: String) -> BoxFut<'_, anyhow::Result<()>> {
+            self.ledger.note(&text);
+            self.inner.start_step(thread, text)
         }
 
         fn list_sessions(

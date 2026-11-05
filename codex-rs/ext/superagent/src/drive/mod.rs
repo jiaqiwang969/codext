@@ -36,7 +36,6 @@ use crate::core::now_iso;
 use crate::effects::EffectError;
 use crate::effects::Effects;
 use crate::effects::HandlerOptions;
-use crate::host::DeliveryMode;
 use crate::host::SuperagentHost;
 use crate::store::Store;
 
@@ -609,16 +608,10 @@ impl DriveService {
         })
         .await?;
         drop(lock);
-        let delivered = async {
-            self.inner.host.resume_thread(thread, /*role*/ None).await?;
-            self.inner
-                .host
-                // The session is idle: start its turn now. The persistent queue would hold the
-                // step after an interrupted turn, and a handed-over session should move.
-                .deliver(thread, prompt, DeliveryMode::Steer)
-                .await
-        }
-        .await;
+        // The session is idle: start its turn now, under the drive's own sandbox. The persistent
+        // queue would hold the step after an interrupted turn, and a cold session resumes with
+        // the config's defaults rather than the settings it had.
+        let delivered = self.inner.host.start_step(thread, prompt).await;
         // Look again once the stall time has passed, in case the step never starts.
         self.inner
             .effects

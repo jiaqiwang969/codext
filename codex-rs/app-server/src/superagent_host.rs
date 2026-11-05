@@ -475,6 +475,33 @@ impl SuperagentHost for AppServerSuperagentHost {
         })
     }
 
+    fn start_step(&self, thread: ThreadId, text: String) -> BoxFut<'_, anyhow::Result<()>> {
+        Box::pin(async move {
+            // A cold session loads with the config's defaults; the step's own settings below are
+            // what its turn runs under.
+            self.resume_thread(thread, None).await?;
+            let mut request = TurnInputRequest::new(Self::user_input(text));
+            request.thread_settings.sandbox_policy =
+                Some(codex_protocol::protocol::SandboxPolicy::WorkspaceWrite {
+                    writable_roots: Vec::new(),
+                    network_access: true,
+                    exclude_tmpdir_env_var: false,
+                    exclude_slash_tmp: false,
+                });
+            request.thread_settings.approval_policy =
+                Some(codex_protocol::protocol::AskForApproval::Never);
+            request.start.turn_trigger = Some("drive".to_owned());
+            self.thread(thread)
+                .await?
+                .start_or_steer_turn(request)
+                .await
+                .map_err(|err| {
+                    anyhow::anyhow!("starting a drive step on {thread} failed: {err}")
+                })?;
+            Ok(())
+        })
+    }
+
     fn interrupt(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<()>> {
         Box::pin(async move {
             self.thread(thread)

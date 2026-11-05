@@ -87,6 +87,17 @@ impl SuperagentHost for FakeHost {
             Ok(())
         })
     }
+    fn start_step(&self, thread: ThreadId, text: String) -> BoxFut<'_, anyhow::Result<()>> {
+        Self::lock(&self.calls).push(format!("step:{thread}"));
+        Self::lock(&self.delivered).push(text);
+        let drive = Self::lock(&self.on_deliver).clone();
+        Box::pin(async move {
+            if let Some(drive) = drive {
+                drive.turn_started(&thread.to_string()).await?;
+            }
+            Ok(())
+        })
+    }
     fn session_turns(
         &self,
         _thread: ThreadId,
@@ -306,10 +317,7 @@ async fn a_step_names_the_item_a_correction_affects_and_is_recorded_before_it_is
     assert!(prompt.contains("回填到 route-anchor"), "{prompt}");
     assert_eq!(
         FakeHost::lock(&s.host.calls).clone(),
-        vec![
-            format!("resume:{THREAD}:None"),
-            format!("deliver:{THREAD}:Steer")
-        ]
+        vec![format!("step:{THREAD}")]
     );
     let record = s.record().await?;
     assert_eq!(
