@@ -39,6 +39,9 @@ struct FakeHost {
     delivered: Mutex<Vec<String>>,
     queue: Mutex<Vec<(String, String)>>,
     latest: Mutex<Option<String>>,
+    /// Like the real host, delivering to an idle session starts its turn: the drive's turn-start
+    /// hook runs inside `deliver`.
+    on_deliver: Mutex<Option<DriveService>>,
 }
 
 impl FakeHost {
@@ -76,7 +79,13 @@ impl SuperagentHost for FakeHost {
     ) -> BoxFut<'_, anyhow::Result<()>> {
         Self::lock(&self.calls).push(format!("deliver:{thread}:{mode:?}"));
         Self::lock(&self.delivered).push(text);
-        Box::pin(async { Ok(()) })
+        let drive = Self::lock(&self.on_deliver).clone();
+        Box::pin(async move {
+            if let Some(drive) = drive {
+                drive.turn_started(&thread.to_string()).await?;
+            }
+            Ok(())
+        })
     }
     fn session_turns(
         &self,
@@ -502,5 +511,17 @@ fn an_audit_report_reads_as_its_delivery_scope() -> anyhow::Result<()> {
         "error": { "code": "invalid_contract", "reason": "input_or_output_contract_unavailable" },
     });
     assert!(Audit::parse(&failure).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn delivering_a_step_may_start_its_turn_at_once() -> anyhow::Result<()> {
+    let s = setup().await?;
+    *FakeHost::lock(&s.host.on_deliver) = Some(s.drive.clone());
+    s.start().await?;
+    s.judge.then(audit("anchored", &[], &["A1"], "1"));
+    tokio::time::timeout(std::time::Duration::from_secs(5), s.drive.step(THREAD)).await??;
+    let record = s.record().await?;
+    assert_eq!((record.steps, record.inflight), (1, None));
     Ok(())
 }

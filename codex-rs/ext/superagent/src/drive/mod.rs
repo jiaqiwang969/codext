@@ -409,7 +409,9 @@ impl DriveService {
 
     /// Judges the session's last turn and sends the next step, or stops and says why.
     pub async fn step(&self, thread_id: &str) -> anyhow::Result<()> {
-        let _lock = self.inner.lock.lock().await;
+        // The lock covers the judgment and the write-ahead record, not the hand-over: delivering
+        // starts the session's turn, whose start and input hooks change this record too.
+        let lock = self.inner.lock.lock().await;
         let Some(record) = self
             .inner
             .store
@@ -529,6 +531,7 @@ impl DriveService {
             }
         })
         .await?;
+        drop(lock);
         let delivered = async {
             self.inner.host.resume_thread(thread, /*role*/ None).await?;
             self.inner
@@ -539,9 +542,11 @@ impl DriveService {
         .await;
         if let Err(err) = delivered {
             let reason = format!("第 {n} 步没能交出：{err:#}");
-            self.change_locked(thread_id, |record| {
-                record.inflight = None;
-                record.state = DriveState::Paused { reason };
+            self.change(thread_id, |record| {
+                if record.inflight == Some(n) {
+                    record.inflight = None;
+                    record.state = DriveState::Paused { reason };
+                }
             })
             .await?;
         }
