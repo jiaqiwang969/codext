@@ -47,6 +47,7 @@ const ENGINE_LABELS: &[&str] = &[
     "[规则变化 ",
     "[重开 ",
     "[备注 ",
+    crate::drive::STEP_LABEL,
 ];
 
 pub fn engine_delivery(text: &str) -> bool {
@@ -225,7 +226,21 @@ pub async fn record_turn(
     } else {
         match runtime.engine.worker_ticket(thread_id).await {
             Ok(Some(ticket_id)) => Spoken::Worker { ticket_id },
-            Ok(None) => return,
+            Ok(None) => {
+                // A person's words in a driven session are notes for its next step.
+                let text = text.trim();
+                if let Some(drive) = &runtime.drive
+                    && !text.is_empty()
+                    && !service.ledger().delivered(text)
+                    && !engine_delivery(text)
+                    && let Err(err) = drive.person_input(thread_id, text).await
+                {
+                    tracing::warn!(
+                        "superagent intake could not note a driven session's input: {err:#}"
+                    );
+                }
+                return;
+            }
             Err(err) => {
                 tracing::warn!("superagent intake could not read the worker index: {err:#}");
                 return;

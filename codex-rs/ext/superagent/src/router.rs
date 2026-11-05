@@ -29,6 +29,11 @@ use serde_json::Value;
 use sha2::Digest;
 use sha2::Sha256;
 
+mod drives;
+
+pub use drives::drive_attention;
+pub use drives::drives_section;
+
 use crate::SuperagentService;
 use crate::cards::truncate_chars;
 use crate::host::SessionBrief;
@@ -64,7 +69,12 @@ const OBSERVE_RULES: &str = "\
 - 每条回复不超过 300 字。";
 
 const DRIVE_RULES: &str = "\
-你是总 Router，当前处于“推进”档：候选卡、superagent_route 和其他 PM 工具已开放，按 PM 规则路由和转达。<superagent_index> 仍是本机会话的只读索引，读细节用 superagent_read。";
+你是总 Router，当前处于“推进”档。
+- 上下文里的 <superagent_index>（会话索引）、<superagent_attention>（等用户处理）和 <superagent_drives>（由引擎推进的会话）已经是最新清单，不用读。细节用 superagent_read 读 `sessions` 或 `session/<id>`。
+- 用户要你推进某个会话时：确认它的项目有 .engineering 且已提交 route-anchor（验收清单），再用 superagent_drive start（thread_id、project、title）。之后引擎在每个回合结束时运行 route-audit 并发出下一步，你不用写“继续”。没有锚定记录时，告诉用户先在那个会话里建立 route-anchor 并确认验收清单。
+- 用户说自己来：superagent_drive pause；说交回：resume；不再推进：stop；问发过什么：history。
+- 可交付、需要决定、已暂停会出现在 <superagent_attention>：可交付时请用户验收；需要决定时用一句话说明原因，问一个具体问题。最终验收由用户做。
+- 候选卡、superagent_route 等 PM 工具照旧可用。每条回复不超过 300 字。";
 
 /// The Router's level.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,7 +163,7 @@ impl ContextContributor for RouterContext {
                             )
                         })
                         .collect();
-                    let waiting = rows
+                    let mut waiting: Vec<(String, &'static str, String)> = rows
                         .iter()
                         .filter_map(|(id, status, row)| {
                             attention_of(status).map(|reason| (id.clone(), reason, row.clone()))
@@ -162,6 +172,33 @@ impl ContextContributor for RouterContext {
                     sections.push(index_section(
                         rows.into_iter().map(|(id, _, row)| (id, row)).collect(),
                     ));
+                    if let Some(drive) = service.runtime().and_then(|runtime| runtime.drive.clone())
+                    {
+                        match drive.records().await {
+                            Ok(records) => {
+                                waiting.extend(records.iter().filter_map(|record| {
+                                    drive_attention(record).map(|reason| {
+                                        (
+                                            format!("drive:{}", record.thread_id),
+                                            reason,
+                                            record.line(),
+                                        )
+                                    })
+                                }));
+                                sections.push(drives_section(
+                                    records
+                                        .iter()
+                                        .map(|record| (record.thread_id.clone(), record.line()))
+                                        .collect(),
+                                ));
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    "superagent: the Router's drive list is unavailable: {err:#}"
+                                )
+                            }
+                        }
+                    }
                     sections.push(attention_section(waiting));
                 }
                 Err(err) => tracing::warn!("superagent: the Router index is unavailable: {err:#}"),

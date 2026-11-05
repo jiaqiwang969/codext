@@ -36,6 +36,7 @@ use crate::host::DeliveryMode;
 use crate::host::SuperagentHost;
 use crate::router::RouterMode;
 use crate::store::Store;
+use crate::tools::drive::DriveTool;
 use crate::tools::pm::PmTool;
 use crate::tools::pm::PmToolKind;
 use crate::tools::read::ReadTool;
@@ -482,7 +483,11 @@ impl ToolContributor for PmExtension {
                 runtime.store.clone(),
                 Arc::clone(&runtime.host),
             ))],
-            RouterMode::Drive => pm_tools(&runtime),
+            RouterMode::Drive => {
+                let mut tools = pm_tools(&runtime);
+                tools.push(Arc::new(DriveTool::new(crate::drive_lookup(&self.service))));
+                tools
+            }
         }
     }
 }

@@ -1,6 +1,7 @@
 //! The native tools the engine contributes to codext threads: the PM's routing tools, the
 //! workers' report tools and the `superagent_read` tool both roles share (prototype `src/app/tools/`).
 
+pub mod drive;
 pub mod pm;
 pub mod read;
 pub mod worker;

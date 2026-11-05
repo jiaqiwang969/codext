@@ -21,6 +21,7 @@
 mod arbiter;
 pub mod cards;
 pub mod core;
+pub mod drive;
 pub mod effects;
 pub mod executor;
 pub mod health;
@@ -82,6 +83,8 @@ pub struct Runtime {
     pub executor: Option<CodextThreadExecutor>,
     /// What the startup reconciliation did (design §8.1), once a host was supplied.
     pub recovery: Option<recovery::Report>,
+    /// The drive loop, once a host was supplied.
+    pub drive: Option<drive::DriveService>,
 }
 
 /// Process-scoped service: one per app-server, created next to the queue service and handed to
@@ -193,7 +196,7 @@ impl SuperagentService {
                     let engine = due.clone();
                     Box::pin(async move { engine.evaluate_due().await })
                 }));
-                let (executor, recovery) = match self.host() {
+                let (executor, recovery, drive) = match self.host() {
                     Some(host) => {
                         let config = self
                             .executor_config
@@ -337,6 +340,15 @@ impl SuperagentService {
                             pm::PmThreads::new(self.dir.join("pm-threads")),
                         )
                         .await?;
+                        let drive = drive::DriveService::install(
+                            store.clone(),
+                            effects.clone(),
+                            Arc::clone(&host),
+                            Arc::new(drive::Oev2Judge::for_home(
+                                self.dir.parent().unwrap_or(&self.dir),
+                            )),
+                        )
+                        .await?;
                         let pm = Arc::new(pm::PmRuntime {
                             engine: Arc::new(integration::PmEngine(engine.clone())),
                             host,
@@ -347,13 +359,14 @@ impl SuperagentService {
                         pm::install_pm_handlers(Arc::clone(&pm)).await?;
                         let _ = self.pm.set(pm);
                         let recovery = recovery::reconcile(&store, &executor, &self.board).await?;
-                        (Some(executor), Some(recovery))
+                        drive.recover().await?;
+                        (Some(executor), Some(recovery), Some(drive))
                     }
                     None => {
                         tracing::info!(
                             "superagent: no host supplied; the executor and the PM delivery are off"
                         );
-                        (None, None)
+                        (None, None, None)
                     }
                 };
                 tracing::info!(
@@ -367,6 +380,7 @@ impl SuperagentService {
                     engine,
                     executor,
                     recovery,
+                    drive,
                 }))
             })
             .await?;
@@ -413,10 +427,10 @@ impl SuperagentService {
         router::RouterMode::read(&self.dir)
     }
 
-    /// Whether the organization drives this thread: a PM thread, or the worker thread of a ticket
-    /// that has not ended. Codext's own automatic drivers (daemon recovery, Goal continuation)
-    /// leave such threads to the engine's reconciliation. A failed lookup answers true, so an
-    /// uncertain thread is not continued twice.
+    /// Whether the organization drives this thread: a PM thread, a session under drive, or the
+    /// worker thread of a ticket that has not ended. Codext's own automatic drivers (daemon
+    /// recovery, Goal continuation) leave such threads to the engine's reconciliation. A failed
+    /// lookup answers true, so an uncertain thread is not continued twice.
     pub async fn owns_thread(&self, thread_id: &str) -> bool {
         if self.pm_threads.is_pm(thread_id) {
             return true;
@@ -424,6 +438,16 @@ impl SuperagentService {
         let Some(runtime) = self.runtime() else {
             return false;
         };
+        if let Some(drive) = &runtime.drive {
+            match drive.drives(thread_id).await {
+                Ok(true) => return true,
+                Ok(false) => {}
+                Err(err) => {
+                    tracing::warn!("superagent: could not read the drive of {thread_id}: {err:#}");
+                    return true;
+                }
+            }
+        }
         let ticket_id = match runtime.engine.worker_ticket(thread_id).await {
             Ok(Some(ticket_id)) => ticket_id,
             Ok(None) => return false,
@@ -473,6 +497,7 @@ pub fn install<C>(registry: &mut ExtensionRegistryBuilder<C>, service: Arc<Super
 where
     C: Send + Sync + 'static,
 {
+    let drives = drive_lookup(&service);
     registry.turn_input_contributor(Arc::new(intake::SuperagentIntake::new(&service)));
     registry.automatic_turn_arbiter(Arc::new(arbiter::SuperagentArbiter::new(&service)));
     registry.tool_contributor(Arc::new(pm::PmExtension::new(Arc::clone(&service))));
@@ -486,6 +511,20 @@ where
         &lookup,
     ))));
     registry.turn_lifecycle_contributor(Arc::new(executor::ExecutorLifecycle::new(lookup)));
+    registry.turn_lifecycle_contributor(Arc::new(drive::DriveLifecycle::new(drives)));
+}
+
+/// The drive loop of a running engine, looked up on each use.
+pub(crate) fn drive_lookup(
+    service: &Arc<SuperagentService>,
+) -> Arc<dyn Fn() -> Option<drive::DriveService> + Send + Sync> {
+    let service = Arc::downgrade(service);
+    Arc::new(move || {
+        service
+            .upgrade()
+            .and_then(|service| service.runtime())
+            .and_then(|runtime| runtime.drive.clone())
+    })
 }
 
 impl SuperagentService {
