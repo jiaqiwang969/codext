@@ -7,6 +7,7 @@ mod session_isolation;
 mod state;
 mod tool_policy;
 mod turn_admission;
+mod turn_arbiter;
 mod user_instructions;
 
 pub use message_lifecycle::MessageLifecycleContributor;
@@ -117,6 +118,8 @@ pub use registry::empty_extension_registry;
 pub use state::ExtensionData;
 pub use state::ExtensionDataInit;
 pub use turn_admission::TurnStartAdmission;
+pub use turn_arbiter::AutomaticTurnArbiter;
+pub use turn_arbiter::AutomaticTurnInput;
 pub use user_instructions::Instructions;
 pub use user_instructions::LoadInstructionsFuture;
 pub use user_instructions::LoadedUserInstructions;

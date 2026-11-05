@@ -12,7 +12,10 @@ use codex_core::config::Constrained;
 use codex_core::context::ContextualUserFragment;
 use codex_core::context::InternalContextSource;
 use codex_core::context::InternalModelContextFragment;
+use codex_extension_api::AutomaticTurnArbiter;
+use codex_extension_api::AutomaticTurnInput;
 use codex_extension_api::ExtensionDataInit;
+use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::TurnStartAdmission;
 use codex_features::Feature;
@@ -265,6 +268,56 @@ async fn host_drain_rejects_turn_start_paths_without_recording_input() -> anyhow
     assert!(!request.body_contains_text("rejected direct input"));
     assert!(!request.body_contains_text("rejected queued input"));
     assert!(!request.body_contains_text("rejected continuation"));
+    Ok(())
+}
+
+/// Owns every thread's Goal continuations, as an organization engine owns its threads.
+struct GoalOwner;
+
+impl AutomaticTurnArbiter for GoalOwner {
+    fn admit_automatic_turn<'a>(
+        &'a self,
+        input: AutomaticTurnInput<'a>,
+    ) -> ExtensionFuture<'a, bool> {
+        Box::pin(async move { input.turn_trigger != Some("goal") })
+    }
+}
+
+#[tokio::test]
+async fn arbiter_declines_automatic_starts_owned_by_another_driver() -> anyhow::Result<()> {
+    let server = responses::start_mock_server().await;
+    let response = responses::mount_sse_once(&server, responses::sse_completed("allowed")).await;
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.automatic_turn_arbiter(Arc::new(GoalOwner));
+    let test = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
+        .build_with_auto_env(&server)
+        .await?;
+    let triggered = |text: &str, trigger: &str| {
+        user_message_request(text).on_start(TurnStartOptions {
+            turn_trigger: Some(trigger.to_owned()),
+            ..Default::default()
+        })
+    };
+    assert_eq!(
+        test.codex
+            .start_turn_if_idle(triggered("declined goal turn", "goal"))
+            .await?,
+        StartIfIdleSubmission::NotSubmitted {
+            reason: NotSubmittedReason::DeclinedByDriver
+        },
+    );
+    assert!(response.requests().is_empty());
+    test.codex
+        .start_turn_if_idle(triggered("allowed queue turn", "queue"))
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let request = response.single_request();
+    assert!(request.body_contains_text("allowed queue turn"));
+    assert!(!request.body_contains_text("declined goal turn"));
     Ok(())
 }
 

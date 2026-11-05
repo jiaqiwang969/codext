@@ -18,6 +18,7 @@
 //! T-14 adds the executor: one codext root thread per ticket, the worker tools and the
 //! turn-lifecycle feed. `integration` glues the three onto the engine.
 
+mod arbiter;
 pub mod cards;
 pub mod core;
 pub mod effects;
@@ -467,6 +468,7 @@ where
     C: Send + Sync + 'static,
 {
     registry.turn_input_contributor(Arc::new(intake::SuperagentIntake::new(&service)));
+    registry.automatic_turn_arbiter(Arc::new(arbiter::SuperagentArbiter::new(&service)));
     registry.tool_contributor(Arc::new(pm::PmExtension::new(Arc::clone(&service))));
     let lookup = Arc::new(move || {
         service

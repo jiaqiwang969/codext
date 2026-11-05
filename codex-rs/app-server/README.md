@@ -63,7 +63,8 @@ PM registrations live in `CODEX_HOME/superagent/pm-threads`. Each line has a
 thread ID and optional `project=`, `repo=`, `base=`, `worktrees=`, and `account=`
 fields. Workers retain independent root threads and worktrees. A PM's tools are
 restricted at creation, cold resume, and account replacement. Human input into
-a busy PM or worker is also recorded by the coordinator.
+a PM or worker thread is recorded by the coordinator, including input steered
+into a busy turn.
 
 Thread creation and profile changes reuse app-server's account validation and
 runtime replacement. Cold delivery resumes the saved thread before enqueueing;
@@ -74,14 +75,20 @@ Capacity continuation requires a terminal failed turn with no report; stream
 retries alone do not qualify. Assignment/turn receipts and retry counts survive
 restarts, and changed ticket state or active work cancels delayed continuation.
 
-Run an organization app-server directly with `--listen unix://...`, with its own
-home and socket. Managed daemon automatic turn continuation is not yet integrated
-with assignment recovery; enabling this feature in managed daemon mode is rejected.
-For an isolated candidate, set both `CODEX_HOME` and `CODEX_SQLITE_HOME`, plus
-`CODEXT_SUPERAGENT_ROOT` to a separate absolute directory. The latter selects the
-organization workspace layout (`src/codext`, `wt`, and `org`); when unset, the
-existing organization user's home layout is preserved. Do not reuse production
-PM registrations or pending effects in a candidate smoke check.
+The coordinator runs in the managed daemon as well as in a dedicated
+`--listen unix://...` server. The threads it drives (PM threads and worker
+threads of open tickets) are left to its own startup reconciliation: the daemon
+snapshot skips them, shutdown stops the coordinator's scheduling before the
+snapshot is taken, and a registered `AutomaticTurnArbiter` declines Goal and
+daemon-recovery turns on them (`NotSubmittedReason::DeclinedByDriver`). Queue
+starts stay allowed, since the coordinator delivers through the queue.
+
+The organization's working files default to `CODEX_HOME/superagent`;
+`CODEXT_SUPERAGENT_ROOT` selects another absolute directory. There is no built-in
+worker account pool: `CODEXT_SUPERAGENT_PROFILES` lists profiles, otherwise
+workers use the profile the daemon was launched with. For an isolated candidate,
+set both `CODEX_HOME` and `CODEX_SQLITE_HOME`. Do not reuse production PM
+registrations or pending effects in a candidate smoke check.
 
 See [the integration contract](../../docs/superagent-0.166-integration.md) for
 source provenance, build acceptance, gateway boundaries, and deployment status.
