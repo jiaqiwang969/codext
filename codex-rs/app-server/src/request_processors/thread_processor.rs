@@ -520,6 +520,7 @@ pub(crate) struct ThreadRequestProcessor {
     pub(super) turn_cost_worker: Option<crate::turn_cost_worker::TurnCostWorkerHandle>,
     pub(super) initial_config_warnings: Arc<Vec<ConfigWarningNotification>>,
     pub(super) account_profiles: Arc<AccountProfileRegistry>,
+    pub(crate) superagent: Option<Arc<codex_superagent_extension::SuperagentService>>,
 }
 
 /// Whether resume attaches a client or restores a cold runtime during daemon startup.
@@ -585,6 +586,7 @@ impl ThreadRequestProcessor {
             turn_cost_worker,
             initial_config_warnings: Arc::new(initial_config_warnings),
             account_profiles,
+            superagent: None,
         }
     }
 
@@ -606,6 +608,7 @@ impl ThreadRequestProcessor {
             client_mcp_extensions,
             auth_profile_id,
             request_context,
+            /*started*/ None,
         )
         .await
         .map(|()| None)
@@ -1140,7 +1143,7 @@ impl ThreadRequestProcessor {
             .await;
     }
 
-    async fn thread_unsubscribe_response_inner(
+    pub(super) async fn thread_unsubscribe_response_inner(
         &self,
         params: ThreadUnsubscribeParams,
         connection_id: ConnectionId,
@@ -1250,7 +1253,7 @@ impl ThreadRequestProcessor {
         .await
     }
 
-    async fn thread_start_inner(
+    pub(super) async fn thread_start_inner(
         &self,
         request_id: ConnectionRequestId,
         params: ThreadStartParams,
@@ -1259,6 +1262,7 @@ impl ThreadRequestProcessor {
         client_mcp_extensions: ClientMcpExtensions,
         auth_profile_id: Option<String>,
         request_context: RequestContext,
+        started: Option<tokio::sync::oneshot::Sender<ThreadId>>,
     ) -> Result<(), JSONRPCErrorError> {
         let _auth_transition_guard = self.auth_transition_lock.lock().await;
         if auth_profile_id.is_none() {
@@ -1370,6 +1374,7 @@ impl ThreadRequestProcessor {
         let account_profiles = Arc::clone(&self.account_profiles);
         let outgoing = Arc::clone(&listener_task_context.outgoing);
         let error_request_id = request_id.clone();
+        let superagent = self.superagent.clone();
         let thread_start_task = async move {
             if let Err(error) = Self::thread_start_task(
                 listener_task_context,
@@ -1381,6 +1386,8 @@ impl ThreadRequestProcessor {
                 client_mcp_extensions,
                 auth_profile_id,
                 account_profiles,
+                superagent,
+                started,
                 config,
                 typesafe_overrides,
                 dynamic_tools,
@@ -1465,6 +1472,8 @@ impl ThreadRequestProcessor {
         client_mcp_extensions: ClientMcpExtensions,
         auth_profile_id: Option<String>,
         account_profiles: Arc<AccountProfileRegistry>,
+        superagent: Option<Arc<codex_superagent_extension::SuperagentService>>,
+        started: Option<tokio::sync::oneshot::Sender<ThreadId>>,
         config_overrides: Option<HashMap<String, serde_json::Value>>,
         typesafe_overrides: ConfigOverrides,
         dynamic_tools: Option<Vec<DynamicToolSpec>>,
@@ -1639,6 +1648,9 @@ impl ThreadRequestProcessor {
         let thread_id = reserved_thread_id
             .unwrap_or_else(|| listener_task_context.thread_manager.reserve_thread_id());
         start_options.reserved_thread_id = Some(thread_id);
+        if let Some(policy) = crate::superagent_host::thread_tool_policy(superagent.as_deref(), thread_id) {
+            thread_extension_init.insert(policy);
+        }
         // Startup can prewarm the Responses socket before start_thread returns.
         // Register the creating client first so that handshake can request attestation.
         listener_task_context
@@ -1776,6 +1788,9 @@ impl ThreadRequestProcessor {
             thread_response_active_permission_profile(config_snapshot.active_permission_profile);
         let thread_originator = config_snapshot.originator.clone();
 
+        if let Some(started) = started {
+            let _ = started.send(thread_id);
+        }
         let response = ThreadStartResponse {
             thread: thread.clone(),
             disabled_plugin_ids: config_snapshot.disabled_plugin_ids,
@@ -4418,10 +4433,19 @@ impl ThreadRequestProcessor {
             )
             .await
             .map_err(invalid_params)?;
+        let mut resume_extension_init = ExtensionDataInit::new();
+        if let InitialHistory::Resumed(resumed) = &thread_history
+            && let Some(policy) = crate::superagent_host::thread_tool_policy(
+                self.superagent.as_deref(), resumed.conversation_id,
+            )
+        {
+            resume_extension_init.insert(policy);
+        }
         match self
             .thread_manager
             .start_thread(StartThreadOptions {
                 runtime,
+                thread_extension_init: resume_extension_init,
                 initial_history: thread_history,
                 parent_trace: match target {
                     ThreadResumeTarget::Client(request_id) => {

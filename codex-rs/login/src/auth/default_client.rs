@@ -149,21 +149,23 @@ pub fn is_first_party_chat_originator(originator_value: &str) -> bool {
     originator_value == "codex_atlas" || originator_value == "codex_chatgpt_desktop"
 }
 
+/// Optional organization deployment override for the user-agent OS segment.
+pub const CODEX_INTERNAL_OS_INFO_OVERRIDE_ENV_VAR: &str = "CODEX_INTERNAL_OS_INFO_OVERRIDE";
+
 pub fn get_codex_user_agent() -> String {
     // OS discovery can spawn subprocesses on Linux. Reuse it across requests,
     // while continuing to read the mutable originator and suffix below.
     static OS_INFO: LazyLock<os_info::Info> = LazyLock::new(os_info::get);
     let build_version = env!("CARGO_PKG_VERSION");
-    let os_info = &*OS_INFO;
     let originator = originator();
-    let prefix = format!(
-        "{}/{build_version} ({} {}; {}) {}",
-        originator.value.as_str(),
-        os_info.os_type(),
-        os_info.version(),
-        os_info.architecture().unwrap_or("unknown"),
-        user_agent()
-    );
+    let os = std::env::var(CODEX_INTERNAL_OS_INFO_OVERRIDE_ENV_VAR).ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty() && !value.contains(['(', ')', '\r', '\n']))
+        .unwrap_or_else(|| {
+            let os_info = &*OS_INFO;
+            format!("{} {}; {}", os_info.os_type(), os_info.version(), os_info.architecture().unwrap_or("unknown"))
+        });
+    let prefix = format!("{}/{build_version} ({os}) {}", originator.value.as_str(), user_agent());
     let suffix = USER_AGENT_SUFFIX
         .lock()
         .ok()

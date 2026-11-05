@@ -43,6 +43,49 @@ quota response. The command neither loads credentials nor starts a separate
 app-server, so list queries share the daemon's per-profile refresh locks. An
 unavailable daemon is an error, not a fallback to an independent auth manager.
 
+# Organization coordinator (experimental)
+
+`[features] superagent = true` enables the optional Superagent coordinator. It is
+false by default. The service opens `superagent_1.sqlite` in the configured SQLite
+home only when enabled; this ledger is authoritative and is never automatically
+replaced by an empty database after corruption or a migration error.
+
+After opting into `initialize.capabilities.experimentalApi`, call
+`superagent/status` with no parameters. The response is
+`{ "exitCode": 0, "status": { ... } }`. Status includes initialization, registered
+PMs and their project groups, open tickets, health, queued effects, and questions
+waiting for a person. Exit codes are 0 (healthy), 2 (failed component or stalled
+ticket), and 3 (initialization or PM configuration incomplete). A disabled feature
+returns an RPC error. This status does not prove which account an upstream
+account gateway used for a model request.
+
+PM registrations live in `CODEX_HOME/superagent/pm-threads`. Each line has a
+thread ID and optional `project=`, `repo=`, `base=`, `worktrees=`, and `account=`
+fields. Workers retain independent root threads and worktrees. A PM's tools are
+restricted at creation, cold resume, and account replacement. Human input into
+a busy PM or worker is also recorded by the coordinator.
+
+Thread creation and profile changes reuse app-server's account validation and
+runtime replacement. Cold delivery resumes the saved thread before enqueueing;
+0.166's queue wakes itself, so the host does not start it a second time. Recovery
+reconciliation finishes before effect dispatch starts. Shutdown serializes with
+initialization, stops scheduling, and drains deliveries already in progress.
+Capacity continuation requires a terminal failed turn with no report; stream
+retries alone do not qualify. Assignment/turn receipts and retry counts survive
+restarts, and changed ticket state or active work cancels delayed continuation.
+
+Run an organization app-server directly with `--listen unix://...`, with its own
+home and socket. Managed daemon automatic turn continuation is not yet integrated
+with assignment recovery; enabling this feature in managed daemon mode is rejected.
+For an isolated candidate, set both `CODEX_HOME` and `CODEX_SQLITE_HOME`, plus
+`CODEXT_SUPERAGENT_ROOT` to a separate absolute directory. The latter selects the
+organization workspace layout (`src/codext`, `wt`, and `org`); when unset, the
+existing organization user's home layout is preserved. Do not reuse production
+PM registrations or pending effects in a candidate smoke check.
+
+See [the integration contract](../../docs/superagent-0.166-integration.md) for
+source provenance, build acceptance, gateway boundaries, and deployment status.
+
 # Thread memory summary (experimental)
 
 `thread/memory/read` takes `{threadId}` for a loaded thread and returns

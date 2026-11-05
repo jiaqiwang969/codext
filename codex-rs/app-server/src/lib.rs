@@ -120,6 +120,8 @@ mod dynamic_tools;
 mod effective_plugin_change;
 mod error_code;
 mod extensions;
+mod superagent_host;
+mod superagent_status;
 mod external_agent_migration;
 mod external_auth;
 mod filters;
@@ -598,6 +600,12 @@ pub async fn run_main_with_transport_options(
     };
     config.validate_windows_mxc_requirement()?;
     config.auth_config().validate()?;
+    if managed_daemon && config.features.enabled(Feature::Superagent) {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            "superagent requires a dedicated app-server --listen endpoint; managed daemon continuation is not compatible with organization recovery",
+        ));
+    }
     let auth_manager =
         AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false)
             .await

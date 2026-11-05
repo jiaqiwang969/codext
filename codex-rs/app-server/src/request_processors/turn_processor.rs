@@ -91,6 +91,7 @@ pub(crate) struct TurnRequestProcessor {
     auth_transition_lock: Arc<Mutex<()>>,
     skills_watcher: Arc<SkillsWatcher>,
     turn_cost_worker: Option<crate::turn_cost_worker::TurnCostWorkerHandle>,
+    pub(crate) superagent: Option<Arc<codex_superagent_extension::SuperagentService>>,
 }
 
 fn map_additional_context(
@@ -165,6 +166,7 @@ impl TurnRequestProcessor {
             auth_transition_lock,
             skills_watcher,
             turn_cost_worker,
+            superagent: None,
         }
     }
 
@@ -593,6 +595,7 @@ impl TurnRequestProcessor {
             resolve_turn_environment_requests(self.thread_manager.as_ref(), params.environments)?;
 
         let turn_has_input = !params.input.is_empty();
+        let steered_text = super::superagent::v2_text(&params.input);
         let input = if let Some(tool_output) = params.tool_output {
             let item = ResponseItem::FunctionCallOutput {
                 id: None,
@@ -700,6 +703,9 @@ impl TurnRequestProcessor {
                 return Err(error);
             }
         };
+        if !started && turn_has_input {
+            self.note_steered_input(&thread_id.to_string(), &turn_id, &steered_text).await;
+        }
         self.thread_watch_manager
             .note_turn_started(&thread_id.to_string())
             .await;
@@ -1082,6 +1088,7 @@ impl TurnRequestProcessor {
             return Err(error);
         }
 
+        let steered_text = super::superagent::v2_text(&params.input);
         let mapped_items: Vec<CoreInputItem> = params
             .input
             .into_iter()
@@ -1110,7 +1117,10 @@ impl TurnRequestProcessor {
                 error
             })?;
         let turn_id = match submission {
-            SteerSubmission::Steered { turn_id } => turn_id,
+            SteerSubmission::Steered { turn_id } => {
+                self.note_steered_input(&params.thread_id, &turn_id, &steered_text).await;
+                turn_id
+            },
             SteerSubmission::NotSubmitted { reason } => {
                 let (message, data, error_type) = match reason {
                     NotSubmittedReason::ServerDraining => {

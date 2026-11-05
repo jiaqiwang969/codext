@@ -121,3 +121,9 @@ WHERE version = ?
 #[cfg(test)]
 #[path = "migrations_tests.rs"]
 mod tests;
+
+/// Migrations for the opt-in organization coordinator.
+pub(crate) fn runtime_superagent_migrator() -> Migrator {
+    static MIGRATOR: Migrator = sqlx_macros::migrate!("./superagent_migrations");
+    runtime_migrator(&MIGRATOR)
+}

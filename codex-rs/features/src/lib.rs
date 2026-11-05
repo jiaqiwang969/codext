@@ -432,6 +432,8 @@ pub enum Feature {
     GuardianExt,
     /// Enable persisted thread goals and automatic goal continuation.
     Goals,
+    /// Enable the opt-in Superagent organization coordinator.
+    Superagent,
     /// Add current context-window metadata to model-visible context.
     TokenBudget,
     /// Enables experimental context management.
@@ -2073,6 +2075,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "goals",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::Superagent,
+        key: "superagent",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::TokenBudget,

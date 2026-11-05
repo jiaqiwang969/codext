@@ -1,0 +1,29 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "codex-superagent-extension"
+version.workspace = true
+
+[lib]
+name = "codex_superagent_extension"
+path = "src/lib.rs"
+test = false
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true }
+codex-extension-api = { workspace = true }
+codex-protocol = { workspace = true }
+codex-state = { workspace = true }
+codex-tools = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs", "macros", "process", "rt", "sync", "time"] }
+tracing = { workspace = true }

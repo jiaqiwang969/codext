@@ -230,10 +230,15 @@ impl ThreadRequestProcessor {
                 /*prepared_model_context*/ None,
             )
             .await?;
+        let mut thread_extension_init = codex_extension_api::ExtensionDataInit::new();
+        if let Some(policy) = crate::superagent_host::thread_tool_policy(self.superagent.as_deref(), thread_id) {
+            thread_extension_init.insert(policy);
+        }
         let NewThread { thread: replacement, .. } = self
             .thread_manager
             .start_thread(StartThreadOptions {
                 runtime,
+                thread_extension_init,
                 initial_history,
                 client_mcp_extensions,
                 parent_trace: self.request_trace_context(request_id).await,

@@ -2118,6 +2118,7 @@ dependencies = [
  "codex-skills",
  "codex-skills-extension",
  "codex-state",
+ "codex-superagent-extension",
  "codex-thread-store",
  "codex-tools",
  "codex-uds",
@@ -4909,6 +4910,25 @@ dependencies = [
  "pretty_assertions",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "codex-superagent-extension"
+version = "0.166.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "codex-extension-api",
+ "codex-protocol",
+ "codex-state",
+ "codex-tools",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

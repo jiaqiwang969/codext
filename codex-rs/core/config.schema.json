@@ -1356,6 +1356,9 @@
             "subagent_thread_environments": {
               "type": "boolean"
             },
+            "superagent": {
+              "type": "boolean"
+            },
             "system_proxy_fallback": {
               "type": "boolean"
             },
@@ -8016,6 +8019,9 @@
           "type": "boolean"
         },
         "subagent_thread_environments": {
+          "type": "boolean"
+        },
+        "superagent": {
           "type": "boolean"
         },
         "system_proxy_fallback": {

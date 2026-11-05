@@ -79,6 +79,7 @@ members = [
     "ext/mcp",
     "ext/queue",
     "ext/skills",
+    "ext/superagent",
     "ext/web-search",
     "external-agent-migration",
     "keyring-store",
@@ -291,6 +292,7 @@ codex-sandboxing = { path = "sandboxing" }
 codex-secrets = { path = "secrets" }
 codex-shell-command = { path = "shell-command" }
 codex-skills-extension = { path = "ext/skills" }
+codex-superagent-extension = { path = "ext/superagent" }
 codex-skills = { path = "skills" }
 codex-state = { path = "state" }
 codex-stdio-to-uds = { path = "stdio-to-uds" }

@@ -17,6 +17,7 @@ use crate::error_code::method_not_found;
 use crate::extensions::ThreadExtensionDependencies;
 use crate::extensions::app_server_extension_event_sink;
 use crate::extensions::thread_extensions;
+use crate::extensions::thread_extensions_with_superagent;
 use crate::external_agent_migration::ExternalAgentConfigRequestProcessor;
 use crate::external_agent_migration::ExternalAgentConfigRequestProcessorArgs;
 use crate::fs_watch::FsWatchManager;
@@ -179,6 +180,7 @@ pub(crate) struct MessageProcessor {
     turn_processor: TurnRequestProcessor,
     windows_sandbox_processor: WindowsSandboxRequestProcessor,
     request_serialization_queues: RequestSerializationQueues,
+    pub(crate) superagent: Option<Arc<codex_superagent_extension::SuperagentService>>,
 }
 
 #[derive(Debug)]
@@ -350,6 +352,16 @@ impl MessageProcessor {
         let turn_start_admission: Arc<dyn TurnStartAdmission> = Arc::new(turn_admission.clone());
         let extension_event_sink =
             app_server_extension_event_sink(outgoing.clone(), thread_state_manager.clone());
+        let superagent = if config.features.enabled(codex_features::Feature::Superagent) {
+            state_db.as_ref().map(|state_db| {
+                Arc::new(codex_superagent_extension::SuperagentService::new(
+                    Arc::clone(state_db),
+                    config.codex_home.as_path().join("superagent"),
+                ))
+            })
+        } else {
+            None
+        };
         let mut queue_service = None;
         let sample_responses = Arc::new(crate::thread_sample::SampleResponseRegistry::default());
         let thread_manager = Arc::new_cyclic(|thread_manager| {
@@ -360,6 +372,28 @@ impl MessageProcessor {
                     Arc::clone(&extension_event_sink),
                 ))
             });
+            let extension_dependencies = ThreadExtensionDependencies {
+                sample_responses: Arc::clone(&sample_responses),
+                event_sink: Arc::clone(&extension_event_sink),
+                auth_manager: auth_manager.clone(),
+                state_db: state_db.clone(),
+                analytics_events_client: analytics_events_client.clone(),
+                thread_manager: thread_manager.clone(),
+                goal_service: Arc::clone(&goal_service),
+                environment_manager: Arc::clone(&environment_manager_for_extensions),
+                executor_skill_provider: Arc::clone(&executor_skill_provider),
+                cloud_skill_provider: cloud_skill_provider.clone(),
+                git_attribution_base_url: config.chatgpt_base_url.clone(),
+                http_client_factory: config.http_client_factory(),
+                queue_service: queue_service.clone(),
+                turn_start_admission: Some(Arc::clone(&turn_start_admission)),
+            };
+            let extensions = match &superagent {
+                Some(service) => thread_extensions_with_superagent(
+                    config.as_ref(), extension_dependencies, Some(Arc::clone(service)),
+                ),
+                None => thread_extensions(config.as_ref(), extension_dependencies),
+            };
             let manager = ThreadManager::new(
                 config.as_ref(),
                 auth_manager.clone(),
@@ -367,25 +401,7 @@ impl MessageProcessor {
                 codex_core::CodexAppsToolsCache::default(),
                 session_source,
                 environment_manager,
-                thread_extensions(
-                    config.as_ref(),
-                    ThreadExtensionDependencies {
-                        sample_responses: Arc::clone(&sample_responses),
-                        event_sink: Arc::clone(&extension_event_sink),
-                        auth_manager: auth_manager.clone(),
-                        state_db: state_db.clone(),
-                        analytics_events_client: analytics_events_client.clone(),
-                        thread_manager: thread_manager.clone(),
-                        goal_service: Arc::clone(&goal_service),
-                        environment_manager: Arc::clone(&environment_manager_for_extensions),
-                        executor_skill_provider: Arc::clone(&executor_skill_provider),
-                        cloud_skill_provider: cloud_skill_provider.clone(),
-                        git_attribution_base_url: config.chatgpt_base_url.clone(),
-                        http_client_factory: config.http_client_factory(),
-                        queue_service: queue_service.clone(),
-                        turn_start_admission: Some(Arc::clone(&turn_start_admission)),
-                    },
-                ),
+                extensions,
                 Arc::new(CodexHomeUserInstructionsProvider::new(
                     config.codex_home.clone(),
                 )),
@@ -417,6 +433,22 @@ impl MessageProcessor {
             Arc::clone(&auth_manager),
         ));
         let account_profiles = Arc::new(AccountProfileRegistry::new(config.as_ref()));
+        let superagent_host = match (&superagent, state_db.as_ref()) {
+            (Some(superagent), Some(superagent_state_db)) => {
+                let host = Arc::new(crate::superagent_host::AppServerSuperagentHost {
+                    thread_manager: Arc::downgrade(&thread_manager),
+                    queue_service: queue_service.clone(),
+                    goal_service: Arc::clone(&goal_service),
+                    state_db: Arc::clone(superagent_state_db),
+                    config: Arc::clone(&config),
+                    thread_processor: std::sync::OnceLock::new(),
+                    turn_processor: std::sync::OnceLock::new(),
+                });
+                superagent.set_host(host.clone());
+                Some(host)
+            }
+            _ => None,
+        };
         let models_refresh_worker = crate::models_refresh_worker::spawn(&model_catalog);
         let turn_cost_worker =
             TurnCostWorker::spawn(Arc::clone(&config), Arc::clone(&auth_manager));
@@ -541,7 +573,7 @@ impl MessageProcessor {
             outgoing.clone(),
             Arc::clone(&thread_list_state_permit),
         );
-        let thread_processor = ThreadRequestProcessor::new(
+        let mut thread_processor = ThreadRequestProcessor::new(
             auth_manager.clone(),
             Arc::clone(&thread_manager),
             outgoing.clone(),
@@ -563,7 +595,8 @@ impl MessageProcessor {
             sample_responses,
             Arc::clone(&account_profiles),
         );
-        let turn_processor = TurnRequestProcessor::new(
+        thread_processor.superagent = superagent.clone();
+        let mut turn_processor = TurnRequestProcessor::new(
             auth_manager,
             Arc::clone(&thread_manager),
             outgoing.clone(),
@@ -577,6 +610,13 @@ impl MessageProcessor {
             Arc::clone(&skills_watcher),
             turn_cost_worker.as_ref().map(TurnCostWorker::handle),
         );
+        turn_processor.superagent = superagent.clone();
+        // Both host processors must be available before recovery dispatches effects.
+        if let (Some(service), Some(host)) = (&superagent, &superagent_host) {
+            host.set_thread_processor(thread_processor.clone());
+            host.set_turn_processor(turn_processor.clone());
+            service.start_in_background();
+        }
         if let Some(startup_config) = plugin_startup_tasks {
             // Keep plugin startup warmups aligned at app-server startup.
             let reload_config = match startup_config {
@@ -665,6 +705,7 @@ impl MessageProcessor {
             turn_processor,
             windows_sandbox_processor,
             request_serialization_queues,
+            superagent,
         }
     }
 
@@ -904,6 +945,9 @@ impl MessageProcessor {
     }
 
     pub(crate) async fn drain_background_tasks(&self) {
+        if let Some(service) = &self.superagent {
+            service.drain().await;
+        }
         self.models_refresh_worker.shutdown();
         if let Some(worker) = &self.turn_cost_worker {
             worker.shutdown();
@@ -1523,6 +1567,7 @@ impl MessageProcessor {
                 self.thread_processor.thread_memory_read(params).await
             }
             ClientRequest::MemoryReset { .. } => self.thread_processor.memory_reset().await,
+            ClientRequest::SuperagentStatus { .. } => self.superagent_status().await,
             ClientRequest::RolloutCompress { .. } => self.thread_processor.rollout_compress(),
             ClientRequest::ThreadUnarchive { params, .. } => {
                 self.thread_processor
