@@ -1,7 +1,7 @@
 //! Model-side incidents: capacity, rate and usage limits. codex retries them inside the turn
 //! and writes nothing to the rollout, so the host reports every stream or turn error here and
-//! the engine keeps its own record: one JSON line per incident in `<dir>/incidents.jsonl`, a
-//! warn log line, and the last few in memory for status.
+//! the engine keeps its own record of the threads it drives: one JSON line per incident in
+//! `<dir>/incidents.jsonl`, a warn log line, and the last few in memory for status.
 
 use std::collections::VecDeque;
 use std::io::Write;
@@ -23,6 +23,16 @@ static LISTENER: OnceLock<Listener> = OnceLock::new();
 /// Registers the one listener (the executor's capacity policy); later calls are ignored.
 pub fn subscribe(listener: Listener) {
     let _ = LISTENER.set(listener);
+}
+
+/// Which threads' incidents are recorded; answered on the reporting task: keep it quick.
+pub type Scope = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+static SCOPE: OnceLock<Scope> = OnceLock::new();
+
+/// Records only the threads `scope` accepts (the executor's: the PM and live worker threads);
+/// later calls are ignored. Until a scope is set, every thread is recorded.
+pub fn limit_to(scope: Scope) {
+    let _ = SCOPE.set(scope);
 }
 const RECENT: usize = 100;
 
@@ -67,8 +77,8 @@ pub fn classify(message: &str, details: Option<&str>) -> Option<&'static str> {
     }
 }
 
-/// The host reports a stream or turn error of a thread; capacity and limit conditions are
-/// recorded, everything else is ignored.
+/// The host reports a stream or turn error of a thread; capacity and limit conditions of the
+/// threads in scope are recorded, everything else is ignored.
 pub fn note(thread: &str, turn: Option<&str>, message: &str, details: Option<&str>) {
     let Some(log) = SINK.get() else {
         return;
@@ -76,6 +86,9 @@ pub fn note(thread: &str, turn: Option<&str>, message: &str, details: Option<&st
     let Some(kind) = classify(message, details) else {
         return;
     };
+    if SCOPE.get().is_some_and(|scope| !scope(thread)) {
+        return;
+    }
     let message = match details {
         Some(details) if !details.is_empty() && details != message => {
             format!("{message}; {details}")

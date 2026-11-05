@@ -1903,6 +1903,25 @@ pub async fn install_executor(
                 .quiet(),
         )
         .await?;
+    // Only the threads the engine drives are recorded: other sessions' errors would crowd the
+    // workers' out of the recent incidents the fallback policy counts.
+    let scope = executor.clone();
+    let pm_threads = executor
+        .inner
+        .config
+        .pm_threads_file
+        .clone()
+        .map(crate::pm_threads::PmThreads::from_file);
+    crate::incidents::limit_to(Arc::new(move |thread: &str| {
+        pm_threads.as_ref().is_some_and(|pm| pm.is_pm(thread))
+            || scope
+                .inner
+                .sessions
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .values()
+                .any(|record| record.thread_id == thread)
+    }));
     // capacity incidents feed the fallback policy (design §6.8)
     let observer = executor.clone();
     crate::incidents::subscribe(Arc::new(move |incident: &crate::incidents::Incident| {
