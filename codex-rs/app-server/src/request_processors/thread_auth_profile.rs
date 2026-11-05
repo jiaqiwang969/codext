@@ -188,6 +188,8 @@ impl ThreadRequestProcessor {
             .await
             .map_err(invalid_params)?;
         let client_mcp_extensions = thread.client_mcp_extensions();
+        // The Superagent engine is not a client: its requests never attach a subscriber, but the
+        // listener the switch drains is started all the same.
         if matches!(
             self.ensure_conversation_listener(
                 thread_id,
@@ -196,7 +198,8 @@ impl ThreadRequestProcessor {
             )
             .await?,
             EnsureConversationListenerResult::ConnectionClosed
-        ) {
+        ) && request_id.connection_id != super::superagent::SUPERAGENT_CONNECTION
+        {
             return Err(internal_error("connection closed before account switch"));
         }
         let thread_state = self.thread_state_manager.thread_state(thread_id).await;
