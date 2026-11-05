@@ -264,7 +264,8 @@ impl ThreadRequestProcessor {
         .await?;
         self.ensure_listener_task_running(thread_id, replacement, thread_state)
             .await?;
-        self.thread_watch_manager.remove_thread(&thread_id.to_string()).await;
+        // Preserve the status channel the replacement listener just subscribed to.
+        // Removing it stops that listener, and this runtime cannot start a second reader.
         self.thread_watch_manager.upsert_thread(&thread_id.to_string()).await;
         Ok(())
     }

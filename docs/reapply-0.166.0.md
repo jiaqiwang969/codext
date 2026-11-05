@@ -7,7 +7,7 @@ The new branch starts at official `rust-v0.166.0` (`6ff1e1ca3b30`), with no merg
 | Requirement | 0.166 implementation |
 | --- | --- |
 | Shared home, isolated account credentials | Launchers still pin `~/.codex`; profile login/status/logout use `accounts/<name>/auth.json`. The new browser/device login coordinator retains staging, identity validation, and atomic replacement. |
-| Current-thread profile switching | The idle transition replaces account-aware services and waits for the new upstream shutdown-drain watch before replacement. The acknowledgement includes the target thread. |
+| Current-thread profile switching | The idle transition replaces account-aware services and waits for the new upstream shutdown-drain watch before replacement. Preserve the existing thread-status watch channel when marking the replacement loaded; removing it terminates the replacement listener, and 0.166's single-reader guard prevents resume from replacing that listener. The acknowledgement includes the target thread. |
 | Explicit account on cold resume | The launcher binds the thread before resume; durable bindings take precedence over historical creator metadata. Old-profile credentials are not needed to select a replacement. |
 | Runtime authentication and tools | Session extension data owns the account runtime; model, plugin, MCP, web, image, history, git attribution, and Guardian clients use that runtime. Children inherit it. There is no separate runtime map to race with upstream removal/replacement. |
 | Routing and login isolation | Profile routing uses its own credential manager, including 0.166 permanent refresh-token diagnostics. Routing cache keys include the credential manager. New workspace-session mutations cannot run under a selected profile and overwrite shared credentials. |
@@ -53,3 +53,12 @@ Verified on macOS ARM64 with Rust 1.95.0:
 - `just write-config-schema`, `just bazel-lock-update`, `just bazel-lock-check`, and the release artifact preflight succeed. The Bazel lockfile has no resulting change.
 - CLI version output reports `0.166.0`; read-only login status recognizes the selected named profiles. Offline account discovery returns all 11 profiles, with the free account last.
 - No tests or snapshots are added, modified, or run. These checks establish build, packaging structure, and passive account discovery; they do not replace interactive account-switching or cross-platform runtime coverage.
+
+The profile-listener follow-up also passes the minimal CLI build and the grouped
+three-binary build. An isolated app-server with a local Responses provider and
+dummy credentials completes eight requests: repeated profile switches, selecting
+the same profile, streamed replies, warm resume, another thread retaining its
+original credentials, and cold resume after restart. The old installed binary
+reproduces `thread is closing` after a successful profile switch; preserving the
+status channel removes that failure without weakening the single-reader guard.
+These runtime probes use temporary homes and do not call a live model service.
