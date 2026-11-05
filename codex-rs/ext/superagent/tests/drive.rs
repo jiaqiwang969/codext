@@ -365,6 +365,19 @@ async fn a_verified_delivery_or_a_drift_stops_without_a_step() -> anyhow::Result
     s.judge.then(audit("anchored", &["A1", "A2"], &[], "2"));
     s.drive.step(THREAD).await?;
     assert_eq!(s.host.delivered().len(), 1);
+    let notices = s.effects.queued("notice").await?;
+    assert_eq!(
+        notices
+            .iter()
+            .map(|(key, payload)| (key.clone(), payload["summary"].clone()))
+            .collect::<Vec<_>>(),
+        vec![(
+            format!("drive:{THREAD}"),
+            json!(format!(
+                "会话 {THREAD}（整理笔记）可交付，等你验收：anchored；已核实 A1、A2；未闭合 无；不一致 无"
+            ))
+        )]
+    );
     assert_eq!(
         s.record().await?.state,
         DriveState::Deliverable {
@@ -416,6 +429,8 @@ async fn an_interruption_or_a_failed_step_pauses_and_resume_drives_again() -> an
     s.drive.turn_started(THREAD).await?;
     s.drive.turn_interrupted(THREAD).await?;
     assert!(matches!(s.record().await?.state, DriveState::Paused { .. }));
+    // The person's own interruption is not told back to them.
+    assert_eq!(s.effects.queued("notice").await?.len(), 0);
     assert!(!s.drive.drives(THREAD).await?);
 
     s.drive.resume(THREAD).await?;

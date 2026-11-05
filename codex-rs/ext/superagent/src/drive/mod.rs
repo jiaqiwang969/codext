@@ -42,6 +42,8 @@ use crate::store::Store;
 
 pub const KEY_PREFIX: &str = "drive:";
 pub const KIND_STEP: &str = "drive-step";
+/// The effect kind that delivers a notice to the Router (`pm.rs`).
+const NOTICE: &str = "notice";
 pub const DEFAULT_MAX_STEPS: u32 = 20;
 /// Judgments in a row that found the Project and the anchor unchanged before the drive stops.
 pub const UNCHANGED_LIMIT: u32 = 2;
@@ -395,9 +397,13 @@ impl DriveService {
             match record.inflight {
                 Some(step) => {
                     self.withdraw_steps(&record.thread_id).await?;
-                    self.pause(
+                    let reason =
+                        format!("服务重启时第 {step} 步已交出但没有看到开始，没有自动重放");
+                    self.pause(&record.thread_id, &reason).await?;
+                    self.notify(
                         &record.thread_id,
-                        &format!("服务重启时第 {step} 步已交出但没有看到开始，没有自动重放"),
+                        &record.title,
+                        &DriveState::Paused { reason },
                     )
                     .await?;
                 }
@@ -432,7 +438,7 @@ impl DriveService {
             }
             if record.steps > 0 && turn.status != "completed" {
                 let reason = format!("第 {} 步没有正常结束（{}）", record.steps, turn.status);
-                return self.settle(thread_id, DriveState::Paused { reason }).await;
+                return self.settle(&record, DriveState::Paused { reason }).await;
             }
         }
         let audit = match self.inner.judge.audit(&record.project_home).await {
@@ -440,7 +446,7 @@ impl DriveService {
             Err(err) => {
                 let reason = format!("无法判定：{err:#}");
                 return self
-                    .settle(thread_id, DriveState::NeedsDecision { reason })
+                    .settle(&record, DriveState::NeedsDecision { reason })
                     .await;
             }
         };
@@ -497,14 +503,14 @@ impl DriveService {
             Ok(focus) => focus,
             Err(state) => {
                 let digest = Some(digest);
-                return self
-                    .change_locked(thread_id, |record| {
-                        record.state = state;
-                        record.digest = digest;
-                        record.unchanged = unchanged;
-                    })
-                    .await
-                    .map(drop);
+                let told = state.clone();
+                self.change_locked(thread_id, |record| {
+                    record.state = state;
+                    record.digest = digest;
+                    record.unchanged = unchanged;
+                })
+                .await?;
+                return self.notify(thread_id, &record.title, &told).await;
             }
         };
         let n = record.steps + 1;
@@ -541,22 +547,57 @@ impl DriveService {
         }
         .await;
         if let Err(err) = delivered {
-            let reason = format!("第 {n} 步没能交出：{err:#}");
-            self.change(thread_id, |record| {
-                if record.inflight == Some(n) {
-                    record.inflight = None;
-                    record.state = DriveState::Paused { reason };
-                }
-            })
-            .await?;
+            let paused = DriveState::Paused {
+                reason: format!("第 {n} 步没能交出：{err:#}"),
+            };
+            let state = paused.clone();
+            let changed = self
+                .change(thread_id, |record| {
+                    let ours = record.inflight == Some(n);
+                    if ours {
+                        record.inflight = None;
+                        record.state = state;
+                    }
+                    ours
+                })
+                .await?;
+            if changed == Some(true) {
+                self.notify(thread_id, &record.title, &paused).await?;
+            }
         }
         Ok(())
     }
 
-    /// Ends a judgment with a state, keeping the lock the caller holds.
-    async fn settle(&self, thread_id: &str, state: DriveState) -> anyhow::Result<()> {
-        self.change_locked(thread_id, |record| record.state = state)
+    /// Ends a judgment with a state and tells the Router, keeping the lock the caller holds.
+    async fn settle(&self, record: &DriveRecord, state: DriveState) -> anyhow::Result<()> {
+        let told = state.clone();
+        self.change_locked(&record.thread_id, |record| record.state = state)
+            .await?;
+        self.notify(&record.thread_id, &record.title, &told).await
+    }
+
+    /// Tells the Router when a drive stops by itself (deliverable, needs a decision, paused), as a
+    /// notice its next turn reads; a pause the person asked for is not told back.
+    async fn notify(&self, thread_id: &str, title: &str, state: &DriveState) -> anyhow::Result<()> {
+        let summary = match state {
+            DriveState::Driving => return Ok(()),
+            DriveState::Deliverable { summary } => {
+                format!("会话 {thread_id}（{title}）可交付，等你验收：{summary}")
+            }
+            DriveState::NeedsDecision { reason } => {
+                format!("会话 {thread_id}（{title}）的推进需要你决定：{reason}")
+            }
+            DriveState::Paused { reason } => {
+                format!("会话 {thread_id}（{title}）的推进已暂停：{reason}")
+            }
+        };
+        self.inner
+            .effects
+            .enqueue_now(
+                NOTICE,
+                &format!("{KEY_PREFIX}{thread_id}"),
+                &json!({ "value": { "threadId": thread_id, "drive": state }, "summary": summary }),
+            )
             .await
-            .map(drop)
     }
 }
