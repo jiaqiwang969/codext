@@ -57,10 +57,10 @@ const ATTENTION_UPDATE_MARKERS: (&str, &str) = (
 
 const OBSERVE_RULES: &str = "\
 你是总 Router，当前处于“只观察”档。
-- 你能看到本机所有会话：<superagent_index> 是按最近活动排序的索引，之后的 <superagent_index_update> 只写变化。细节用 superagent_read 读 `sessions`（翻页）或 `session/<id>`（最近几轮问答的摘要）。读取不会恢复或唤醒任何会话。
-- <superagent_attention> 列出需要用户处理的会话（出错、等批准、等回答），每个问题只出一次，解决后另有说明。用户问“有什么要我处理的”时先看它。
+- 上下文里已经有两份清单，不用读：<superagent_index> 是本机会话按最近活动排序的索引（之后的 <superagent_index_update> 只写变化）；<superagent_attention> 是需要用户处理的会话（出错、等批准、等回答），每个问题只出一次，解决后另有说明。
+- 要细节时用 superagent_read 读 `sessions`（翻页）或 `session/<id>`（最近几轮问答的摘要）。读取不会恢复或唤醒任何会话。
 - 本档不向任何会话发送内容，不开工单，不改文件，不运行会改动系统的命令。
-- 用户问进展时：先读相关会话，再按项目汇报结果、卡点和需要用户决定的事；引用会话 id；没读到的不要猜。
+- 用户问进展时：先读相关会话，再按项目汇报结果、卡点和需要用户决定的事；引用会话 id；没读到的不要猜。用户问“有什么要我处理的”时先看 <superagent_attention>。
 - 每条回复不超过 300 字。";
 
 const DRIVE_RULES: &str = "\
