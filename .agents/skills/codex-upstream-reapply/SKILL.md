@@ -45,8 +45,8 @@ description: 'Reapply a fork or secondary-development branch onto the latest sta
 
 ### 0) Acceptance criteria (必读)
 
-- 禁止运行 `cargo test`（不需要写/跑测试）。
-- 不得生成测试代码或快照文件：确保本次变更里没有新增/修改测试代码或 `*.snap`/`*.snap.new`。
+- 禁止运行 `cargo test`（不需要写/跑测试）。唯一例外：superagent 引擎测试 `cargo test -p codex-superagent-extension` 必须跑并通过（见 6.4）。
+- 不得生成测试代码或快照文件：确保本次变更里没有新增/修改测试代码或 `*.snap`/`*.snap.new`。把 `codex-rs/ext/superagent/`（含 `tests/`）和 `docs/superagent/seams.md` 列出的接入点测试原样带过去不算新增。
 - 禁止运行任何会检查/编译测试目标，或可能因此倒逼你修改测试代码的命令；包括但不限于 `cargo clippy --tests`、`cargo clippy --fix --tests`、`just fix`、`cargo insta ...`。
 - 除非用户明确要求，不运行 `cargo fmt` / `just fmt` / `cargo clippy` / `cargo clippy --fix` / `just fix` 这类格式化、lint、自动修正命令；本 skill 默认只做必要的代码实现与 build 验证。
 - 如果仓库通用 AGENTS/README/开发规范要求在大改后额外跑 `fmt` / `clippy` / `fix` / `test`，在本 skill 下默认跳过这些步骤，优先遵守“不改测试代码、只做 build 验证”的约束；如有例外必须先得到用户明确许可。
@@ -236,6 +236,15 @@ CHANGED.md 中属于 bug fix（针对某个上游 regression 的修复，而非�
   - `AGENTS.md` 或其他意图文档中提到该行为的记录，同样删除。
   - 若上游只覆盖了条目的一部分：只修剪被吸收的部分，保留仍由 fork 实现的其余条目。
 - 在最终回复中报告：哪些条目被判定为已吸收并删除、依据是什么。
+
+### 6.4) Superagent（本 fork 的主推功能）
+
+`main` = 上游稳定版 + Codext 底座 + Superagent。Superagent 分两部分处理：
+
+- 引擎 crate `codex-rs/ext/superagent/`、`codex-rs/state/superagent_migrations/`、`docs/superagent/`、`scripts/superagent/` 由 `start_from_tag.sh` 整个带过去（内容不变，包括引擎测试）。
+- 它在 codex 里的接入点按 `docs/superagent/seams.md` 逐个重接：先状态库、协议、扩展接口和 core，再 app-server。上游改了结构就按新结构接同一个需求；宿主接口变了尽量只改 `app-server/src/superagent_host.rs`，不改引擎。
+- 构建通过后跑 `cargo test -p codex-superagent-extension`，再按 `docs/superagent/updating.md` 在实验室试；用户验收后才快进 `main`、发到日常。
+- 接入点有增减时更新 `docs/superagent/seams.md`。
 
 ### 7) Sanity checks
 

@@ -1,35 +1,5 @@
 # Rust/codex-rs
 
-<!-- codex-upstream-reapply:start -->
-## Temporary Reapply Guardrails (`rust-v0.166.0`)
-
-- Current work on this branch is an upstream reapply / re-implementation for `rust-v0.166.0`.
-- Only implementation code and necessary docs may change for this task. Do not add or modify tests or snapshot files.
-- Do not run lint / format / auto-fix commands for this reapply, including `cargo fmt`, `just fmt`, `cargo clippy`, `cargo clippy --fix`, and `just fix`.
-- Acceptance for this reapply is limited to the `codex-upstream-reapply` skill criteria, including `cd codex-rs && CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo build -p codex-cli` (minimal-disk build).
-- After each update, commit and push the same change to both the current `origin` branch and `origin/main`.
-<!-- codex-upstream-reapply:end -->
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 In the codex-rs folder where the rust code lives:
 
 - Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`
@@ -90,6 +60,18 @@ Run `just fmt` (in `codex-rs` directory) automatically after you have finished m
 2. Once those pass, if any changes were made in common, core, or protocol, run the complete test suite with `cargo test` (or `just test` if `cargo-nextest` is installed). Avoid `--all-features` for routine local runs because it expands the build matrix and can significantly increase `target/` disk usage; use it only when you specifically need full feature coverage. project-specific or individual tests can be run without asking the user, but do ask the user before running the complete test suite.
 
 Before finalizing a large change to `codex-rs`, run `just fix -p <project>` (in `codex-rs` directory) to fix any linter issues in the code. Prefer scoping with `-p` to avoid slow workspace‑wide Clippy builds; only run `just fix` without `-p` if you changed shared crates. Do not re-run tests after running `fix` or `fmt`.
+
+## Superagent and the Router
+
+This fork's main line is the latest upstream stable `rust-vX.Y.Z`, plus the Codext base (`CHANGED.md`), plus Superagent. Read `docs/superagent/README.md` for what it does, `docs/superagent/seams.md` for where it hooks into codex, and `docs/superagent/updating.md` for how upstream bumps and Superagent changes land.
+
+- Engine code lives in `codex-rs/ext/superagent/` (`codex-superagent-extension`). Keep new Superagent behavior there. The engine reaches the host only through `SuperagentHost` (`ext/superagent/src/host.rs`), which `app-server/src/superagent_host.rs` implements. Change other codex files only when the engine cannot do it from inside, and record each new seam in `docs/superagent/seams.md`.
+- Test engine changes with `cargo test -p codex-superagent-extension`. Try behavior changes in the lab (`~/242-superagent-codext-lab`, with its own `CODEX_HOME` and daemon) before the daily environment (`~/.codex`).
+- Text the Router or a driven session shows is for the person: plain words, no method names, skill names or item ids.
+- Work on `feat/router-*` (Superagent) or `feat/rust-vX.Y.Z` (upstream bump) branches. Fast-forward `main` once a change is tested and accepted, and push the same commit to the working branch and `origin/main`.
+- Commit prefixes: `superagent:` for the engine; the crate's name for seams (`app-server:`, `core:`).
+- Upstream bumps start from the openai/codex tag, not from Loongphy/codext: reapply the base with `.agents/skills/codex-upstream-reapply`, carry `codex-rs/ext/superagent/` over whole (tests included), and reconnect every seam in `docs/superagent/seams.md`.
+- `rust-release.yml` runs only on manual dispatch. Daily installs use local packages through `scripts/superagent/promote.sh`.
 
 ## The `codex-core` crate
 

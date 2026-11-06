@@ -1,32 +1,38 @@
 # Codext
 
-An opinionated Codex CLI. This is strictly a personal hobby project, forked from openai/codex.
+An opinionated Codex CLI. This is strictly a personal hobby project, forked from openai/codex. Its main feature is the Superagent Router: one session that watches every session on the machine and drives the ones you hand it.
 
 ![Preview](https://github.com/user-attachments/assets/cd4bf293-85c4-4e3f-83d3-6c0dd45c9dc6)
 
 
 ## Quick Start
 
-Choose one of these two ways:
-
-* Install from npm:
-
-```shell
-npm i -g @loongphy/codext
-```
-
-* Build from source:
+Build from source:
 
 ```shell
 cd codex-rs
 cargo run --bin codex
 ```
 
+To install a local build as the daily `codext` and app-server daemon, use `scripts/superagent/promote.sh` (see [docs/superagent/updating.md](docs/superagent/updating.md)). The `@loongphy/codext` npm package is Loongphy's build and does not include the Router.
+
 ## Features
 
 > Full change log: see [CHANGED.md](./CHANGED.md).
 
 ---
+
+### Superagent Router
+
+A Router session watches every session on the machine and drives the ones you hand it:
+
+* **Asks first**: it asks what you want, says in one sentence how it will go about it, and starts only when you agree. It can open a new folder and session for the work.
+* **Conclusions come back**: when a driven session finishes a step, its conclusion reaches the Router as a short notice card. The Router relays it to you or answers the session itself. The engine checks that each answer quotes what it builds on and the request it serves, and refuses jargon.
+* **Corrections land at once**: a correction is steered into the running step, or the step is interrupted when it is going the wrong way.
+* **Account switching**: when a step, or the Router itself, hits a usage limit or "Selected model is at capacity", that account cools down and the work moves to the account whose quota resets soonest, in `codex-account-next list` order.
+* **Full access**: driven steps run without a sandbox or approvals, so they can use apps and browsers.
+
+Enable it with `[features] superagent = true` in `~/.codex/config.toml`, write `drive` to `~/.codex/superagent/router-mode`, and create the Router with `python3 -I scripts/superagent/router.py create`. Then open `/agents`: the Router is the first row. Details: [docs/superagent/README.md](docs/superagent/README.md).
 
 ### TUI: Status Header
 
@@ -111,9 +117,9 @@ server_overloaded_resume = false   # default true; set false to disable
 
 ## Project Goals
 
-We will never merge code from the upstream repo; instead, we re-implement our changes on top of the latest upstream code.
+`main` is the latest upstream stable release, plus the Codext base ([CHANGED.md](./CHANGED.md)), plus Superagent. We will never merge code from the upstream repo; instead, we re-implement our changes on top of the latest upstream code. Each bump starts from the openai/codex tag; Loongphy/codext is only a reference.
 
-Iteration flow (aligned with `.agents/skills/codex-upstream-reapply`):
+Iteration flow (aligned with `.agents/skills/codex-upstream-reapply` and [docs/superagent/updating.md](docs/superagent/updating.md)):
 
 ```mermaid
 flowchart TD
@@ -121,10 +127,11 @@ flowchart TD
       B --> C[Create fresh branch from tag]
       C --> D[Generate old-branch reference bundle]
       D --> E[Read intent docs and old changes<br/>CHANGED.md / README.md / AGENTS.md<br/>bundle diff / changed-files / commits]
-      E --> F[Re-implement required changes on fresh branch]
-      F --> G[Build: cargo build -p codex-cli]
-      G --> H[Review final diff against tag]
-      H --> I[Push finished branch]
+      E --> F[Re-implement the base on fresh branch]
+      F --> G[Carry ext/superagent over<br/>reconnect docs/superagent/seams.md]
+      G --> H[Build: cargo build -p codex-cli<br/>Test: cargo test -p codex-superagent-extension]
+      H --> I[Try it in the lab]
+      I --> J[Fast-forward main after acceptance<br/>promote to daily]
 ```
 
 ## Skills

@@ -1,9 +1,19 @@
 # Superagent
 
-组织协调引擎，来自 Dell build-27（`a3f27e2f8`），现接入 Codext 0.166。
-默认关闭；独立组织 app-server 的有效配置中设 `[features] superagent = true` 才启用。
-系统托管配置优先于用户配置；Dell 的现有托管配置会强制开启此功能。
-引擎负责工单、输入、指派、报告、发件箱和恢复；宿主通过正常线程接口执行。
+组织引擎，跑在 app-server（包括日常的托管 daemon）里。最初来自 Dell build-27（`a3f27e2f8`）。
+现在的主功能是 Router：一个常驻会话，替用户看着本机所有会话，并推进用户交给它的会话。
+现状、用法和测试见 [docs/superagent](../../../docs/superagent/README.md)，在 codex 里的
+接入点见 [seams.md](../../../docs/superagent/seams.md)。
+
+默认关闭；有效配置中设 `[features] superagent = true` 才启用。系统托管配置优先于用户配置。
+宿主通过正常线程接口执行引擎要做的事；引擎只经 `src/host.rs` 的 `SuperagentHost` 使用宿主。
+
+## Router 与推进
+
+登记在 `$CODEX_HOME/superagent/pm-threads` 里的线程就是 Router。`superagent/router-mode`
+定它的档位：`observe`（默认，只看）、`drive`（推进会话）、`org`（推进之外再带上工单组织）。
+Router 的规则和上下文在 `src/router.rs`，推进在 `src/drive/`，工具在 `src/tools/drive.rs`
+（`superagent_drive`）和 `src/tools/read.rs`（`superagent_read`）。
 
 ## 多项目与入口
 
@@ -15,7 +25,7 @@
 
 现有部署工具 `dell/add-pm.py` 注册 PM；Mac 上用
 `CODEXT_ORG_PROJECT=<名> codext-org` 进入对应 PM。worker 是独立根线程，输入和
-报告仍经过协调引擎。Agent command center 的 Router/worker 界面整合尚未实现。
+报告仍经过协调引擎。
 
 ## 状态与隔离
 
@@ -41,6 +51,6 @@
 持久化；设置 `CODEXT_SUPERAGENT_CAPACITY_CONTINUE_MAX=0` 关闭续跑。
 旧版缺少失败回合证据的待续跑动作不会被自动执行。
 
-构建、部署状态与尚待真实模型请求验证的边界见
-[整合合同](../../../docs/superagent-0.166-integration.md)和
+build-27 移植到 0.166 的记录见
+[0.166 整合记录](../../../docs/superagent/history/superagent-0.166-integration.md)，宿主接口见
 [宿主接口说明](../../app-server/README.md#organization-coordinator-experimental)。

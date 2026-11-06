@@ -85,17 +85,17 @@ v0.2 增加[接手调研补充](superagent-command-center-research.md)：使用�
 
 | 编号 | 已核对能力或限制 | 对本次整合的含义 | 源码 |
 | --- | --- | --- | --- |
-| F01 | 原生项目协议已有 create/import/list/update；create 走项目存储，未负责创建目录 | 可以复用登记能力；新建目录、登记及失败恢复需要单独合同 | [项目处理器](../codex-rs/app-server/src/request_processors/projects.rs)、[项目协议](../codex-rs/app-server-protocol/src/protocol/v2/project.rs) |
-| F02 | 面板项目分组依据仓库身份及相对 cwd，或直接依据 cwd | 尚未表达正式的话题与工单归属 | [分组实现](../codex-rs/tui/src/app/agents_overview_view.rs) |
-| F03 | 组织引擎已有持久工单、指派、输入、报告、订阅、effects/outbox 和恢复基础 | 应复用协调机制，保留输入回执、幂等与恢复边界；不要只在 TUI 保存第二份状态 | [领域模型](../codex-rs/ext/superagent/src/core/model.rs)、[输入处理](../codex-rs/ext/superagent/src/core/intake.rs)、[发件箱](../codex-rs/ext/superagent/src/outbox.rs) |
-| F04 | 领域 Thread 表示请求/工单消息归属，不等于 Codext 执行线程；worker 输入归自己的工单，PM 开头点名才直接指向工单，其他提及只作为上下文 | 新 UI 的话题、执行会话和消息目标必须分别建模；不能把总 Router 的整段会话订阅给全部工单 | [线程归属规则](../codex-rs/ext/superagent/src/core/thread_rules.rs) |
-| F05 | 一个 accept 决策对应一个工单；同一触发的重复 accept 返回先前结果 | 已有多个工单并行基础，但“一个大请求自动拆为多个工单”仍需新合同，不能绕过去重制造子任务 | [路由工具](../codex-rs/ext/superagent/src/tools/pm.rs) |
-| F06 | 组织状态按 PM 与项目分组，执行器仍有旧部署的仓库、工作树、分支及账号默认值 | 总 Router 跨项目后，需要将执行项目配置从旧 PM 绑定中解耦；不能直接沿用旧默认部署 | [状态](../codex-rs/ext/superagent/src/status.rs)、[执行器配置](../codex-rs/ext/superagent/src/executor/codext_thread.rs) |
-| F07 | managed daemon 与 Superagent 同时启用被明确拒绝，原因是自动续跑与组织恢复不兼容 | 必须先确定每个线程的恢复/续跑所有者；删除拒绝条件不构成整合 | [宿主保护](../codex-rs/app-server/src/lib.rs) |
-| F08 | 本次 3 个子 agent 的 `canAcceptDirectInput=false`；原生 v2 子 agent 有对应输入限制 | Superagent 根 worker 与原生 helper 不同；查看可以统一，人工输入与接管需要按能力处理 | [输入所有权](../codex-rs/app-server/src/request_processors/thread_input.rs)、[线程能力](../codex-rs/app-server-protocol/src/protocol/v2/thread_data.rs) |
-| F09 | 卡片摘要最多 600 字符、预览 160 字符，相关工单最多 8 张 | 是有限上下文的已有基础；字符限制不是模型 token 上限，也不是整个 Router 历史上限 | [候选卡](../codex-rs/ext/superagent/src/cards.rs) |
-| F10 | `superagent_read` 可分页回读；文本默认 4000/最多 8000 字符，列表默认 20/最多 50 项 | 可复用回读入口；参数仍主要是 resource/offset/limit，缺少本方案需要的项目/话题筛选合同 | [读取工具](../codex-rs/ext/superagent/src/tools/read.rs)、[资源读取](../codex-rs/ext/superagent/src/resources.rs) |
-| F11 | tickets 资源先读取全部工单并构造卡片再截页；候选渲染也有全工单扫描和计数 | 输出有上限不等于底层查询有上限；需评估索引、数据库分页和规模成本 | [资源读取](../codex-rs/ext/superagent/src/resources.rs)、[候选渲染](../codex-rs/ext/superagent/src/pm.rs)、[存储查询](../codex-rs/ext/superagent/src/store/queries.rs) |
+| F01 | 原生项目协议已有 create/import/list/update；create 走项目存储，未负责创建目录 | 可以复用登记能力；新建目录、登记及失败恢复需要单独合同 | [项目处理器](../../../codex-rs/app-server/src/request_processors/projects.rs)、[项目协议](../../../codex-rs/app-server-protocol/src/protocol/v2/project.rs) |
+| F02 | 面板项目分组依据仓库身份及相对 cwd，或直接依据 cwd | 尚未表达正式的话题与工单归属 | [分组实现](../../../codex-rs/tui/src/app/agents_overview_view.rs) |
+| F03 | 组织引擎已有持久工单、指派、输入、报告、订阅、effects/outbox 和恢复基础 | 应复用协调机制，保留输入回执、幂等与恢复边界；不要只在 TUI 保存第二份状态 | [领域模型](../../../codex-rs/ext/superagent/src/core/model.rs)、[输入处理](../../../codex-rs/ext/superagent/src/core/intake.rs)、[发件箱](../../../codex-rs/ext/superagent/src/outbox.rs) |
+| F04 | 领域 Thread 表示请求/工单消息归属，不等于 Codext 执行线程；worker 输入归自己的工单，PM 开头点名才直接指向工单，其他提及只作为上下文 | 新 UI 的话题、执行会话和消息目标必须分别建模；不能把总 Router 的整段会话订阅给全部工单 | [线程归属规则](../../../codex-rs/ext/superagent/src/core/thread_rules.rs) |
+| F05 | 一个 accept 决策对应一个工单；同一触发的重复 accept 返回先前结果 | 已有多个工单并行基础，但“一个大请求自动拆为多个工单”仍需新合同，不能绕过去重制造子任务 | [路由工具](../../../codex-rs/ext/superagent/src/tools/pm.rs) |
+| F06 | 组织状态按 PM 与项目分组，执行器仍有旧部署的仓库、工作树、分支及账号默认值 | 总 Router 跨项目后，需要将执行项目配置从旧 PM 绑定中解耦；不能直接沿用旧默认部署 | [状态](../../../codex-rs/ext/superagent/src/status.rs)、[执行器配置](../../../codex-rs/ext/superagent/src/executor/codext_thread.rs) |
+| F07 | managed daemon 与 Superagent 同时启用被明确拒绝，原因是自动续跑与组织恢复不兼容 | 必须先确定每个线程的恢复/续跑所有者；删除拒绝条件不构成整合 | [宿主保护](../../../codex-rs/app-server/src/lib.rs) |
+| F08 | 本次 3 个子 agent 的 `canAcceptDirectInput=false`；原生 v2 子 agent 有对应输入限制 | Superagent 根 worker 与原生 helper 不同；查看可以统一，人工输入与接管需要按能力处理 | [输入所有权](../../../codex-rs/app-server/src/request_processors/thread_input.rs)、[线程能力](../../../codex-rs/app-server-protocol/src/protocol/v2/thread_data.rs) |
+| F09 | 卡片摘要最多 600 字符、预览 160 字符，相关工单最多 8 张 | 是有限上下文的已有基础；字符限制不是模型 token 上限，也不是整个 Router 历史上限 | [候选卡](../../../codex-rs/ext/superagent/src/cards.rs) |
+| F10 | `superagent_read` 可分页回读；文本默认 4000/最多 8000 字符，列表默认 20/最多 50 项 | 可复用回读入口；参数仍主要是 resource/offset/limit，缺少本方案需要的项目/话题筛选合同 | [读取工具](../../../codex-rs/ext/superagent/src/tools/read.rs)、[资源读取](../../../codex-rs/ext/superagent/src/resources.rs) |
+| F11 | tickets 资源先读取全部工单并构造卡片再截页；候选渲染也有全工单扫描和计数 | 输出有上限不等于底层查询有上限；需评估索引、数据库分页和规模成本 | [资源读取](../../../codex-rs/ext/superagent/src/resources.rs)、[候选渲染](../../../codex-rs/ext/superagent/src/pm.rs)、[存储查询](../../../codex-rs/ext/superagent/src/store/queries.rs) |
 
 0.166 候选已经完成 Mac/Linux 构建以及隔离的、没有模型回合的启动/重启检查。这些检查不证明 Mac 统一 daemon、真实派工、人工接管或规模化记忆已经成立。11/03 的早期审计也不能直接当作 build-27 或当前源码的缺陷清单。
 

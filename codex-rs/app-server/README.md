@@ -90,8 +90,9 @@ workers use the profile the daemon was launched with. For an isolated candidate,
 set both `CODEX_HOME` and `CODEX_SQLITE_HOME`. Do not reuse production PM
 registrations or pending effects in a candidate smoke check.
 
-See [the integration contract](../../docs/superagent-0.166-integration.md) for
-source provenance, build acceptance, gateway boundaries, and deployment status.
+See [docs/superagent](../../docs/superagent/README.md) for the Router and how to run it,
+and [the 0.166 integration record](../../docs/superagent/history/superagent-0.166-integration.md)
+for source provenance, build acceptance and gateway boundaries.
 
 # Thread memory summary (experimental)
 

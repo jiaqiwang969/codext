@@ -179,9 +179,9 @@ refresh_reapply_guardrails() {
 ## Temporary Reapply Guardrails (\`${tag_name}\`)
 
 - Current work on this branch is an upstream reapply / re-implementation for \`${tag_name}\`.
-- Only implementation code and necessary docs may change for this task. Do not add or modify tests or snapshot files.
+- Only implementation code and necessary docs may change for this task. Do not add or modify tests or snapshot files. Carrying \`codex-rs/ext/superagent/\` (with its tests) and the seam tests in \`docs/superagent/seams.md\` over unchanged is allowed.
 - Do not run lint / format / auto-fix commands for this reapply, including \`cargo fmt\`, \`just fmt\`, \`cargo clippy\`, \`cargo clippy --fix\`, and \`just fix\`.
-- Acceptance for this reapply is limited to the \`codex-upstream-reapply\` skill criteria, including \`cd codex-rs && CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo build -p codex-cli\` (minimal-disk build).
+- Acceptance for this reapply is limited to the \`codex-upstream-reapply\` skill criteria, including \`cd codex-rs && CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo build -p codex-cli\` (minimal-disk build) and \`cargo test -p codex-superagent-extension\`.
 - After each update, commit and push the same change to both the current \`origin\` branch and \`origin/main\`.
 <!-- codex-upstream-reapply:end -->
 EOF
@@ -365,6 +365,11 @@ readonly REAPPLY_COPY_PATHS=(
   "README.md"
   "CHANGED.md"
   ".agents/skills"
+  # Superagent's self-contained parts; its seams are reconnected by hand (docs/superagent/seams.md).
+  "codex-rs/ext/superagent"
+  "codex-rs/state/superagent_migrations"
+  "docs/superagent"
+  "scripts/superagent"
 )
 
 readonly REQUIRED_NPM_RELEASE_COPY_PATHS=(

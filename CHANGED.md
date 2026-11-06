@@ -1,6 +1,6 @@
 # Changes in This Fork
 
-This file captures the fork-specific behavior reapplied on top of the current upstream tag, `rust-v0.166.0`. The reapply and release decisions are recorded in [docs/reapply-0.166.0.md](docs/reapply-0.166.0.md).
+This file captures the fork-specific behavior reapplied on top of the current upstream tag, `rust-v0.166.0`. The reapply and release decisions are recorded in [docs/reapply-0.166.0.md](docs/reapply-0.166.0.md). Superagent's requirements are the last section; its seams into codex are listed in [docs/superagent/seams.md](docs/superagent/seams.md).
 
 ## TUI composer draft clipboard shortcut
 
@@ -82,7 +82,7 @@ Implementation must follow the status-header skill .agents/skills/status-header/
 - `/profile` switches the current idle conversation as well as the connection default. The server replaces account-aware services and model transports, preserves history/settings, and acknowledges the target thread before the TUI reports success or releases a parked usage-limit recovery prompt.
 - Explicit thread selections survive cold resume, daemon recovery, revert, and fork via `CODEX_HOME/thread-auth-profiles/<threadId>.json`; creator-account metadata remains historical. Other conversations keep their accounts.
 - `codex-account-next <profile> resume <session>` treats the launcher's account as an explicit thread selection: bind before resume and verify the actual profile before accepting input. Unloaded threads can be rebound without the previous account's credentials or runtime. Unarchive retries retain the selection; ordinary resume, reconnect, and navigation preserve saved thread bindings. Both CLI and daemon must support account selection before cold resume.
-- The installed `codext-org` launcher clears inherited personal account selections and preserves the remote PM's saved binding. Only `CODEXT_ORG_ACCOUNT_PROFILE` explicitly requests rebinding; it does not select an ATM gateway account. The launcher keeps local state in `~/.codext-org/home` and rejects missing or malformed PM IDs. The installer backs up and updates it alongside the account tools. Superagent engine migration is tracked separately in `docs/superagent-0.166-integration.md`.
+- The installed `codext-org` launcher clears inherited personal account selections and preserves the remote PM's saved binding. Only `CODEXT_ORG_ACCOUNT_PROFILE` explicitly requests rebinding; it does not select an ATM gateway account. The launcher keeps local state in `~/.codext-org/home` and rejects missing or malformed PM IDs. The installer backs up and updates it alongside the account tools. Superagent is described in the Superagent Router section below.
 - Thread reads, resume, and the account overview report the actual bound profile/account. Resuming a profiled thread also aligns the TUI connection's account reads and quota polling with that runtime.
 - CLI `login`, `login status`, and `logout` honor `CODEX_ACCOUNT_PROFILE` and use that profile's file-backed credentials while retaining shared settings. Browser/device-code login must not replace the default account's `auth.json`.
 - Named-profile login stages credentials before replacing the file. Existing ChatGPT profiles require the same account and user identity; failed, cancelled, or wrong-account logins retain the previous credentials. Successful login reports the actual account and path. Concurrent CLI logins are rejected, and a completed login/logout detected during the flow prevents replacement.
@@ -129,3 +129,18 @@ Implementation must follow the status-header skill .agents/skills/status-header/
 
 - Skill discovery permits 50,000 visited entries per root and loads at most 64 skill documents concurrently, retaining the existing depth and directory limits.
 - Filesystem walk permits depth 64, 10,000 directories, 50,000 entries, and an 8 MiB response. Responses retain bounded traversal and error reporting rather than silently omitting a large skill tree.
+
+## Superagent Router
+
+The engine (`codex-rs/ext/superagent/`) is carried over whole on each reapply, tests included. Every seam in [docs/superagent/seams.md](docs/superagent/seams.md) must be reconnected on the new upstream code. Required behavior:
+
+- Off by default. `[features] superagent = true` enables it inside the app-server, including the managed daemon. The ledger is `superagent_1.sqlite` in the SQLite home; a corrupt ledger or a failed migration is reported, never replaced with an empty one.
+- `$CODEX_HOME/superagent/pm-threads` registers the Router thread. `$CODEX_HOME/superagent/router-mode` sets its level: `observe` (the default), `drive`, or `org` (the build-27 ticket organization beside driving).
+- The Router reads every session without loading it. Its context carries its rules, an index of recently active sessions, and the sessions waiting for the person (an error, an approval, an answer).
+- Driving goes through `superagent_drive`: start, say, interrupt, switch_account, feedback, pause, resume, stop, history. Start can create a folder and a new session on the Router's account; the first message is the Router's own words.
+- Each finished step's conclusion (the session's last answer) reaches the Router as a `[通知]` notice card. `say` must quote what it builds on (the worker's conclusion, the person's words or corrections) and what it serves (the person's words, corrections or acceptance list). It is refused for method names, skill names, item ids, or repeating the last two steps. During a running turn, `say` is steered into that turn.
+- Simple drives have one folder, no anchor, and the person accepts the result. Anchored drives use the project's `.engineering`; every step is judged by oev2, and the drive stops when it is deliverable, drifts, or makes no progress.
+- Driven steps run with full access (`DangerFullAccess`, approval `never`).
+- When a step fails on `usageLimitExceeded` or `serverOverloaded` ("Selected model is at capacity"), the account cools down (until its reset, or 15 minutes) and the session moves to the next account by soonest reset, skipping free accounts, accounts with under 5% left and accounts still cooling; then the step is sent again. A failed Router turn moves the Router once per failure and is delivered again.
+- One driver owns a thread's automatic turns: Goal and daemon-recovery turns on engine-driven threads are declined (`DeclinedByDriver`), and the daemon snapshot skips those threads.
+- After a daemon restart, drives are reconciled; a step that was handed over but never seen starting pauses with a notice instead of being replayed.
