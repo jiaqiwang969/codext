@@ -131,7 +131,7 @@ flowchart TD
       F --> G[Carry ext/superagent over<br/>reconnect docs/superagent/seams.md]
       G --> H[Build: cargo build -p codex-cli<br/>Test: cargo test -p codex-superagent-extension]
       H --> I[Try it in the lab]
-      I --> J[Fast-forward main after acceptance<br/>promote to daily]
+      I --> J[After acceptance: move main to the new branch<br/>promote to daily]
 ```
 
 ## Skills

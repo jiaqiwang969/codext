@@ -13,7 +13,7 @@
 ## 分支
 
 - `main`：唯一的主线，等于上游稳定版加底座加 superagent。日常仓库 `~/00-nixos-config/codext` 停在 `main`。
-- `feat/rust-vX.Y.Z`：一次上游升级。做完快进到 `main`。
+- `feat/rust-vX.Y.Z`：一次上游升级，从上游 tag 起，不在旧 `main` 的历史上。验收后把 `main` 整个换成它（强制推送）；旧 `main` 留在上一版的 `feat/rust-v*` 分支上，另留一个 `backup/pre-<版本>-<日期>` 分支。
 - `feat/router-*`：superagent 的新功能。测完快进到 `main`。
 - 提交前缀：引擎用 `superagent:`；接入点用所在 crate，例如 `app-server:`、`core:`；底座和其他改动照常写。
 
@@ -54,7 +54,7 @@
 
    真模型验证使用专用测试 Router 和会话。现有引擎默认把推进通知送给 `pm-threads` 的首位：测试期间把专用 Router 临时放首位，结束后恢复原列表，不能仅追加在旧 Router 后面。`start` 即使指定已有会话，也要提供它的 `folder`。先核对可用检查手段；受系统代理等环境限制时，保留原始失败并给出可复核的替代验证。
 
-6. **用户验收后再发。** 快进 `main` 并推送；日常仓库切到新的 `main`，再运行 `scripts/superagent/promote.sh daily`。
+6. **用户验收后再发。** 去掉 `AGENTS.md` 里这次升级的临时说明；推送新分支，给旧 `main` 留一个 `backup/pre-<版本>-<日期>` 分支，再把 `main` 强制推送到新分支。日常仓库和实验室仓库都把本地 `main` 重置到新的 `origin/main`，最后用 `PKG=<验收过的包> scripts/superagent/promote.sh daily` 发到日常。日常有会话正在做时，先等它这一步做完，或者请 Router 先暂停它。
 
 什么时候更新由用户决定：用户在 Router 里说要更新才开始，不定时自动更新。
 

@@ -1,14 +1,5 @@
 # Rust/codex-rs
 
-<!-- codex-upstream-reapply:start -->
-## Current candidate: `rust-v0.167.0`
-
-- Reimplement the Codext requirements from `CHANGED.md` on the official tag, preserving the Superagent engine and reconnecting `docs/superagent/seams.md`.
-- This task is confined to the laboratory checkout, packages, independent daemon, and test sessions. No merge/rebase of the previous fork history.
-- User instructions take precedence over the reapply skill's default test/format restrictions. Keep the engine and its tests unchanged; run the required build, engine tests, applicable repository checks, laboratory end-to-end and real-model validation.
-- Stop with the candidate and evidence for user acceptance. Do not advance or push `main`, publish, or update/restart the daily environment.
-<!-- codex-upstream-reapply:end -->
-
 In the codex-rs folder where the rust code lives:
 
 - Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`
@@ -77,7 +68,7 @@ This fork's main line is the latest upstream stable `rust-vX.Y.Z`, plus the Code
 - Engine code lives in `codex-rs/ext/superagent/` (`codex-superagent-extension`). Keep new Superagent behavior there. The engine reaches the host only through `SuperagentHost` (`ext/superagent/src/host.rs`), which `app-server/src/superagent_host.rs` implements. Change other codex files only when the engine cannot do it from inside, and record each new seam in `docs/superagent/seams.md`.
 - Test engine changes with `cargo test -p codex-superagent-extension`. Try behavior changes in the lab (`~/242-superagent-codext-lab`, with its own `CODEX_HOME` and daemon) before the daily environment (`~/.codex`).
 - Text the Router or a driven session shows is for the person: plain words, no method names, skill names or item ids.
-- Work on `feat/router-*` (Superagent) or `feat/rust-vX.Y.Z` (upstream bump) branches. Fast-forward `main` once a change is tested and accepted, and push the same commit to the working branch and `origin/main`.
+- Work on `feat/router-*` (Superagent) or `feat/rust-vX.Y.Z` (upstream bump) branches. Once a change is tested and accepted, fast-forward `main` to a `feat/router-*` branch, or move `main` to a new `feat/rust-vX.Y.Z` branch (it starts from the upstream tag, so `main` is replaced; the old line stays on its own `feat/rust-v*` branch), and push the same commit to the working branch and `origin/main`.
 - Commit prefixes: `superagent:` for the engine; the crate's name for seams (`app-server:`, `core:`).
 - Upstream bumps start from the openai/codex tag, not from Loongphy/codext: reapply the base with `.agents/skills/codex-upstream-reapply`, carry `codex-rs/ext/superagent/` over whole (tests included), and reconnect every seam in `docs/superagent/seams.md`.
 - `rust-release.yml` runs only on manual dispatch. Daily installs use local packages through `scripts/superagent/promote.sh`.
