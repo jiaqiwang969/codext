@@ -87,6 +87,7 @@ flowchart TD
 
 - 什么时候更新由用户决定：用户在 Router 里说要更新，Router 就派一个会话按 [updating.md](docs/superagent/updating.md) 去做，做完停下来等验收。
 - 重做底座用 `.agents/skills/codex-upstream-reapply` 这个 skill。
+- GitHub 上只留 `main` 一个分支：临时分支验收后就删掉，旧版本的历史用 `archive/…` 标签保留，例如 `archive/rust-v0.166.0`。
 - 发布流水线 `rust-release.yml` 只能手动触发，推送 `main` 不会自动构建。
 
 ## 致谢

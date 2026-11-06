@@ -277,9 +277,8 @@ CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo build -p codex-cli
 - 先读取并执行 `references/release-ci-sync.md`。
 - 让模型基于 `U_OLD`、`F_OLD`、`U_NEW` 的 workflow diff，决定只应用 build artifacts、GitHub Release、npm Release 相关变化。
 - 如需更新 `references/release-overrides.json`，与本次 workflow/实现变化合并到同一个 commit，并在最终回复中解释。
-- 推送当前 reapply 分支到 `origin`。
-- 同一提交强制推送到 `origin/main`。
-- 后续每次更新后，也都要把同一提交同步推送到这两个分支。
+- 验收前只推送当前 reapply 分支，不动 `origin/main`。
+- 用户验收后：给旧 `main` 打标签 `archive/rust-v<旧版本>` 并推送，把 `main` 强制推送到 reapply 分支，再在本地和 `origin` 删掉 reapply 分支。GitHub 上只保留 `main` 一个分支（见 `docs/superagent/updating.md`）。
 - GitHub Actions 监控和失败修复与本 skill 分离；只有用户明确要求读取或修复 CI 时才执行后续 CI 诊断。
 
 ## How changes are computed from OLD_BRANCH
