@@ -11,8 +11,8 @@
     "cli_command": "codext"
   },
   "trigger": {
-    "mode": "main_push",
-    "reason": "codext publishes continuous fork builds instead of upstream tag releases"
+    "mode": "manual",
+    "reason": "the five-platform build takes hours and daily installs use local packages (scripts/superagent/promote.sh), so a release is built only on workflow_dispatch"
   },
   "allowed_deviations": []
 }

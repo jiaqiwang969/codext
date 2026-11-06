@@ -1,14 +1,8 @@
 name: rust-release
 
+# Manual only: a push to main does not start the multi-hour five-platform build. Daily installs
+# use local packages (scripts/superagent/promote.sh); run this when a published release is wanted.
 on:
-  push:
-    branches:
-      - main
-    # Documentation-only pushes must not trigger (or cancel, via concurrency) a release run.
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - ".agents/**"
   workflow_dispatch:
 
 concurrency:
