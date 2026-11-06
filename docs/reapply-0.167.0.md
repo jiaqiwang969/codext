@@ -101,8 +101,18 @@ account picker. Two fixed-width snapshots intentionally retain trailing padding.
 
 Checks use isolated homes, a 16 MiB Rust test stack and a short lab temporary directory
 outside the repository. A stale, zero-byte Git index lock with no open file or Git
-process was preserved in the evidence scratch area before staging. The complete Rust
-workspace suite was not run: AGENTS requires separate confirmation and none was received.
+process was preserved in the evidence scratch area before staging.
+
+The upgrade checklist in [updating.md](superagent/updating.md), steps 4–5, explicitly
+requires the CLI build, engine tests, laboratory package/install, end-to-end facts and
+a real-model drive. Those checks have evidence above and below; it does not list a
+complete Rust workspace test run. The general [AGENTS.md](../AGENTS.md) rule also applies
+because core/protocol changed, and explicitly requires asking before that full run.
+No explicit authorization for a whole-workspace run was received. It remains **not run**,
+not passed or waived by the narrower upgrade checklist. The scoped results above must
+not be read as full-workspace coverage. The follow-up request to complete already
+authorized necessary checks was satisfied by auditing those results and the runtime
+evidence; it did not authorize a full-workspace run.
 Required scoped lint and formatting precede the final package build; Rust tests are
 not rerun after those commands, as instructed by AGENTS.
 
@@ -121,8 +131,8 @@ account constraint: select the eligible paid profile with the earliest reset, at
 5% remaining and no active cooldown; on quota/capacity failure use the engine's cooldown,
 account switching and retry policy. Record the actually used profile(s).
 
-`/Users/jqwang/.AGENTS.md` was absent when checked; the user's supplied instructions
-and explicit account policy were applied. `codex-account-next list` was run with
+The account rule supplied by the user in this conversation is authoritative; checking
+it does not depend on finding another account-policy file. `codex-account-next list` was run with
 explicit laboratory `--home` and `--binary` arguments, preventing its default daily
 home from being used. The initial eligible profile was `JannLinegarA0k`, Pro, 95%
 remaining, resetting at `2026-11-08T06:55:04Z`, with no cooldown. The live query refreshed
@@ -141,7 +151,8 @@ at `2026-11-06T07:53:38Z` selected the same profile with the same quota.
   disabled; Superagent status is healthy before and after the live run.
 - Evidence: [local run index](../../tests/runs/rust-v0.167.0-f4acb77c9d/README.md).
   It includes checks, package build/install logs, manifest/hashes, account selection,
-  mock facts, live records and boundary checks.
+  mock facts, live records and boundary checks. The [follow-up audit](../../tests/runs/rust-v0.167.0-f4acb77c9d/followup-audit.md)
+  ties these together and separates incident effects from restored control state.
 - Mock end-to-end: ordinary start/report/say guards, anchored audit/delivery, worker
   capacity failover/replay and Router capacity failover/replay passed. The two logged
   ERROR entries are the deliberately rejected jargon and unfounded `builds_on` calls.
@@ -153,13 +164,26 @@ at `2026-11-06T07:53:38Z` selected the same profile with the same quota.
   the correction; both reports reached the test Router; `say` supplied the recorded
   basis and root request; the file contains exactly `candidate-ready`, `steered`,
   `verified`. The Router stopped the drive, and its ledger record is absent.
-- The first real attempt is retained as unsuccessful evidence: appending the test
-  Router left the older lab Router first, so that Router received notifications and
-  advanced the same bounded test goal using its existing `kalliesallerwu` profile.
-  Thus the actual accounts across both attempts are **JannLinegarA0k and kalliesallerwu**.
-  The corrected run temporarily placed the test Router first, stopped the prior drive,
-  and restored the original registry exactly. A missing required `folder` in the test
-  start arguments was also corrected; no production code change was needed.
+- The first attempt (07:57:15–08:00:46 UTC on 2026-11-06) is retained as unsuccessful.
+  It connected to the **same upgraded lab daemon**, PID `53146`, serving package
+  `0.167.0-f4acb77c9d`. Appending the test Router left the existing lab Router
+  `01a1ab03-9cb4-7b52-b15a-b1ae0e89b66a` first. That conversation received two notices
+  and used its existing `kalliesallerwu` profile to send one `say`, causing an additional
+  test-worker turn and appending `verified` to the first test's `RESULT.txt`.
+  This crossed the intended dedicated-test-session boundary, despite staying in the lab.
+  The waiting test harness was interrupted; its failed result is not counted as a pass.
+  This was notification routing inside the lab daemon, not a connection to the daily
+  daemon or the former lab binary. The old Router's persisted `cliVersion: 0.166.0`
+  describes its creation, and the initialize user-agent suffix comes from the test
+  client's fixed `clientInfo.version`; neither identifies the serving executable.
+- Actual accounts across both attempts are **JannLinegarA0k and kalliesallerwu**.
+  The latter was an unintended old-Router binding, not a policy-driven failover or the
+  earliest-reset selection. The corrected run temporarily placed the dedicated Router
+  first, stopped the prior test drive, and restored the original registry exactly.
+  A missing required `folder` in the test start arguments was also corrected; no
+  production code change was needed. The old Router's two new conversation turns,
+  the first test file and real model usage remain; usage charges were not measured.
+  Restoring the registry and drive records does not undo that history or usage.
 - No real quota/capacity failure occurred and no cooldown was created. Cooldown until
   reset, capacity cooldown of 15 minutes, account selection and retry are covered by
   the unchanged engine tests and injected mock failures, not claimed as real failures.
@@ -168,6 +192,15 @@ at `2026-11-06T07:53:38Z` selected the same profile with the same quota.
   `origin/main` still `31ed25924830e51d471ef2e6cc660cab3270929b`; the daily daemon's
   process identity and start time are unchanged. Subsequent branch commits only add
   this evidence and validation guidance; the packaged code commit above is fixed.
+
+The follow-up audit rechecked the live socket owner, process start time, all five package
+hashes, laboratory `initialize`, both successful threads' runtime profiles, original
+registry, all five prior drive records and daily process identity without starting any
+model turn, switching accounts or restarting a daemon. Historical daemon attribution
+combines the fixed laboratory socket, process lifetime, matching server log times,
+0.167 thread-creation replies and before/after package checks; no per-turn peer-credential
+capture was made. The successful run's worker and Router rollouts still match their
+saved SHA-256 values and contain two `drive` worker turns and two queued Router notices.
 
 The candidate remains subject to user acceptance. Do not advance/push `main`, publish,
 or install/restart anything in the daily environment before that acceptance.
