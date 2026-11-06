@@ -3,6 +3,8 @@ source: tui/src/chatwidget/tests/popups_and_settings.rs
 expression: snapshot
 ---
 "                                                                                "
+"   GPT-5.5 max │  /tmp/project                                                "
+"                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "
 "                                                                                "

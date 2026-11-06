@@ -3,11 +3,11 @@ source: tui/src/app/composer_hints_tests.rs
 expression: "crate::chatwidget::tests::helpers::normalize_snapshot_paths(snapshots.join(\"\\n\\n\"))"
 ---
 80 columns, 10 rows, running=false, queued=false
-Conversation
-
 ⚠ Heads up, you have less than 10% of your 5h limit left. Run /status for a
   breakdown.
                                                   ⚠ 5h limit: 8% left · /status
+   GPT-5.6-Sol default │  /tmp/project │  8%
+
 
 › Ask Codex to do anything
 
@@ -15,13 +15,13 @@ Conversation
   ? for shortcuts                                      ⚠ 1 warning · f2 to view
 
 80 columns, 12 rows, running=true, queued=false
-
-⚠ Heads up, you have less than 5% of your 5h limit left. Run /status for a
   breakdown.
 
 • Working (0s • esc to interrupt)
 
                                              ⚠ 5h limit: only 2% left · /status
+   GPT-5.6-Sol default │  /tmp/project │  2%
+
 
 › draft stays
 
@@ -29,11 +29,11 @@ Conversation
   tab to queue message
 
 32 columns, 10 rows, running=true, queued=false
-  Run /status for a breakdown.
 
 • Working (0s • esc to interrup…
-
                   ⚠ 5h <1% left
+   GPT-5.6-Sol default │  /tmp
+
 
 › draft stays
 
@@ -41,11 +41,11 @@ Conversation
   tab to queue message
 
 18 columns, 10 rows, running=true, queued=false
-  a breakdown.
 
 • Working (0s • e…
-
      ⚠ 5h 5% left
+   GPT-5.6-Sol de
+
 
 › draft stays
 
@@ -53,8 +53,6 @@ Conversation
   tab to queue mes
 
 80 columns, 18 rows, running=true, queued=true
-Conversation row 18
-Conversation row 19
 
 ⚠ Heads up, you have less than 5% of your 5h limit left. Run /status for a
   breakdown.
@@ -65,6 +63,8 @@ Conversation row 19
   ↳ queued follow-up
     ⇧← edit last queued message
                                              ⚠ 5h limit: only 2% left · /status
+   GPT-5.6-Sol default │  /tmp/project │  2%
+
 
 › draft stays
   second line
@@ -76,8 +76,8 @@ Conversation row 19
 • Working (0s • esc to interrupt)
 
 • Queued follow-up inputs
-  ↳ queued follow-up
-    ⇧← edit last queued message
+   GPT-5.6-Sol default │  /tmp/project │  2%
+
 
 › draft stays
   second line
@@ -86,7 +86,7 @@ Conversation row 19
   tab to queue message
 
 80 columns, 6 rows, running=true, queued=false
-• Working (0s • esc to interrupt)
+
 
 › draft stays
 

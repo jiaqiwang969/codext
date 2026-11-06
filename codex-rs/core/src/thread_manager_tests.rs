@@ -704,7 +704,7 @@ async fn child_session_inherits_client_mcp_extensions() {
         .await
         .expect("start parent thread");
 
-    let (client_mcp_extensions, _) = manager
+    let (client_mcp_extensions, _, _) = manager
         .state
         .inherited_child_settings(Some(parent.thread_id))
         .await;

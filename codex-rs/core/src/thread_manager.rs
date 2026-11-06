@@ -1,3 +1,7 @@
+mod account_runtime;
+pub use account_runtime::ThreadAuthManager;
+pub use account_runtime::ThreadRuntime;
+
 mod managed;
 mod shared_instructions;
 mod shutdown;
@@ -296,6 +300,8 @@ pub enum PromptCacheKey {
 
 pub struct StartThreadOptions {
     pub config: Config,
+    /// Account runtime captured by this thread. `None` uses the manager's default runtime.
+    pub runtime: Option<ThreadRuntime>,
     /// Request-body cache key policy for this thread and its children. Hosts must reapply it on cold resume.
     pub prompt_cache_key: PromptCacheKey,
     /// Host-owned provider for this root thread's additional instructions.
@@ -379,6 +385,7 @@ impl StartThreadOptions {
     pub fn new(config: Config) -> Self {
         Self {
             config,
+            runtime: None,
             prompt_cache_key: PromptCacheKey::default(),
             thread_instructions_provider: None,
             allow_provider_model_fallback: false,
@@ -1069,6 +1076,39 @@ impl ThreadManager {
         self.state.list_thread_ids().await
     }
 
+    /// Invalidate cached model-transport state for every tracked thread.
+    ///
+    /// Returns the number of threads whose caches were invalidated.
+    pub async fn invalidate_model_transport_caches(&self) -> usize {
+        let threads: Vec<Arc<CodexThread>> =
+            self.state.threads.read().await.values().cloned().collect();
+        let invalidated_thread_count = threads.len();
+        for thread in threads {
+            thread.invalidate_model_transport_cache();
+        }
+        invalidated_thread_count
+    }
+
+    /// Invalidate cached model transports only for threads using one auth manager.
+    ///
+    /// Account-specific auth reloads use this narrower scope so a profile refresh
+    /// cannot disturb model sessions that belong to another account.
+    pub async fn invalidate_model_transport_caches_for_auth(
+        &self,
+        auth_manager: &Arc<AuthManager>,
+    ) -> usize {
+        let threads: Vec<Arc<CodexThread>> =
+            self.state.threads.read().await.values().cloned().collect();
+        let mut invalidated_thread_count = 0;
+        for thread in threads {
+            if Arc::ptr_eq(auth_manager, &thread.session.services.auth_manager) {
+                thread.invalidate_model_transport_cache();
+                invalidated_thread_count += 1;
+            }
+        }
+        invalidated_thread_count
+    }
+
     pub fn subscribe_thread_created(&self) -> broadcast::Receiver<ThreadId> {
         self.state.thread_created_tx.subscribe()
     }
@@ -1286,6 +1326,8 @@ impl ThreadManager {
         }
         let parent = self.get_thread(parent_thread_id).await?;
         options.initial_history = history;
+        let runtime = ThreadRuntime::from_session_services(&parent.session.services);
+        options.runtime = Some(runtime);
         options.internal_parent = Some(InternalSessionParent {
             thread_id: parent_thread_id,
             auth_manager: Arc::clone(&parent.session.services.auth_manager),
@@ -1330,6 +1372,12 @@ impl ThreadManager {
                 "a captured internal parent requires a new or forked internal session".to_owned(),
             ));
         }
+        if options.runtime.is_none()
+            && let Some(source_thread_id) = forked_from_thread_id
+            && let Some(runtime) = self.state.account_runtime(source_thread_id).await
+        {
+            options.runtime = Some(runtime);
+        }
         let mut request = if let Some(parent) = parent {
             let mut request =
                 ThreadSpawnRequest::new(options, parent.auth_manager, parent.agent_control);
@@ -1340,11 +1388,12 @@ impl ThreadManager {
             request
         } else {
             let agent_control = self.agent_control_for_config(&options.config);
-            let mut request = ThreadSpawnRequest::new(
-                options,
-                Arc::clone(&self.state.auth_manager),
-                agent_control,
-            );
+            let auth_manager = options
+                .runtime
+                .as_ref()
+                .map(|runtime| Arc::clone(&runtime.auth_manager))
+                .unwrap_or_else(|| Arc::clone(&self.state.auth_manager));
+            let mut request = ThreadSpawnRequest::new(options, auth_manager, agent_control);
             request.forked_from_thread_id = forked_from_thread_id;
             request
         };
@@ -1766,6 +1815,12 @@ impl ThreadManager {
             InitialHistory::Forked(_) => history.forked_from_id(),
             InitialHistory::New | InitialHistory::Cleared => None,
         };
+        if options.runtime.is_none()
+            && let Some(source_thread_id) = source_thread_id
+            && let Some(runtime) = self.state.account_runtime(source_thread_id).await
+        {
+            options.runtime = Some(runtime);
+        }
         // Capture the live source before later startup work can unload it. Keep
         // the fork's own providers, not the source's task-bound callback.
         let instructions = self
@@ -1796,8 +1851,12 @@ impl ThreadManager {
         );
         options.initial_history = fork_history_from_snapshot(snapshot, history, interrupted_marker);
         let agent_control = self.agent_control_for_config(&options.config);
-        let mut request =
-            ThreadSpawnRequest::new(options, Arc::clone(&self.state.auth_manager), agent_control);
+        let auth_manager = options
+            .runtime
+            .as_ref()
+            .map(|runtime| Arc::clone(&runtime.auth_manager))
+            .unwrap_or_else(|| Arc::clone(&self.state.auth_manager));
+        let mut request = ThreadSpawnRequest::new(options, auth_manager, agent_control);
         request.forked_from_thread_id = source_thread_id;
         request.fork_persistence = fork_persistence;
         request.inherited_instructions = Some(instructions);
@@ -2144,11 +2203,19 @@ impl ThreadManagerState {
         parent_thread_id: Option<ThreadId>,
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
     ) -> CodexResult<NewThread> {
-        (options.client_mcp_extensions, options.prompt_cache_key) =
+        let (client_mcp_extensions, prompt_cache_key, parent_runtime) =
             self.inherited_child_settings(parent_thread_id).await;
+        options.client_mcp_extensions = client_mcp_extensions;
+        options.prompt_cache_key = prompt_cache_key;
+        if let Some(runtime) = &parent_runtime {
+            options.runtime = Some(runtime.clone());
+        }
         let forked = matches!(options.initial_history, InitialHistory::Forked(_));
-        let mut request =
-            ThreadSpawnRequest::new(options, Arc::clone(&self.auth_manager), agent_control);
+        let auth_manager = parent_runtime
+            .as_ref()
+            .map(|runtime| Arc::clone(&runtime.auth_manager))
+            .unwrap_or_else(|| Arc::clone(&self.auth_manager));
+        let mut request = ThreadSpawnRequest::new(options, auth_manager, agent_control);
         request.parent_thread_id = parent_thread_id;
         request.inherited_exec_policy = inherited_exec_policy;
         if forked {
@@ -2213,12 +2280,12 @@ impl ThreadManagerState {
             inherited_exec_policy,
             client_mcp_extensions,
         } = options;
-        let (parent_client_mcp_extensions, inherited_prompt_cache_key) =
+        let (parent_client_mcp_extensions, inherited_prompt_cache_key, parent_runtime) =
             self.inherited_child_settings(parent_thread_id).await;
         let client_mcp_extensions = client_mcp_extensions.unwrap_or(parent_client_mcp_extensions);
         let prompt_cache_key = prompt_cache_key.unwrap_or(inherited_prompt_cache_key);
         let thread_source = initial_history.get_resumed_thread_source();
-        let options = StartThreadOptions {
+        let mut options = StartThreadOptions {
             prompt_cache_key,
             initial_history,
             session_source: Some(session_source),
@@ -2232,8 +2299,14 @@ impl ThreadManagerState {
             client_mcp_extensions,
             ..StartThreadOptions::new(config)
         };
-        let mut request =
-            ThreadSpawnRequest::new(options, Arc::clone(&self.auth_manager), agent_control);
+        if let Some(runtime) = &parent_runtime {
+            options.runtime = Some(runtime.clone());
+        }
+        let auth_manager = parent_runtime
+            .as_ref()
+            .map(|runtime| Arc::clone(&runtime.auth_manager))
+            .unwrap_or_else(|| Arc::clone(&self.auth_manager));
+        let mut request = ThreadSpawnRequest::new(options, auth_manager, agent_control);
         request.parent_thread_id = parent_thread_id;
         request.inherited_environments = inherited_environments;
         request.inherited_instructions = inherited_instructions;
@@ -2244,27 +2317,43 @@ impl ThreadManagerState {
     async fn inherited_child_settings(
         &self,
         parent_thread_id: Option<ThreadId>,
-    ) -> (ClientMcpExtensions, PromptCacheKey) {
+    ) -> (ClientMcpExtensions, PromptCacheKey, Option<ThreadRuntime>) {
         let Some(parent_thread_id) = parent_thread_id else {
             return Default::default();
         };
-        self.get_thread(parent_thread_id)
-            .await
-            .map(|parent| {
-                (
-                    parent.session.services.client_mcp_extensions.clone(),
-                    parent
-                        .session
-                        .services
-                        .model_client
-                        .prompt_cache_key_policy(),
-                )
-            })
-            .unwrap_or_default()
+        let Some(parent) = self.get_thread(parent_thread_id).await.ok() else {
+            return Default::default();
+        };
+        let runtime = ThreadRuntime::from_session_services(&parent.session.services);
+        (
+            parent.session.services.client_mcp_extensions.clone(),
+            parent
+                .session
+                .services
+                .model_client
+                .prompt_cache_key_policy(),
+            Some(runtime),
+        )
     }
 
     /// Spawn a new thread with optional history and register it with the manager.
     async fn spawn_thread(&self, mut request: ThreadSpawnRequest) -> CodexResult<NewThread> {
+        if request.options.runtime.is_none()
+            && let Some(parent_id) = request.parent_thread_id
+        {
+            request.options.runtime = self.account_runtime(parent_id).await;
+        }
+        let runtime = request.options.runtime.clone().unwrap_or_else(|| {
+            if Arc::ptr_eq(&request.auth_manager, &self.auth_manager) {
+                self.default_runtime_for_auth(Arc::clone(&request.auth_manager))
+            } else {
+                self.runtime_for_auth(
+                    &request.options.config,
+                    Arc::clone(&request.auth_manager),
+                    /*auth_profile_id*/ None,
+                )
+            }
+        });
         let cancellation = request
             .options
             .config
@@ -2276,8 +2365,8 @@ impl ThreadManagerState {
             .config
             .config_layer_stack
             .with_mcp_ema_cancellation(cancellation);
-        let runtime = request.agent_control.runtime().clone();
-        let membership = runtime.admit_start()?;
+        let agent_runtime = request.agent_control.runtime().clone();
+        let membership = agent_runtime.admit_start()?;
         let owns_startup = request.startup.is_none();
         let startup_state = Arc::clone(
             request
@@ -2291,7 +2380,7 @@ impl ThreadManagerState {
             ready_notification,
             startup,
             options,
-            auth_manager,
+            auth_manager: _,
             agent_control,
             parent_thread_id,
             parent_originator,
@@ -2343,6 +2432,7 @@ impl ThreadManagerState {
             client_mcp_extensions,
             mut reserved_thread_id,
             disabled_plugin_ids,
+            runtime: _,
         } = options;
         if resume_preparation.is_some()
             && (config.ephemeral || !matches!(&initial_history, InitialHistory::Resumed(_)))
@@ -2366,6 +2456,8 @@ impl ThreadManagerState {
                 }
             });
         thread_extension_init.insert(isolation);
+        thread_extension_init.insert(ThreadAuthManager(Arc::clone(&runtime.auth_manager)));
+        thread_extension_init.insert(runtime.clone());
         let environment_requests = environment_requests
             .or_else(|| {
                 let SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }) = &session_source
@@ -2558,13 +2650,16 @@ impl ThreadManagerState {
                 .map(|extensions| Arc::clone(&extensions.0))
                 .unwrap_or_else(empty_extension_registry);
             let mcp_manager = McpManager::new_with_extensions(
-                Arc::clone(&self.plugins_manager),
+                Arc::clone(&runtime.plugins_manager),
                 Arc::clone(&extensions),
                 CodexAppsToolsCache::default(),
             );
             (extensions, Arc::new(mcp_manager))
         } else {
-            (Arc::clone(&self.extensions), Arc::clone(&self.mcp_manager))
+            (
+                Arc::clone(&self.extensions),
+                Arc::clone(&runtime.mcp_manager),
+            )
         };
         let tracked_session_source = session_source.clone();
         let source_changed_during_startup = Arc::new(AtomicBool::new(false));
@@ -2592,15 +2687,15 @@ impl ThreadManagerState {
             allow_provider_model_fallback,
             instructions: startup_context.instructions,
             installation_id: self.installation_id.clone(),
-            auth_manager,
-            models_manager: self
+            auth_manager: Arc::clone(&runtime.auth_manager),
+            models_manager: runtime
                 .models_manager
                 .for_originator(&startup_context.originator)
-                .unwrap_or_else(|| Arc::clone(&self.models_manager)),
+                .unwrap_or_else(|| Arc::clone(&runtime.models_manager)),
             git_root_discovery: Arc::clone(&self.git_root_discovery),
             environment_manager: Arc::clone(&self.environment_manager),
             skills_service: Arc::clone(&self.skills_service),
-            plugins_manager: Arc::clone(&self.plugins_manager),
+            plugins_manager: Arc::clone(&runtime.plugins_manager),
             mcp_manager,
             code_mode_session_provider: Arc::clone(&self.code_mode_session_provider),
             extensions,

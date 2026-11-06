@@ -54,7 +54,7 @@ pub const MAX_WALK_DIRECTORIES: usize = 10_000;
 /// Maximum accepted number of directory entries to examine.
 pub const MAX_WALK_ENTRIES: usize = 50_000;
 /// Maximum estimated size of a walk response.
-pub const MAX_WALK_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_WALK_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 /// Per-entry or per-error overhead charged to the walk response budget.
 pub const WALK_RESPONSE_ITEM_OVERHEAD_BYTES: usize = 64;
 

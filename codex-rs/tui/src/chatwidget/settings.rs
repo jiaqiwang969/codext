@@ -311,6 +311,12 @@ impl ChatWidget {
     /// Set the model in the widget's config copy and stored collaboration mode.
     pub(crate) fn set_model(&mut self, model: &str) {
         if model != self.current_model() {
+            if self.usage_limit_resume_waiting_for_auth_reload {
+                self.input_queue.suppress_queue_autosend = false;
+                self.bottom_pane
+                    .set_queue_submissions(/*queue_submissions*/ false);
+                self.clear_pending_usage_limit_resume_turn();
+            }
             if self.current_model() == crate::model_catalog::LUNA_RESERVE_MODEL {
                 self.clear_reserve_return();
             } else {
@@ -581,6 +587,7 @@ impl ChatWidget {
         }
         self.current_cwd = Some(cwd.to_path_buf());
         self.status_line_project_root_name_cache = None;
+        self.sync_status_header_git_status_poller();
 
         if !self.config.workspace_roots.contains(&previous_cwd) {
             return;

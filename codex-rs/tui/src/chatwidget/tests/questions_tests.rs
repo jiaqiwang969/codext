@@ -143,7 +143,7 @@ async fn ordinary_follow_up_clears_unanswered_questions_after_accepted_input() {
                 "questions_cleared_by_follow_up",
                 render_bottom_popup(&chat, /*width*/ 80)
                     .lines()
-                    .next()
+                    .find(|line| line.starts_with('›'))
                     .unwrap()
             );
         }

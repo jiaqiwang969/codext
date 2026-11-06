@@ -1,0 +1,18 @@
+{
+  "workflow": ".github/workflows/rust-release.yml",
+  "scope": [
+    "build-artifacts",
+    "github-release",
+    "npm-release"
+  ],
+  "identity": {
+    "npm_package": "@loongphy/codext",
+    "platform_package_prefix": "@loongphy/codext-",
+    "cli_command": "codext"
+  },
+  "trigger": {
+    "mode": "manual",
+    "reason": "the five-platform build takes hours and daily installs use local packages (scripts/superagent/promote.sh), so a release is built only on workflow_dispatch"
+  },
+  "allowed_deviations": []
+}

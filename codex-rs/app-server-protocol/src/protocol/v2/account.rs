@@ -295,6 +295,29 @@ pub enum AccountSessionWorkspaceKind {
 #[ts(export_to = "v2/")]
 pub struct LogoutAccountResponse {}
 
+/// Selects the credential profile for a connection and, when requested, replaces
+/// the account binding of an idle or unloaded thread without changing its conversation.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct SwitchAuthProfileParams {
+    pub name: String,
+    /// Also switch this thread, persisting the selection before cold resume when unloaded.
+    /// Omission only selects the connection default.
+    #[ts(optional = nullable)]
+    pub thread_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct SwitchAuthProfileResponse {
+    pub name: String,
+    pub changed: bool,
+    /// The thread whose binding was switched, or null for a connection-only selection.
+    pub thread_id: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -589,6 +612,21 @@ pub struct GetAccountResponse {
     pub requires_openai_auth: bool,
     #[experimental("account/read.workspaceRouting")]
     pub workspace_routing: Option<WorkspaceRouting>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ReloadAccountResponse {
+    pub account: Option<Account>,
+    pub requires_openai_auth: bool,
+    /// Whether this request reloaded a different auth snapshot from storage.
+    pub auth_changed: bool,
+    /// Whether the storage reload was skipped because a turn is running
+    /// somewhere on this (possibly shared) app-server. When true, `account`
+    /// and `auth_changed` reflect the previously cached auth, not storage.
+    #[serde(default)]
+    pub auth_reload_skipped: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

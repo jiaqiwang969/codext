@@ -10,6 +10,7 @@ expression: "normalize_agent_center_snapshot(render_bottom_popup(&app.chat_widge
   › ○ Review parser                                   │ Review parser
                                                       │ ○ Ready
                                                       │
+                                                      │ Profile: default
                                                       │ Model: Unknown
                                                       │ Reasoning: Unknown
                                                       │
@@ -24,5 +25,4 @@ expression: "normalize_agent_center_snapshot(render_bottom_popup(&app.chat_widge
                                                       │ Prompt
                                                       │ long prompt long prompt long prompt
                                                       │ …
-                                                      │
-  ? help  esc back  ↑/↓ move  enter open  n new
+  ? help  esc back  ↑/↓ move  enter open  n new  ⇧p profile

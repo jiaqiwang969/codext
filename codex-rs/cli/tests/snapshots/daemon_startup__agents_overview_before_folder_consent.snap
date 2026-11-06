@@ -41,7 +41,7 @@ expression: transition
                                                                               │
                                                                               │
                                                                               │
-  ? help  esc back  ↑/↓ move  enter open  n new
+  ? help  esc back  ↑/↓ move  enter open  n new  ⇧p profile
 
 --- Start a task ---
 

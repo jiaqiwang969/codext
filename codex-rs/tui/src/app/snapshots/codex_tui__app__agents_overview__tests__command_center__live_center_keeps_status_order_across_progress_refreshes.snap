@@ -11,16 +11,16 @@ Initial display:
     ! Needs input                                         │ Alpha
                                                           │ ● Working
   Working  3                                              │
-    ● Bravo                                               │ Model: Unknown
-    ● Charlie                                             │ Reasoning: Unknown
-  › ● Alpha                                               │
-                                                          │ Project
-  Ready  1                                                │ /tmp/project
-    ○ Ready task                                          │
+    ● Bravo                                               │ Profile: default
+    ● Charlie                                             │ Model: Unknown
+  › ● Alpha                                               │ Reasoning: Unknown
+                                                          │
+  Ready  1                                                │ Project
+    ○ Ready task                                          │ /tmp/project
+                                                          │
                                                           │ Prompt
                                                           │ Alpha
-                                                          │
-  ? help  esc back  ↑/↓ move  enter open  n new
+  ? help  esc back  ↑/↓ move  enter open  n new  ⇧p profile
 
 After subagents fail under Alpha and Ready task:
   Agent command center  Group: Status  g
@@ -31,13 +31,13 @@ After subagents fail under Alpha and Ready task:
     ! Needs input                                         │ Alpha
                                                           │ ● Working
   Working  3                                              │
-    ● 📌  Charlie                                          │ Model: Unknown
-  › ● Alpha                                               │ Reasoning: Unknown
-    ● Bravo                                               │
-                                                          │ Project
-  Ready  1                                                │ /tmp/project
-    ○ 📌  Ready task                                       │
+    ● 📌  Charlie                                          │ Profile: default
+  › ● Alpha                                               │ Model: Unknown
+    ● Bravo                                               │ Reasoning: Unknown
+                                                          │
+  Ready  1                                                │ Project
+    ○ 📌  Ready task                                       │ /tmp/project
+                                                          │
                                                           │ Prompt
                                                           │ Progress update 3
-                                                          │
-  ? help  esc back  ↑/↓ move  enter open  n new
+  ? help  esc back  ↑/↓ move  enter open  n new  ⇧p profile

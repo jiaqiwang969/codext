@@ -26,6 +26,7 @@ use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
 use crate::CreateThreadParams;
 use crate::DeleteThreadParams;
+use crate::ExtraConfig;
 use crate::ListThreadsParams;
 use crate::LoadThreadHistoryParams;
 use crate::MoveThreadToSectionParams;
@@ -1117,7 +1118,14 @@ fn stored_thread_from_state(
     Ok(StoredThread {
         originator: (!created.originator.is_empty()).then(|| created.originator.clone()),
         thread_id,
-        extra_config: created.extra_config.clone(),
+        extra_config: created.extra_config.clone().or_else(|| {
+            created
+                .creator_account_id
+                .clone()
+                .map(|creator_account_id| ExtraConfig {
+                    creator_account_id: Some(creator_account_id),
+                })
+        }),
         rollout_path: metadata
             .and_then(|metadata| metadata.rollout_path.clone())
             .or(rollout_path),

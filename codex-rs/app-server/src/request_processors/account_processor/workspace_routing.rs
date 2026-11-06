@@ -25,6 +25,8 @@ use url::Url;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(super) struct WorkspaceRoutingKey {
+    // Generation counters belong to one manager; profiles may share a workspace.
+    auth_owner: usize,
     auth_generation: u64,
     chatgpt_account_id: String,
     effective_chatgpt_base_url: String,
@@ -48,9 +50,9 @@ pub(super) struct CachedWorkspaceRouting {
 }
 
 pub(super) struct AccountRead {
-    account_state: ProviderAccountState,
+    pub(super) account_state: ProviderAccountState,
     pub(super) workspace_routing: Option<WorkspaceRouting>,
-    workspace_name: Option<String>,
+    pub(super) workspace_name: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -258,8 +260,13 @@ impl AccountRequestProcessor {
     pub(crate) async fn get_account(
         &self,
         params: GetAccountParams,
+        auth_profile_id: Option<String>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.refresh_token_if_requested(params.refresh_token).await;
+        if let Some(profile_id) = auth_profile_id {
+            return self.get_account_for_profile(params, &profile_id).await;
+        }
+        self.refresh_token_if_requested(&self.auth_manager, params.refresh_token)
+            .await;
         let read = self
             .read_account(/*request*/ None)
             .await
@@ -292,11 +299,88 @@ impl AccountRequestProcessor {
         ))
     }
 
+    async fn get_account_for_profile(
+        &self,
+        params: GetAccountParams,
+        profile_id: &str,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let auth_manager = self.auth_manager_for_profile(Some(profile_id)).await?;
+        self.refresh_token_if_requested(&auth_manager, params.refresh_token)
+            .await;
+        let read = self
+            .read_account_with_auth(auth_manager, /*request*/ None)
+            .await
+            .map_err(|error| match error {
+                AccountReadError::InvalidAccount(error) => invalid_request(error.to_string()),
+                AccountReadError::Routing(error) => internal_error(error.to_string()),
+            })?;
+        let mut account = read.account_state.account.map(Account::from);
+        if let Some(Account::Chatgpt { workspace_name, .. }) = &mut account {
+            *workspace_name = read.workspace_name;
+        }
+        Ok(Some(
+            GetAccountResponse {
+                account,
+                requires_openai_auth: read.account_state.requires_openai_auth,
+                workspace_routing: read.workspace_routing.map(|routing| {
+                    codex_app_server_protocol::WorkspaceRouting {
+                        chatgpt_account_id: routing.chatgpt_account_id,
+                        backend_origin: routing.backend_origin,
+                        account_routing_override: match routing.account_routing_override.as_str() {
+                            "NO_CONSTRAINT" => AccountRoutingOverride::NoConstraint,
+                            "us" => AccountRoutingOverride::Us,
+                            "us_cr" => AccountRoutingOverride::UsCr,
+                            _ => unreachable!("routing discovery validates the override"),
+                        },
+                    }
+                }),
+            }
+            .into(),
+        ))
+    }
+
+    pub(crate) async fn resolve_profile_workspace_routing(
+        &self,
+        profile_id: &str,
+        request: WorkspaceRoutingRequest,
+    ) -> io::Result<Option<WorkspaceRouting>> {
+        let auth_manager = self
+            .auth_manager_for_profile(Some(profile_id))
+            .await
+            .map_err(|error| io::Error::other(error.message))?;
+        self.read_account_with_auth(auth_manager, Some(&request))
+            .await
+            .map(|account| account.workspace_routing)
+            .map_err(|error| match error {
+                AccountReadError::InvalidAccount(error) => io::Error::other(error),
+                AccountReadError::Routing(WorkspaceRoutingError::RefreshTokenRejected(error)) => {
+                    io::Error::new(io::ErrorKind::PermissionDenied, error)
+                }
+                AccountReadError::Routing(error) => io::Error::new(
+                    if error == WorkspaceRoutingError::DiscoveryUnauthorized {
+                        io::ErrorKind::PermissionDenied
+                    } else {
+                        io::ErrorKind::Other
+                    },
+                    error,
+                ),
+            })
+    }
+
     pub(super) async fn read_account(
         &self,
         request: Option<&WorkspaceRoutingRequest>,
     ) -> Result<AccountRead, AccountReadError> {
-        let mut auth_changes = self.auth_manager.auth_change_state_receiver();
+        self.read_account_with_auth(Arc::clone(&self.auth_manager), request)
+            .await
+    }
+
+    pub(super) async fn read_account_with_auth(
+        &self,
+        auth_manager: Arc<AuthManager>,
+        request: Option<&WorkspaceRoutingRequest>,
+    ) -> Result<AccountRead, AccountReadError> {
+        let mut auth_changes = auth_manager.auth_change_state_receiver();
         let auth_state = *auth_changes.borrow_and_update();
         let current_auth_changes = auth_changes.clone();
         let read = Box::pin(async {
@@ -317,8 +401,7 @@ impl AccountRequestProcessor {
             let config = match load_config().await {
                 Ok(config) => config,
                 Err(_)
-                    if !self
-                        .auth_manager
+                    if !auth_manager
                         .auth_cached()
                         .as_ref()
                         .is_some_and(CodexAuth::is_chatgpt_auth) =>
@@ -332,10 +415,10 @@ impl AccountRequestProcessor {
                     .into());
                 }
             };
-            let auth = self.auth_manager.auth_cached();
+            let auth = auth_manager.auth_cached();
             let provider = create_model_provider(
                 config.model_provider.clone(),
-                Some(self.auth_manager.clone()),
+                Some(Arc::clone(&auth_manager)),
             );
             let account_state = provider
                 .account_state()
@@ -361,6 +444,7 @@ impl AccountRequestProcessor {
                     .chatgpt_base_url
                     .clone();
                 let key = WorkspaceRoutingKey {
+                    auth_owner: Arc::as_ptr(&auth_manager) as usize,
                     auth_generation: auth_state.generation,
                     chatgpt_account_id: account_id.clone(),
                     effective_chatgpt_base_url: config.chatgpt_base_url.clone(),
@@ -399,7 +483,7 @@ impl AccountRequestProcessor {
                 let routing = if let Some(cached) = cached {
                     cached
                 } else {
-                    let mut recovery = self.auth_manager.unauthorized_recovery();
+                    let mut recovery = auth_manager.unauthorized_recovery();
                     let mut discovery_auth = auth.clone();
                     let mut discovery_generation = auth_state.generation;
                     let response = loop {
@@ -421,11 +505,10 @@ impl AccountRequestProcessor {
                                     if let Err(error) = result
                                         && refreshed.generation == discovery_generation
                                     {
-                                        let cached_failure = self
-                                            .auth_manager
-                                            .refresh_failure_for_auth(&discovery_auth);
+                                        let cached_failure =
+                                            auth_manager.refresh_failure_for_auth(&discovery_auth);
                                         if let RefreshTokenError::Permanent(failed) = error
-                                            && !self.auth_manager.has_external_auth()
+                                            && !auth_manager.has_external_auth()
                                             && cached_failure.as_ref() == Some(&failed)
                                         {
                                             return Err(
@@ -438,8 +521,7 @@ impl AccountRequestProcessor {
                                         );
                                     }
                                     discovery_generation = refreshed.generation;
-                                    discovery_auth = self
-                                        .auth_manager
+                                    discovery_auth = auth_manager
                                         .auth_cached()
                                         .ok_or(WorkspaceRoutingError::AccountChanged)?;
                                     continue;

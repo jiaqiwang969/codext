@@ -14,7 +14,9 @@ use super::SKILLS_FILENAME;
 use super::SKILLS_METADATA_DIR;
 use super::SKILLS_METADATA_FILENAME;
 
-const MAX_SKILLS_ENTRIES_PER_ROOT: usize = 20_000;
+// Keep discovery within the filesystem walk hard ceiling while allowing skill roots to
+// contain generated project files alongside nested SKILL.md documents.
+const MAX_SKILLS_ENTRIES_PER_ROOT: usize = 50_000;
 pub(super) const MAX_CONCURRENT_SKILL_LOADS: usize = 64;
 
 pub(super) enum DirectorySymlinkPolicy {

@@ -1947,6 +1947,15 @@ struct AuthReload {
     changed_for_refresh: bool,
 }
 
+/// Outcome of a profile credential reload from storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthReloadStatus {
+    /// Credentials were read; `changed` compares the refresh-relevant snapshot.
+    Reloaded { changed: bool },
+    /// Loading failed and the last known credentials remain cached.
+    Failed,
+}
+
 /// Internal cached auth state.
 #[derive(Clone)]
 struct CachedAuth {
@@ -2861,6 +2870,30 @@ impl AuthManager {
             }
             if self.inner.is_poisoned() {
                 return Err(std::io::Error::other("credential cache is unavailable"));
+            }
+        }
+    }
+
+    /// Reload stored profile credentials while preserving upstream mode, workspace,
+    /// and cached-credential checks. Storage failures leave the current owner intact.
+    pub async fn reload_with_status(&self) -> AuthReloadStatus {
+        loop {
+            let generation = self.auth_change_state_tx.borrow().generation;
+            let cached = self.auth_cached();
+            let new_auth = match self.try_load_managed_auth(cached.as_ref()).await {
+                Ok(auth) => auth,
+                Err(error) => {
+                    tracing::warn!(%error, "Failed to reload auth from storage; keeping current auth state");
+                    return AuthReloadStatus::Failed;
+                }
+            };
+            if let Some(publication) = self.publish_reloaded_auth(generation, new_auth) {
+                return AuthReloadStatus::Reloaded {
+                    changed: publication.changed_for_refresh,
+                };
+            }
+            if self.inner.is_poisoned() {
+                return AuthReloadStatus::Failed;
             }
         }
     }

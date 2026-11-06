@@ -7,6 +7,8 @@ activity:
 "                                                                                "
 "• Checking command                                                              "
 "                                                                                "
+"   GPT-5.6-Sol default │  /tmp/project                                        "
+"                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "
 "                                                                                "
@@ -16,6 +18,8 @@ history:
 
 completed
 activity:
+"                                                                                "
+"   GPT-5.6-Sol default │  /tmp/project                                        "
 "                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "

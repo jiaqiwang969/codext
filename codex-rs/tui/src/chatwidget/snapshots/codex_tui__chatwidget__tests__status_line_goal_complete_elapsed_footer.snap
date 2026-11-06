@@ -3,6 +3,8 @@ source: tui/src/chatwidget/tests/status_and_layout.rs
 expression: normalized_backend_snapshot(terminal.backend())
 ---
 "                                                                                "
+"   GPT-5.5 default │  /tmp/project                                            "
+"                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "
 "                                                                                "

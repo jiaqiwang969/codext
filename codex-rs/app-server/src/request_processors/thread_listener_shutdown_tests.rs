@@ -74,6 +74,9 @@ async fn listener_shutdown_releases_runtime_and_preserves_other_subscribers(
         Arc::new(GoalService::new()),
         config_manager.clone(),
     );
+    let account_profiles = Arc::new(crate::account_profiles::AccountProfileRegistry::new(
+        &config,
+    ));
     let processor = ThreadRequestProcessor::new(
         auth,
         test.thread_manager.clone(),
@@ -85,6 +88,7 @@ async fn listener_shutdown_releases_runtime_and_preserves_other_subscribers(
         Default::default(),
         thread_state_manager.clone(),
         thread_watch_manager.clone(),
+        Arc::new(tokio::sync::Mutex::new(())),
         Arc::new(Semaphore::new(/*permits*/ 1)),
         thread_goal_processor,
         /*state_db*/ None,
@@ -93,6 +97,7 @@ async fn listener_shutdown_releases_runtime_and_preserves_other_subscribers(
         /*turn_cost_worker*/ None,
         Vec::new(),
         Arc::new(SampleResponseRegistry::default()),
+        account_profiles,
     );
     let connection_id = ConnectionId(1);
     let disconnecting_connection_id = ConnectionId(2);
@@ -146,6 +151,7 @@ async fn listener_shutdown_releases_runtime_and_preserves_other_subscribers(
                 /*app_server_client_name*/ None,
                 /*app_server_client_version*/ None,
                 /*client_mcp_extensions*/ Default::default(),
+                /*auth_profile_id*/ None,
             )
             .await;
         test.thread_manager.remove_thread(&thread_id).await;

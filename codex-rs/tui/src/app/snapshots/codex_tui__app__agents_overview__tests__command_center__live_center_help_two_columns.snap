@@ -22,7 +22,7 @@ expression: "screen(&view, width, height)"
                       tab/⇧tab  Filter
                       f3        Search
                       g         Group
-
+                      ⇧p        Switch profile
 
 
   esc back

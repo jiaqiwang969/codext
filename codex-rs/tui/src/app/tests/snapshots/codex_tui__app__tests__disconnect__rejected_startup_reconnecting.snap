@@ -4,6 +4,8 @@ expression: "reconnect_status.replace(&render_bottom_popup(&app.chat_widget, 80)
 ---
 • Reconnecting to server… (<elapsed>)
 
+   GPT-5.6-Sol default │  /tmp/project
+
 
 › startup draft
 

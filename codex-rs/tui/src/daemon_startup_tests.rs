@@ -119,6 +119,7 @@ async fn daemon_feature_compatibility_respects_required_and_optional_attachment(
             let features = [
                 (Feature::ApiKeyModelDiscovery, scenario != "explicit enable", "beta"),
                 (Feature::CodeModeHost, false, "beta"),
+                (Feature::CodextAuthReload, true, "stable"),
                 (Feature::InstantInterrupt, true, "beta"),
                 (Feature::RemoteCompactionV2, false, "stable"),
                 (Feature::ShellTool, false, "removed"),

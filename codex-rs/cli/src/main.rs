@@ -55,6 +55,7 @@ static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 mod app_cmd;
 mod config_override_args;
 mod daemon_install;
+mod daemon_reload_auth;
 mod daemon_telemetry;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod desktop_app;
@@ -686,6 +687,17 @@ enum AppServerDaemonSubcommand {
     /// Stop the local app server daemon.
     Stop,
 
+    /// [codext] Ask the running daemon to reload auth.json from storage.
+    ReloadAuth,
+
+    /// [internal] Read one account profile through the shared daemon.
+    #[clap(hide = true)]
+    AccountStatus {
+        name: String,
+        #[arg(long, default_value_t = 12000)]
+        timeout_ms: u64,
+    },
+
     /// Print local CLI and running app-server versions as JSON.
     Version,
 
@@ -812,7 +824,7 @@ fn run_update_action(
     }
     println!();
     let cmd_str = action.command_str();
-    println!("Updating Codex via `{cmd_str}`...");
+    println!("Updating Codext via `{cmd_str}`...");
     let status = {
         #[cfg(windows)]
         {
@@ -856,7 +868,7 @@ fn run_update_action(
     if !status.success() {
         anyhow::bail!("`{cmd_str}` failed with status {status}");
     }
-    println!("\n🎉 Update ran successfully! Please restart Codex.");
+    println!("\n🎉 Update ran successfully! Please restart Codext.");
     Ok(())
 }
 
@@ -878,22 +890,9 @@ fn resolve_windows_update_command_from_path(
 }
 
 fn run_update_command() -> anyhow::Result<()> {
-    #[cfg(debug_assertions)]
-    {
-        anyhow::bail!(
-            "`codex update` is not available in debug builds. Install a release build of Codex to use this command."
-        );
-    }
-
-    #[cfg(not(debug_assertions))]
-    {
-        let Some(action) = codex_tui::get_update_action() else {
-            anyhow::bail!(
-                "Could not detect the Codex installation method. Please update manually: https://developers.openai.com/codex/cli/"
-            );
-        };
-        run_update_action(action, /*cli_executable*/ None)
-    }
+    anyhow::bail!(
+        "Codext uses tested local packages. Update in the laboratory and accept the candidate before installing it for daily use: https://github.com/jiaqiwang969/codext/blob/main/docs/superagent/updating.md"
+    )
 }
 
 fn run_execpolicycheck(cmd: ExecPolicyCheckCommand) -> anyhow::Result<()> {
@@ -1405,6 +1404,21 @@ async fn dispatch_cli(
                     }
                     AppServerDaemonSubcommand::Stop => {
                         print_app_server_daemon_output(AppServerLifecycleCommand::Stop).await?;
+                    }
+                    AppServerDaemonSubcommand::ReloadAuth => {
+                        daemon_reload_auth::run_daemon_reload_auth().await?;
+                    }
+                    AppServerDaemonSubcommand::AccountStatus { name, timeout_ms } => {
+                        let codex_home = find_codex_home()?;
+                        let socket_path =
+                            codex_app_server::app_server_control_socket_path(&codex_home)?;
+                        let output = codex_app_server_daemon::query_account_status(
+                            socket_path.as_path(),
+                            &name,
+                            std::time::Duration::from_millis(timeout_ms),
+                        )
+                        .await?;
+                        println!("{}", serde_json::to_string(&output)?);
                     }
                     AppServerDaemonSubcommand::Version => {
                         print_app_server_daemon_output(AppServerLifecycleCommand::Version).await?;
@@ -2423,6 +2437,8 @@ fn app_server_subcommand_name(subcommand: Option<&AppServerSubcommand>) -> &'sta
                 "app-server daemon disable-remote-control"
             }
             AppServerDaemonSubcommand::Stop => "app-server daemon stop",
+            AppServerDaemonSubcommand::ReloadAuth => "app-server daemon reload-auth",
+            AppServerDaemonSubcommand::AccountStatus { .. } => "app-server daemon account-status",
             AppServerDaemonSubcommand::Version => "app-server daemon version",
             AppServerDaemonSubcommand::PidUpdateLoop { .. } => "app-server daemon pid-update-loop",
         },
@@ -3897,7 +3913,7 @@ enabled = true
             vec![
                 "Token usage: total=2 input=0 output=2".to_string(),
                 "To continue this session, run:".to_string(),
-                "  codex resume 123e4567-e89b-12d3-a456-426614174000".to_string(),
+                "  codext resume 123e4567-e89b-12d3-a456-426614174000".to_string(),
             ]
         );
     }
@@ -3912,7 +3928,7 @@ enabled = true
                 insta::assert_snapshot!(lines.join("\n"), @"
                 Token usage: total=2 input=0 output=2
                 To continue this session, run:
-                  codex resume 123e4567-e89b-12d3-a456-426614174000
+                  codext resume 123e4567-e89b-12d3-a456-426614174000
                 ");
             }
         }
@@ -3930,7 +3946,7 @@ enabled = true
             vec![
                 "Token usage: total=2 input=0 output=2",
                 "To continue this session, run:",
-                "  \u{1b}[36mcodex resume 123e4567-e89b-12d3-a456-426614174000\u{1b}[39m",
+                "  \u{1b}[36mcodext resume 123e4567-e89b-12d3-a456-426614174000\u{1b}[39m",
             ]
         );
     }
@@ -3945,8 +3961,8 @@ enabled = true
         insta::assert_snapshot!(lines.join("\n"), @"
         Token usage: total=2 input=0 output=2
         To continue this session, run:
-          codex resume 123e4567-e89b-12d3-a456-426614174000
-        Or run codex resume and select my-thread.
+          codext resume 123e4567-e89b-12d3-a456-426614174000
+        Or run codext resume and select my-thread.
         ");
     }
 
@@ -3962,8 +3978,8 @@ enabled = true
             vec![
                 "Token usage: total=2 input=0 output=2",
                 "To continue this session, run:",
-                "  \u{1b}[36mcodex resume 123e4567-e89b-12d3-a456-426614174000\u{1b}[39m",
-                "Or run \u{1b}[36mcodex resume\u{1b}[39m and select \u{1b}[36mmy-thread\u{1b}[39m.",
+                "  \u{1b}[36mcodext resume 123e4567-e89b-12d3-a456-426614174000\u{1b}[39m",
+                "Or run \u{1b}[36mcodext resume\u{1b}[39m and select \u{1b}[36mmy-thread\u{1b}[39m.",
             ]
         );
     }

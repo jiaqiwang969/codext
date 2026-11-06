@@ -305,6 +305,10 @@ pub enum NotSubmittedReason {
     /// would run in Plan mode.
     PlanMode,
 
+    /// An automatic start was declined because another driver owns the thread's
+    /// automatic work (an `AutomaticTurnArbiter`).
+    DeclinedByDriver,
+
     /// `steer_turn` found no active turn.
     NoActiveTurn,
 

@@ -1,16 +1,15 @@
 ---
 source: tui/src/app/owned_transcript_input_tests.rs
-assertion_line: 299
 expression: "format!(\"before\\n{before}\\n\\nafter\\n{}\", screen(&tui))"
 ---
 before
-row 14
-row 15
 row 16
 row 17
 row 18
 row 19
                      New activity · ↓ Back to bottom · esc
+   GPT-5.6-Sol default │  /tmp/project
+
 
 › draft preserved
 
@@ -18,12 +17,12 @@ row 19
   New activity · esc latest
 
 after
-row 26
-row 27
 row 28
 row 29
 
 new output
+
+   GPT-5.6-Sol default │  /tmp/project
 
 
 › draft preserved

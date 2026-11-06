@@ -1,6 +1,5 @@
 ---
 source: tui/src/app/turn_tips_tests.rs
-assertion_line: 485
 expression: "crate::chatwidget::tests::helpers::normalize_snapshot_paths(buffer_text(crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal),))"
 ---
 Response row 0
@@ -17,11 +16,11 @@ Response row 9
 
 
 
-
-
 • Working (0s • esc to interrupt)
   └ Tip: Try /help.
                                                                Copying 5 chars…
+   gpt-test default │  /tmp/project
+
 
 › Ask Codex to do anything
 

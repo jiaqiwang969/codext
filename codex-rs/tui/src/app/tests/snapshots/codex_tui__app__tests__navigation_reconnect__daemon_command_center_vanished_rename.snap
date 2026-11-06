@@ -10,6 +10,7 @@ expression: "render_bottom_popup(&app.chat_widget, 100)"
     ● New task                                            │ Selected task
   › ○ Selected task                                       │ ○ Ready
                                                           │
+                                                          │ Profile: default
                                                           │ Model: Unknown
                                                           │ Reasoning: Unknown
                                                           │
@@ -24,5 +25,4 @@ expression: "render_bottom_popup(&app.chat_widget, 100)"
                                                           │
                                                           │
                                                           │
-                                                          │
-  Service v2.0.0 ≠ Codex CLI v0.0.0 · /daemon
+  ? help  esc back  ↑/↓ move  enter open  n new  ⇧p profile

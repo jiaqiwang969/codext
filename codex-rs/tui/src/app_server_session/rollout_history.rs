@@ -149,6 +149,62 @@ impl AppServerSession {
         .await
     }
 
+    /// Apply an account explicitly selected by the launcher to its resume target.
+    /// Keep this separate from ordinary resume: reconnects and agent navigation
+    /// must retain each thread's account, including later in-session switches.
+    pub(crate) async fn resume_thread_from_cli(
+        &mut self,
+        local_settings: &crate::local_settings::LocalSettings,
+        config: Config,
+        thread_id: ThreadId,
+        model_settings: ResumeModelSettings,
+        permission_overrides: crate::resume_permissions::ResumePermissions,
+    ) -> Result<AppServerStartedThread> {
+        let requested_profile = std::env::var("CODEX_ACCOUNT_PROFILE")
+            .ok()
+            .filter(|name| !name.trim().is_empty());
+        if let Some(profile) = requested_profile.as_deref() {
+            let thread = self.thread_read(thread_id, /*include_turns*/ false).await?;
+            if thread
+                .extra
+                .as_ref()
+                .and_then(|extra| extra.account_profile.as_deref())
+                != Some(profile)
+            {
+                self.switch_auth_profile(profile.to_owned(), Some(thread_id))
+                    .await
+                    .map_err(|error| {
+                        let message = format!(
+                            "could not bind this conversation to account profile `{profile}` before resume; no prompt was submitted: {error:#}"
+                        );
+                        error.wrap_err(message)
+                    })?;
+            }
+        }
+        let resumed = Box::pin(self.resume_thread_with_permission_overrides(
+            local_settings,
+            config,
+            thread_id,
+            model_settings,
+            permission_overrides,
+        ))
+        .await?;
+        if let Some(profile) = requested_profile {
+            let thread = self.thread_read(thread_id, /*include_turns*/ false).await?;
+            if thread
+                .extra
+                .as_ref()
+                .and_then(|extra| extra.account_profile.as_deref())
+                != Some(profile.as_str())
+            {
+                color_eyre::eyre::bail!(
+                    "the app-server did not bind this conversation to `{profile}`; no prompt was submitted"
+                );
+            }
+        }
+        Ok(resumed)
+    }
+
     pub(crate) async fn resume_thread_with_permission_overrides(
         &mut self,
         local_settings: &crate::local_settings::LocalSettings,
@@ -244,6 +300,17 @@ impl AppServerSession {
                 ));
             }
         };
+        // Align account reads and quota polling with the runtime we actually
+        // attached to. This selects the connection default without rebinding it.
+        if let Some(profile) = response
+            .thread
+            .extra
+            .as_ref()
+            .and_then(|extra| extra.account_profile.clone())
+        {
+            self.switch_auth_profile(profile, /*thread_id*/ None)
+                .await?;
+        }
         self.hydrate_initial_thread_history(
             &mut response.thread,
             response.turns_backwards_cursor.clone(),

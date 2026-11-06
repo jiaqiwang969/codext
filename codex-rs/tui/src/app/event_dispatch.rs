@@ -13,6 +13,7 @@ use crate::app_event::ThreadTitleDestination;
 use crate::app_server_session::ForkGoalContinuation;
 use crate::app_server_session::ThreadSettingsOwner;
 use crate::app_server_session::UnsupportedLegacyPermissionProfile;
+use crate::app_server_session::account_state_from_account;
 use crate::app_server_session::turn_permissions_overrides;
 use crate::config_update::format_config_error;
 use crate::external_agent_config_migration::flow::ExternalAgentConfigMigrationFlowOutcome;
@@ -1138,6 +1139,67 @@ impl App {
                         .add_error_message(format!("Logout failed: {err}"));
                 }
             },
+            AppEvent::SwitchAuthProfile { name } => {
+                match app_server
+                    .switch_auth_profile(name, self.chat_widget.thread_id())
+                    .await
+                {
+                    Ok(response) => {
+                        if let Some(auth_watch) = self._auth_watch.as_ref() {
+                            auth_watch.set_auth_profile(
+                                self.config.codex_home.as_path(),
+                                Some(response.name.as_str()),
+                            );
+                        }
+                        match app_server.read_account().await {
+                            Ok(account) => {
+                                let (
+                                    account_display,
+                                    plan_type,
+                                    has_chatgpt_account,
+                                    has_codex_backend_auth,
+                                ) = account_state_from_account(account.account.as_ref());
+                                self.chat_widget.update_account_state(
+                                    account_display,
+                                    plan_type,
+                                    has_chatgpt_account,
+                                    has_codex_backend_auth,
+                                );
+                            }
+                            Err(error) => {
+                                self.chat_widget.add_error_message(format!(
+                                    "Profile switched, but account state could not be read: {error:#}"
+                                ));
+                            }
+                        }
+                        self.chat_widget.add_info_message(
+                            format!("Switched authentication profile to `{}`.", response.name),
+                            response.thread_id.as_ref().map(|_| {
+                                "This conversation now uses the selected account.".to_string()
+                            }),
+                        );
+                        if response.changed {
+                            self.chat_widget.handle_auth_identity_changed();
+                        }
+                        if self.chat_widget.has_chatgpt_account() {
+                            let reset_hint_request_id =
+                                self.chat_widget.start_rate_limit_reset_startup_check();
+                            self.refresh_rate_limits(
+                                app_server,
+                                RateLimitRefreshOrigin::StartupPrefetch { reset_hint_request_id },
+                            );
+                        }
+                        self.chat_widget.on_auth_reload_completed(response.changed);
+                    }
+                    Err(error) => {
+                        self.chat_widget
+                            .add_error_message(format!("Profile switch failed: {error:#}"));
+                    }
+                }
+            }
+            AppEvent::OpenAuthProfilePicker => {
+                self.chat_widget.show_auth_profile_picker();
+            }
             AppEvent::FatalExitRequest(message) => {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }
@@ -1839,6 +1901,13 @@ impl App {
             AppEvent::FileSearchResult { query, matches } => {
                 self.chat_widget.apply_file_search_result(query, matches);
             }
+            AppEvent::AuthFileChanged => {
+                self.handle_auth_file_changed(app_server, /*attempt*/ 1)
+                    .await;
+            }
+            AppEvent::AuthFileChangedRetry { attempt } => {
+                self.handle_auth_file_changed(app_server, attempt).await;
+            }
             AppEvent::TaskSearchResult {
                 thread_id,
                 query,
@@ -1947,6 +2016,7 @@ impl App {
                             for snapshot in snapshots {
                                 self.chat_widget.on_rate_limit_snapshot(Some(snapshot));
                             }
+                            tui.frame_requester().schedule_frame();
                         }
                         RateLimitRefreshOrigin::StartupPrefetch {
                             reset_hint_request_id,
@@ -3467,6 +3537,10 @@ impl App {
                 {
                     tui.frame_requester().schedule_frame();
                 }
+            }
+            AppEvent::StatusHeaderGitStatusUpdated { cwd, summary } => {
+                self.chat_widget.set_status_header_git_status(cwd, summary);
+                tui.frame_requester().schedule_frame();
             }
             AppEvent::StatusLineSetupCancelled => {
                 self.chat_widget.cancel_status_line_setup();

@@ -178,7 +178,7 @@ fn archive_footer_shows_shortcut_for_resume_sessions() {
         .join("\n");
 
     insta::assert_snapshot!(footer, @"
-    enter resume   ⌃a archive   esc start new   ⌃c quit   tab focus sort/filter   ←/→ change option
+    enter resume   ⌃a archive   ⌃r rename   esc start new   ⌃c quit   tab focus sort/filter   ←/→ change option
     ⌃o dense view   ⌃t transcript   ⌃e expand   ↑/↓ browse
     ");
 }

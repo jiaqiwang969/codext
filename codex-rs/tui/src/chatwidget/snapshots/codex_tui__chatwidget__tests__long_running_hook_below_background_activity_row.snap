@@ -7,6 +7,8 @@ expression: "format!(\"80 columns:\\n{}\\n120 columns:\\n{}\", hook_status_frame
 "• Working (0s • esc to interrupt) · 1 background terminal running · /ps to view…"
 "  └ checking command policy for deployment commands, production credentials, an…"
 "                                                                                "
+"   GPT-5.6-Sol default │  /tmp/project                                        "
+"                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "
 "                                                                                "
@@ -15,6 +17,8 @@ expression: "format!(\"80 columns:\\n{}\\n120 columns:\\n{}\", hook_status_frame
 "                                                                                                                        "
 "• Working (0s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close                        "
 "  └ checking command policy for deployment commands, production credentials, and paths containing 日本語 before continu…" Hidden by multi-width symbols: [(99, " "), (101, " "), (103, " ")]
+"                                                                                                                        "
+"   GPT-5.6-Sol default │  /tmp/project                                                                                "
 "                                                                                                                        "
 "                                                                                                                        "
 "› Ask Codex to do anything                                                                                              "

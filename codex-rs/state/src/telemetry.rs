@@ -54,6 +54,7 @@ pub(crate) enum DbKind {
     Memories,
     Queue,
     ThreadHistory,
+    Superagent,
 }
 
 impl DbKind {
@@ -65,6 +66,7 @@ impl DbKind {
             Self::Memories => "memories",
             Self::Queue => "queue",
             Self::ThreadHistory => "thread_history",
+            Self::Superagent => "superagent",
         }
     }
 }

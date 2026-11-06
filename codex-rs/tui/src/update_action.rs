@@ -1,8 +1,8 @@
-#[cfg(any(not(debug_assertions), test))]
+#[cfg(test)]
 use codex_install_context::InstallContext;
-#[cfg(any(not(debug_assertions), test))]
+#[cfg(test)]
 use codex_install_context::InstallMethod;
-#[cfg(any(not(debug_assertions), test))]
+#[cfg(test)]
 use codex_install_context::StandalonePlatform;
 
 /// Update action the CLI should perform after the TUI exits.
@@ -10,13 +10,13 @@ use codex_install_context::StandalonePlatform;
 pub enum UpdateAction {
     /// Replace the local daemon after restoring the terminal.
     Daemon(DaemonUpdateSource),
-    /// Update via `npm install -g @openai/codex@latest`.
+    /// Update via `npm install -g @loongphy/codext@latest`.
     NpmGlobalLatest,
-    /// Update via `bun install -g @openai/codex@latest`.
+    /// Update via `bun install -g @loongphy/codext@latest`.
     BunGlobalLatest,
-    /// Update via `vp install -g @openai/codex@latest`.
+    /// Update via `vp install -g @loongphy/codext@latest`.
     VitePlusGlobalLatest,
-    /// Update via `pnpm add -g @openai/codex@latest`.
+    /// Update via `pnpm add -g @loongphy/codext@latest`.
     PnpmGlobalLatest,
     /// Update via `brew upgrade codex`.
     BrewUpgrade,
@@ -27,7 +27,7 @@ pub enum UpdateAction {
 }
 
 impl UpdateAction {
-    #[cfg(any(not(debug_assertions), test))]
+    #[cfg(test)]
     pub(crate) fn from_install_context(context: &InstallContext) -> Option<Self> {
         match &context.method {
             InstallMethod::Npm => Some(UpdateAction::NpmGlobalLatest),
@@ -47,10 +47,10 @@ impl UpdateAction {
     pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
         match self {
             UpdateAction::Daemon(source) => ("codex", source.command_args()),
-            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
-            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
-            UpdateAction::VitePlusGlobalLatest => ("vp", &["install", "-g", "@openai/codex"]),
-            UpdateAction::PnpmGlobalLatest => ("pnpm", &["add", "-g", "@openai/codex"]),
+            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@loongphy/codext"]),
+            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@loongphy/codext"]),
+            UpdateAction::VitePlusGlobalLatest => ("vp", &["install", "-g", "@loongphy/codext"]),
+            UpdateAction::PnpmGlobalLatest => ("pnpm", &["add", "-g", "@loongphy/codext"]),
             UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
             UpdateAction::StandaloneUnix => (
                 "sh",
@@ -81,7 +81,8 @@ impl UpdateAction {
 
 #[cfg(not(debug_assertions))]
 pub fn get_update_action() -> Option<UpdateAction> {
-    UpdateAction::from_install_context(InstallContext::current())
+    // This fork is updated with a tested local package after user acceptance.
+    None
 }
 
 #[cfg(test)]

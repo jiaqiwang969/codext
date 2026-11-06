@@ -1,0 +1,5 @@
+---
+source: tui/src/resume_picker/rename_tests.rs
+expression: "search_line(&state, 80).to_string()"
+---
+Rename: Candidate review

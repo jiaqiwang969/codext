@@ -2,6 +2,9 @@
 source: tui/src/chatwidget/tests/popups_and_settings.rs
 expression: snapshot
 ---
+   GPT-5.6-Sol default │  /tmp/project
+
+
 › Google Drive  [App] Connected files
 
   enter insert · esc close

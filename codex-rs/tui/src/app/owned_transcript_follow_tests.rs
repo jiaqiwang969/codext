@@ -43,7 +43,7 @@ async fn follow_control_click_preserves_draft_caret_and_composer_geometry() -> R
                 /*replay_kind*/ None,
             );
         }
-        let size = Size::new(width, /*height*/ 12);
+        let size = Size::new(width, /*height*/ 14);
         tui.screen_size_for_event(&TuiEvent::Resize(size))?;
         app.transcript_view.jump_to_latest();
         let bottom = app.render_owned_transcript(&mut tui, size)?;
@@ -67,7 +67,7 @@ async fn follow_control_click_preserves_draft_caret_and_composer_geometry() -> R
         let first_row = scrolled.lines().next().expect("visible transcript row");
         assert!(first_row.contains("transcript row"));
         let area = Rect::new(
-            /*x*/ 4, /*y*/ 1, /*width*/ 30, /*height*/ 10,
+            /*x*/ 4, /*y*/ 1, /*width*/ 30, /*height*/ 12,
         );
         let frames = tui.frame_requester();
         let mut painted = Default::default();
@@ -91,7 +91,7 @@ async fn follow_control_click_preserves_draft_caret_and_composer_geometry() -> R
             painted = app.paint_conversation(frame, &prepared);
         })?;
         app.finish_conversation(&mut tui, painted)?;
-        for height in [24, 9, 8, 12] {
+        for height in [24, 9, 8, 14] {
             let resized = Size::new(width, height);
             tui.screen_size_for_event(&TuiEvent::Resize(resized))?;
             app.render_owned_transcript(&mut tui, resized)?;

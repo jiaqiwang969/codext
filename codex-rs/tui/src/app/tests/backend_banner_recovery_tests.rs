@@ -69,7 +69,7 @@ async fn luna_reserve_periodic_refresh_adapts_without_an_experiment_banner() -> 
     set_chatgpt_auth(&mut app.chat_widget);
     let mut session = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
-    for (used, seconds) in [(10, 60), (75, 30), (90, 15), (99, 5), (20, 60)] {
+    for (used, seconds) in [(10, 15), (75, 15), (90, 15), (99, 5), (20, 15)] {
         backend.reset().await;
         Mock::given(method("GET"))
             .and(path("/api/codex/usage"))

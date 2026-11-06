@@ -298,12 +298,13 @@ async fn installed_extension_uses_http_after_warm_socket_auth_expires() -> Resul
     let mut builder = ExtensionRegistryBuilder::new();
     super::install(
         &mut builder,
-        auth_manager.clone(),
+        AuthManager::from_auth_for_testing(CodexAuth::from_api_key("default")),
         Arc::downgrade(&test.thread_manager),
     );
     let registry = builder.build();
     let session_store = ExtensionData::new("session-1");
     let thread_store = test.codex.thread_extension_data();
+    thread_store.insert(codex_core::ThreadAuthManager(auth_manager.clone()));
     let mut model = test
         .thread_manager
         .get_models_manager()

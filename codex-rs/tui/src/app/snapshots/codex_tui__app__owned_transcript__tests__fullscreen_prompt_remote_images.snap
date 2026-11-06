@@ -1,12 +1,11 @@
 ---
 source: tui/src/app/owned_transcript_tests.rs
-assertion_line: 1654
 expression: "normalize_snapshot_paths(frames.join(\"\\n\\n\"))"
 ---
 Draft
 History stays visible
 
-
+   GPT-5.6-Sol default │  /tmp/project
 
 
   [Image #1]
@@ -20,7 +19,7 @@ History stays visible
 Up
 History stays visible
 
-
+   GPT-5.6-Sol default │  /tmp/project
 
 
   [Image #11]
@@ -34,7 +33,7 @@ History stays visible
 Up
 History stays visible
 
-
+   GPT-5.6-Sol default │  /tmp/project
 
 
   [Image #10]
@@ -48,7 +47,7 @@ History stays visible
 Delete
 History stays visible
 
-
+   GPT-5.6-Sol default │  /tmp/project
 
 
   [Image #10]
@@ -62,7 +61,7 @@ History stays visible
 Down
 History stays visible
 
-
+   GPT-5.6-Sol default │  /tmp/project
 
 
   [Image #1]

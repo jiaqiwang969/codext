@@ -25,6 +25,7 @@ use crate::app_server_session::AppServerSession;
 use crate::app_server_session::AppServerStartedThread;
 use crate::app_server_session::TurnPermissionsOverride;
 use crate::app_server_session::app_server_rate_limit_snapshots;
+use crate::auth_watch::AuthWatch;
 use crate::bottom_pane::AppLinkViewParams;
 use crate::bottom_pane::ApplyPatchApprovalRequest;
 use crate::bottom_pane::ApprovalRequest;
@@ -208,6 +209,7 @@ pub(crate) mod agents_overview_discovery;
 mod agents_overview_threads;
 mod agents_overview_usage;
 mod agents_overview_view;
+mod auth_reload;
 pub(crate) use agents_overview::AGENTS_OVERVIEW_VIEW_ID;
 mod activity_groups;
 mod app_server_event_targets;
@@ -544,6 +546,9 @@ pub(crate) struct App {
     pub(crate) app_event_tx: AppEventSender,
     pub(crate) chat_widget: ChatWidget,
     workspace_command_runner: Option<WorkspaceCommandRunner>,
+    /// Watches the selected account auth file and emits reload events while the TUI runs.
+    /// Kept alive for the lifetime of `App`; the watcher stops on drop.
+    _auth_watch: Option<AuthWatch>,
     /// Legacy bootstrap and server-setting inputs; local preferences live in `local_settings`.
     pub(crate) config: Config,
     pub(crate) local_settings: crate::local_settings::LocalSettings,
@@ -982,6 +987,23 @@ impl App {
                 .handle_warning_event(&event, &self.transcript_cells)
         {
             self.cancel_primed_browsing_for_event(&event);
+            return Ok(AppRunControl::Continue);
+        }
+
+        // The composer owns the normal left-arrow path, but transcript selection and pending
+        // chords can otherwise consume the event before the composer sees it. Keep the footer
+        // shortcut reliable at the app boundary while preserving the same empty-prompt rules.
+        if !transcript_owns_input
+            && let TuiEvent::Key(key) = &event
+            && key.kind == KeyEventKind::Press
+            && crate::key_hint::plain(KeyCode::Left).is_press(*key)
+            && matches!(self.app_server_target, AppServerTarget::LocalDaemon { .. })
+            && self.overlay.is_none()
+            && self.chat_widget.no_modal_or_popup_active()
+            && self.chat_widget.agents_navigation_available()
+        {
+            self.cancel_primed_browsing_for_event(&event);
+            self.app_event_tx.send(AppEvent::OpenAgentsOverview);
             return Ok(AppRunControl::Continue);
         }
 

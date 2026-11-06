@@ -484,6 +484,9 @@ impl ChatWidget {
             SlashCommand::Logout => {
                 self.app_event_tx.send(AppEvent::Logout);
             }
+            SlashCommand::Profile => {
+                self.show_auth_profile_picker();
+            }
             SlashCommand::Copy => {
                 self.show_copy_picker();
             }
@@ -811,6 +814,11 @@ impl ChatWidget {
             SlashCommand::Statusline => {
                 self.handle_status_line_command_args(trimmed);
                 self.app_event_tx.send(AppEvent::SettingsSelectionClosed);
+            }
+            SlashCommand::Profile if !trimmed.is_empty() => {
+                self.app_event_tx.send(AppEvent::SwitchAuthProfile {
+                    name: trimmed.to_string(),
+                });
             }
             SlashCommand::Permissions
                 if self.windows_sandbox_local_server
@@ -1286,6 +1294,7 @@ impl ChatWidget {
         match cmd {
             SlashCommand::Ide
             | SlashCommand::Status
+            | SlashCommand::Profile
             | SlashCommand::Daemon
             | SlashCommand::Pwd
             | SlashCommand::Usage

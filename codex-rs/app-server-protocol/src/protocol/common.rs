@@ -741,6 +741,12 @@ client_request_definitions! {
         serialization: global("memory"),
         response: v2::MemoryResetResponse,
     },
+    #[experimental("superagent/status")]
+    SuperagentStatus => "superagent/status" {
+        params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
+        serialization: global("superagent"),
+        response: v2::SuperagentStatusResponse,
+    },
     #[experimental("rollout/compress")]
     /// Start a best-effort background compression pass for cold local rollouts.
     RolloutCompress => "rollout/compress" {
@@ -1390,6 +1396,12 @@ client_request_definitions! {
         response: v2::LogoutAccountResponse,
     },
 
+    SwitchAuthProfile => "account/profile/switch" {
+        params: v2::SwitchAuthProfileParams,
+        serialization: None,
+        response: v2::SwitchAuthProfileResponse,
+    },
+
     GetAccountRateLimits => "account/rateLimits/read" {
         params: #[ts(optional, as = "Option<GetAccountRateLimitsParamsTypeScript>", inline)] #[serde(default, skip_serializing_if = "Option::is_none")] v2::NullableGetAccountRateLimitsParams,
         serialization: None,
@@ -1534,6 +1546,14 @@ client_request_definitions! {
         params: v2::GetAccountParams,
         serialization: global("account-auth"),
         response: v2::GetAccountResponse,
+    },
+
+    /// Reloads the auth snapshot from storage when no turn is running and
+    /// returns the refreshed account state.
+    ReloadAccount => "account/reload" {
+        params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
+        serialization: global("account-auth"),
+        response: v2::ReloadAccountResponse,
     },
 
     /// DEPRECATED APIs below

@@ -5079,6 +5079,35 @@ class SubagentMigration(BaseModel):
     name: str
 
 
+class SwitchAuthProfileParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    name: str
+    thread_id: Annotated[
+        str | None,
+        Field(
+            alias="threadId",
+            description="Also switch this thread, persisting the selection before cold resume when unloaded. Omission only selects the connection default.",
+        ),
+    ] = None
+
+
+class SwitchAuthProfileResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    changed: bool
+    name: str
+    thread_id: Annotated[
+        str | None,
+        Field(
+            alias="threadId",
+            description="The thread whose binding was switched, or null for a connection-only selection.",
+        ),
+    ] = None
+
+
 class TerminalInteractionNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -5342,6 +5371,20 @@ class ThreadExtra(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    account_id: Annotated[
+        str | None,
+        Field(
+            alias="accountId",
+            description="Provider account id recorded when the thread was created, if available.",
+        ),
+    ] = None
+    account_profile: Annotated[
+        str | None,
+        Field(
+            alias="accountProfile",
+            description="Account-pool profile captured by the live thread runtime, if selected.",
+        ),
+    ] = None
 
 
 class ThreadGoalClearResponse(BaseModel):
@@ -7921,6 +7964,17 @@ class AccountLogoutRequest(BaseModel):
     params: Annotated[None, Field(None)] = None
 
 
+class AccountProfileSwitchRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[
+        Literal["account/profile/switch"], Field(title="Account/profile/switchRequestMethod")
+    ]
+    params: SwitchAuthProfileParams
+
+
 class AccountRateLimitsReadRequest(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -8057,6 +8111,15 @@ class AccountReadRequest(BaseModel):
     id: RequestId
     method: Annotated[Literal["account/read"], Field(title="Account/readRequestMethod")]
     params: GetAccountParams
+
+
+class AccountReloadRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[Literal["account/reload"], Field(title="Account/reloadRequestMethod")]
+    params: Annotated[None, Field(None)] = None
 
 
 class FuzzyFileSearchRequest(BaseModel):
@@ -9509,6 +9572,28 @@ class RawResponseCompletedNotification(BaseModel):
     turn_id: Annotated[str, Field(alias="turnId")]
     usage: TokenUsageBreakdown | None = None
     usage_metadata: Annotated[ResponseUsageMetadata | None, Field(alias="usageMetadata")] = None
+
+
+class ReloadAccountResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    account: Account | None = None
+    auth_changed: Annotated[
+        bool,
+        Field(
+            alias="authChanged",
+            description="Whether this request reloaded a different auth snapshot from storage.",
+        ),
+    ]
+    auth_reload_skipped: Annotated[
+        bool | None,
+        Field(
+            alias="authReloadSkipped",
+            description="Whether the storage reload was skipped because a turn is running somewhere on this (possibly shared) app-server. When true, `account` and `auth_changed` reflect the previously cached auth, not storage.",
+        ),
+    ] = False
+    requires_openai_auth: Annotated[bool, Field(alias="requiresOpenaiAuth")]
 
 
 class MessageResponseItem(BaseModel):
@@ -13368,6 +13453,7 @@ class ClientRequest(
         | AccountLoginStartRequest
         | AccountLoginCancelRequest
         | AccountLogoutRequest
+        | AccountProfileSwitchRequest
         | AccountRateLimitsReadRequest
         | AccountRateLimitResetCreditConsumeRequest
         | AccountUsageReadRequest
@@ -13388,6 +13474,7 @@ class ClientRequest(
         | ConfigBatchWriteRequest
         | ConfigRequirementsReadRequest
         | AccountReadRequest
+        | AccountReloadRequest
         | FuzzyFileSearchRequest
     ]
 ):
@@ -13477,6 +13564,7 @@ class ClientRequest(
         | AccountLoginStartRequest
         | AccountLoginCancelRequest
         | AccountLogoutRequest
+        | AccountProfileSwitchRequest
         | AccountRateLimitsReadRequest
         | AccountRateLimitResetCreditConsumeRequest
         | AccountUsageReadRequest
@@ -13497,6 +13585,7 @@ class ClientRequest(
         | ConfigBatchWriteRequest
         | ConfigRequirementsReadRequest
         | AccountReadRequest
+        | AccountReloadRequest
         | FuzzyFileSearchRequest,
         Field(description="Request from the client to the server.", title="ClientRequest"),
     ]

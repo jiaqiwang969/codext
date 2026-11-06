@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Selects the credential profile for a connection and, when requested, replaces the account binding of an idle or unloaded thread without changing its conversation.",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "threadId": {
+      "description": "Also switch this thread, persisting the selection before cold resume when unloaded. Omission only selects the connection default.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "SwitchAuthProfileParams",
+  "type": "object"
+}

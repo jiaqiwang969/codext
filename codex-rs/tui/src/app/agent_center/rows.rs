@@ -10,28 +10,39 @@ use crate::bottom_pane::selection_style;
 use crate::resume_picker::format_relative_time;
 use crate::status::format_directory_display;
 
-fn columns(area: Rect) -> (Rect, Rect, Rect) {
-    let metadata = if area.width >= 56 { 24 } else { 0 };
+fn columns(area: Rect) -> (Rect, Rect, Rect, Rect) {
+    let account_width = if area.width >= 80 { 16 } else { 0 };
+    let status_width = if area.width >= 56 { 11 } else { 0 };
+    let updated_width = if area.width >= 56 { 9 } else { 0 };
     let gutter = area.width.min(/*other*/ 4);
+    let updated_x = area.right().saturating_sub(updated_width);
+    let updated = Rect::new(updated_x, area.y, updated_width, area.height);
+    let status = Rect::new(
+        updated_x.saturating_sub(2 + status_width),
+        area.y,
+        status_width,
+        area.height,
+    );
+    let account = Rect::new(
+        status.x.saturating_sub(2 + account_width),
+        area.y,
+        account_width,
+        area.height,
+    );
+    let metadata_start = if account_width > 0 {
+        account.x.saturating_sub(2)
+    } else if status_width > 0 {
+        status.x.saturating_sub(2)
+    } else {
+        area.right()
+    };
     let title = Rect::new(
         area.x + gutter,
         area.y,
-        area.width - gutter - metadata,
+        metadata_start.saturating_sub(area.x + gutter),
         area.height,
     );
-    let updated = Rect::new(
-        area.right() - metadata.min(/*other*/ 9),
-        area.y,
-        metadata.min(/*other*/ 9),
-        area.height,
-    );
-    let status = Rect::new(
-        title.right() + metadata.min(/*other*/ 2),
-        area.y,
-        if metadata == 24 { 11 } else { 0 },
-        area.height,
-    );
-    (title, status, updated)
+    (title, account, status, updated)
 }
 
 impl AgentsOverviewView {
@@ -77,8 +88,12 @@ impl AgentsOverviewView {
         let padding = u16::from(area.height >= 3);
         let viewport = row(area, padding, area.height - padding * 2);
         if padding > 0 {
-            let (title, status, updated) = columns(row(area, /*offset*/ 0, /*height*/ 1));
+            let (title, account, status, updated) =
+                columns(row(area, /*offset*/ 0, /*height*/ 1));
             line("Tasks".dim(), title, buf);
+            if !account.is_empty() {
+                line("Account".dim(), account, buf);
+            }
             line("Status".dim(), status, buf);
             Line::from("Updated".dim())
                 .right_aligned()
@@ -221,7 +236,7 @@ impl AgentsOverviewView {
                 ),
                 buf,
             );
-            let (mut title, status_area, updated) = columns(rect);
+            let (mut title, account_area, status_area, updated) = columns(rect);
             if task.has_voice && title.width >= 8 {
                 let badge = Rect::new(
                     title.right() - 8,
@@ -251,6 +266,13 @@ impl AgentsOverviewView {
                     task_title
                 };
             line(Line::from(task_title).style(title_style), title, buf);
+            if !account_area.is_empty() {
+                line(
+                    Line::from(account_profile_name(&task.thread).to_owned()).style(style),
+                    account_area,
+                    buf,
+                );
+            }
             line(Line::from(status).style(style), status_area, buf);
             if !updated.is_empty() {
                 let age = format_relative_time(

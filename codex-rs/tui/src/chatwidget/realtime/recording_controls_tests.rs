@@ -135,7 +135,7 @@ async fn voice_preserves_the_normal_composer_prompt() {
     assert_eq!(prompt(&mut chat), Some('›'));
     chat.reset_realtime_conversation();
     assert_eq!(
-        render_bottom_popup(&chat, /*width*/ 80).chars().next(),
+        prompt(&mut chat),
         Some('›')
     );
 }

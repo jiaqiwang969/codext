@@ -17,6 +17,8 @@ expression: "render_bottom_popup(&chat, 48)"
 • Queued follow-up inputs
   ↳ /model gpt-5.5 --reasoning=high --speed=fast
     ⇧← edit last queued message
+   GPT-5.5 default │  /tmp/project
+
 
 › Review the current changes
   for safety

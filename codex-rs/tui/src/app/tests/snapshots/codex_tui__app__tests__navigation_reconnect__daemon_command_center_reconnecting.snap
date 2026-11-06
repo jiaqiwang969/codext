@@ -10,6 +10,7 @@ expression: "render_bottom_popup(&app.chat_widget, 100)"
   /tmp/project  2                                         │ Selected task
   › ● Selected task                                       │ ● Working
     ○ Vanished task                                       │
+                                                          │ Profile: default
                                                           │ Model: Unknown
                                                           │ Reasoning: Unknown
                                                           │
@@ -18,7 +19,6 @@ expression: "render_bottom_popup(&app.chat_widget, 100)"
                                                           │
                                                           │ Prompt
                                                           │ Selected task
-                                                          │
                                                           │
                                                           │
                                                           │

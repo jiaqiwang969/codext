@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::sync::Weak;
 
+use codex_core::ThreadAuthManager;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_core::context::GuardianReviewEvidence;
@@ -72,9 +73,14 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
                     .constrain_guardian_policy(&mut policy, &model.slug);
             }
             let scoring_enabled = policy.scoring_enabled();
+            let auth_manager = input
+                .thread_store
+                .get::<ThreadAuthManager>()
+                .map(|auth| Arc::clone(&auth.0))
+                .unwrap_or_else(|| Arc::clone(&self.auth_manager));
             let sampler_config = super::startup::sampler_config(
                 &input,
-                Arc::clone(&self.auth_manager),
+                Arc::clone(&auth_manager),
                 self.thread_manager.upgrade(),
             )
             .await;
@@ -101,7 +107,7 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
                 .features
                 .enabled(Feature::GuardianV2DecisionsComparison)
                 && let Some(decisions_sampler) =
-                    super::startup::decisions_sampler(&input, &self.auth_manager)
+                    super::startup::decisions_sampler(&input, &auth_manager)
             {
                 input.thread_store.insert(decisions_sampler);
             }

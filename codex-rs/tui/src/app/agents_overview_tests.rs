@@ -1008,7 +1008,7 @@ async fn agents_overview_preview_links_survive_wrapping_and_clipping() {
         format!("Opened [a pull request with a label that wraps across rows]({destination}).\n\nMore context that should be clipped in a short preview.\n\nAdditional details."),
     );
     let view = app.agents_overview_view(vec![thread], Some(thread_id));
-    for height in [40, 22] {
+    for height in [40, 23] {
         let area =
             ratatui::layout::Rect::new(/*x*/ 0, /*y*/ 0, /*width*/ 96, height);
         let mut buffer = ratatui::buffer::Buffer::empty(area);
@@ -1672,6 +1672,7 @@ async fn root_switch_preserves_vim_line_yank() -> Result<()> {
     );
     let composer_lines = render_bottom_popup(&app.chat_widget, /*width*/ 80)
         .lines()
+        .skip_while(|line| !line.starts_with('›'))
         .take(2)
         .collect::<Vec<_>>()
         .join("\n");

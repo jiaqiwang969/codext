@@ -1,15 +1,14 @@
 ---
 source: tui/src/app/turn_tips_tests.rs
-assertion_line: 387
 expression: "crate::chatwidget::tests::helpers::normalize_snapshot_paths(screens.join(\"\\n\\n\"))"
 ---
 working=true, response rows=1, 80x12
-
-
 Response row 0
 
 • Working (0s • esc to interrupt)
   └ Tip: Try /help.
+
+   gpt-test default │  /tmp/project
 
 
 › Ask Codex to do anything
@@ -18,7 +17,7 @@ Response row 0
   ? for shortcuts
 
 working=true, response rows=1, 80x6
-• Working (0s • esc to interrupt)
+
 
 › Ask Codex to do anything
 
@@ -27,11 +26,11 @@ working=true, response rows=1, 80x6
 
 working=false, response rows=1, 80x12
 › Show a response.
-
 • Done.
-  └ Tip: Try /help.
 
   Worked for [duration] • [completion time]
+
+   gpt-test default │  /tmp/project
 
 
 › Ask Codex to do anything
@@ -57,7 +56,7 @@ Response row 0
 
 
 
-
+   gpt-test default │  /tmp/project
 
 
 › Ask Codex to do anything
@@ -82,9 +81,9 @@ Response row 0
 
 
 
-
-
                                                                Copying 5 chars…
+   gpt-test default │  /tmp/project
+
 
 › Ask Codex to do anything
 
@@ -93,11 +92,11 @@ Response row 0
 
 working=false, response rows=30, 80x12
 › Show a response.
-
 • Done.
-  └ Tip: Try /help.
 
   Worked for [duration] • [completion time]
+
+   gpt-test default │  /tmp/project
 
 
 › Ask Codex to do anything
@@ -106,9 +105,9 @@ working=false, response rows=30, 80x12
   ? for shortcuts
 
 working=false, response rows=1, 80x9
-• Done.
-
   Worked for [duration] • [completion time]
+
+   gpt-test default │  /tmp/project
 
 
 › Ask Codex to do anything
@@ -117,10 +116,10 @@ working=false, response rows=1, 80x9
   ? for shortcuts
 
 working=false, response rows=1, 80x10
-› Show a response.
-• Done.
 
   Worked for [duration] • [completion time]
+
+   gpt-test default │  /tmp/project
 
 
 › Ask Codex to do anything
@@ -129,11 +128,11 @@ working=false, response rows=1, 80x10
   ? for shortcuts
 
 working=false, response rows=1, 80x11
-› Show a response.
 • Done.
-  └ Tip: Try /help.
 
   Worked for [duration] • [completion time]
+
+   gpt-test default │  /tmp/project
 
 
 › Ask Codex to do anything
@@ -143,11 +142,11 @@ working=false, response rows=1, 80x11
 
 working=false, response rows=1, 12x12
 
-• Done.
-
   Worked
   for <1s •
   [completion time]
+
+   gpt-test
 
 
 › Ask Codex

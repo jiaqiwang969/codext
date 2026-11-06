@@ -4,6 +4,8 @@ expression: "timer.replace_all(&normalize_snapshot_paths(render_bottom_popup(&ch
 ---
 • Working (<elapsed> • esc to interrupt)
 
+   GPT-5.6-Sol default │  /tmp/project
+
 
 › Ask Codex to do anything
 

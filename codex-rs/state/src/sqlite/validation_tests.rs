@@ -74,6 +74,26 @@ async fn runtime_opens_recover_or_report_corruption_by_database_policy() -> anyh
         pool.close().await;
         tokio::fs::rename(&fixture, &path).await?;
 
+        if path == sqlite.superagent_db_path() {
+            // The coordinator opens its ledger lazily and must never rebuild away its records.
+            for _ in 0..2 {
+                let pool = crate::open_superagent_db(&sqlite).await?;
+                assert_eq!(
+                    quick_check(&pool, Instant::now() + Duration::from_secs(/*secs*/ 5)).await?,
+                    QuickCheckOutcome::CorruptedNeedsFixed
+                );
+                assert_eq!(
+                    sqlx::query_scalar::<_, i64>("SELECT count(*) FROM kv")
+                        .fetch_one(&pool)
+                        .await?,
+                    0
+                );
+                pool.close().await;
+            }
+            assert!(!home.join("db-backups").exists());
+            continue;
+        }
+
         if path == sqlite.thread_history_db_path() {
             let telemetry = CorruptionTelemetry::default();
             // Unrelated corruption must not disable lazy history reads when the

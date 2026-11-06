@@ -1,3 +1,99 @@
+# Connection-scoped account profiles
+
+The app-server keeps the default `auth.json` and shared thread storage in one
+daemon, while allowing each connection to select an account-pool entry with
+`account/profile/switch` and `{ "name": "profile" }`. A new thread captures
+that profile's authentication, model, plugin, MCP, and workspace-routing
+runtime. Supplying `threadId` also switches that loaded, idle conversation by
+replacing its account runtime while preserving its ID, history, settings, and
+subscriptions. For an unloaded conversation, the server validates the stored
+thread and saves the selected profile before cold resume; it does not load the
+previous account or start the old runtime. Active tasks (including agents) must
+finish or be interrupted first. A closing thread rejects the change until its
+unload completes. The response echoes `threadId` only after any runtime switch
+and the durable binding succeed; clients must check this acknowledgement before
+reporting success.
+
+Explicit CLI account selection for resume uses this thread-scoped switch before
+`thread/resume`, then verifies `thread.extra.accountProfile` before input can be
+submitted. A connection-only profile selection remains a default for new threads
+and does not override resume bindings. Ordinary resume and reconnection preserve
+the saved account; the CLI startup override is not reapplied during navigation.
+
+Explicit thread bindings are stored as profile names (without credentials) in
+`CODEX_HOME/thread-auth-profiles/<threadId>.json`. Cold resume, daemon recovery,
+revert, and fork consult this selection before the immutable creator account.
+Histories without an account fall back to the connection's selected profile.
+Other threads keep their account runtimes. Profile-scoped connections may read and use their selected account,
+but account login/logout and Bedrock credential mutation remain restricted to
+the default auth context so one profile cannot rewrite another profile's files.
+
+Live thread payloads expose the captured profile as `thread.extra.accountProfile`
+and its actual account as `thread.extra.accountId`. The values are also enriched
+on `thread/list`, `thread/read`, and resume, so a shared
+daemon client can show which account owns each active task without changing the
+thread's work context.
+
+The account-pool status helper uses the internal CLI command
+`app-server daemon account-status <name> --timeout-ms 12000`. It opens a dedicated
+WebSocket connection to the local daemon, selects the profile without a
+`threadId`, and reads `account/rateLimits/read` and `account/usage/read`. Output is
+JSON with `limits`, `usage`, and `usage_error`; usage failure preserves a successful
+quota response. The command neither loads credentials nor starts a separate
+app-server, so list queries share the daemon's per-profile refresh locks. An
+unavailable daemon is an error, not a fallback to an independent auth manager.
+
+# Organization coordinator (experimental)
+
+`[features] superagent = true` enables the optional Superagent coordinator. It is
+false by default. The service opens `superagent_1.sqlite` in the configured SQLite
+home only when enabled; this ledger is authoritative and is never automatically
+replaced by an empty database after corruption or a migration error.
+
+After opting into `initialize.capabilities.experimentalApi`, call
+`superagent/status` with no parameters. The response is
+`{ "exitCode": 0, "status": { ... } }`. Status includes initialization, registered
+PMs and their project groups, open tickets, health, queued effects, and questions
+waiting for a person. Exit codes are 0 (healthy), 2 (failed component or stalled
+ticket), and 3 (initialization or PM configuration incomplete). A disabled feature
+returns an RPC error. This status does not prove which account an upstream
+account gateway used for a model request.
+
+PM registrations live in `CODEX_HOME/superagent/pm-threads`. Each line has a
+thread ID and optional `project=`, `repo=`, `base=`, `worktrees=`, and `account=`
+fields. Workers retain independent root threads and worktrees. A PM's tools are
+restricted at creation, cold resume, and account replacement. Human input into
+a PM or worker thread is recorded by the coordinator, including input steered
+into a busy turn.
+
+Thread creation and profile changes reuse app-server's account validation and
+runtime replacement. Cold delivery resumes the saved thread before enqueueing;
+0.166's queue wakes itself, so the host does not start it a second time. Recovery
+reconciliation finishes before effect dispatch starts. Shutdown serializes with
+initialization, stops scheduling, and drains deliveries already in progress.
+Capacity continuation requires a terminal failed turn with no report; stream
+retries alone do not qualify. Assignment/turn receipts and retry counts survive
+restarts, and changed ticket state or active work cancels delayed continuation.
+
+The coordinator runs in the managed daemon as well as in a dedicated
+`--listen unix://...` server. The threads it drives (PM threads and worker
+threads of open tickets) are left to its own startup reconciliation: the daemon
+snapshot skips them, shutdown stops the coordinator's scheduling before the
+snapshot is taken, and a registered `AutomaticTurnArbiter` declines Goal and
+daemon-recovery turns on them (`NotSubmittedReason::DeclinedByDriver`). Queue
+starts stay allowed, since the coordinator delivers through the queue.
+
+The organization's working files default to `CODEX_HOME/superagent`;
+`CODEXT_SUPERAGENT_ROOT` selects another absolute directory. There is no built-in
+worker account pool: `CODEXT_SUPERAGENT_PROFILES` lists profiles, otherwise
+workers use the profile the daemon was launched with. For an isolated candidate,
+set both `CODEX_HOME` and `CODEX_SQLITE_HOME`. Do not reuse production PM
+registrations or pending effects in a candidate smoke check.
+
+See [docs/superagent](../../docs/superagent/README.md) for the Router and how to run it,
+and [the 0.166 integration record](../../docs/superagent/history/superagent-0.166-integration.md)
+for source provenance, build acceptance and gateway boundaries.
+
 # Managed human command checkpoints (experimental)
 
 A matching managed `requirements.toml` prefix rule with `decision = "prompt-user"`

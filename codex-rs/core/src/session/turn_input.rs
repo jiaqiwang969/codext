@@ -28,6 +28,7 @@ use crate::state::ActiveTurn;
 use crate::state::AdditionalContextFormat;
 use crate::state::TurnState;
 use crate::tasks::RegularTask;
+use codex_extension_api::AutomaticTurnInput;
 use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
@@ -501,6 +502,21 @@ async fn start_if_idle(
     if session.input_queue.has_trigger_turn_mailbox_items().await {
         return Ok(TurnInputSubmission::NotSubmitted {
             reason: NotSubmittedReason::PendingTriggerTurn,
+        });
+    }
+    // One driver may own a thread's automatic work; the others stand down instead of starting
+    // a competing turn.
+    if !session
+        .services
+        .extensions
+        .admit_automatic_turn(AutomaticTurnInput {
+            thread_store: &session.services.thread_extension_data,
+            turn_trigger: start.turn_trigger.as_deref(),
+        })
+        .await
+    {
+        return Ok(TurnInputSubmission::NotSubmitted {
+            reason: NotSubmittedReason::DeclinedByDriver,
         });
     }
     // Preserve current-Plan rejection before reservation and settings errors.

@@ -19,6 +19,7 @@ mod nfs_migration;
 mod paths;
 mod runtime;
 mod sqlite;
+mod superagent;
 mod telemetry;
 
 pub use log_db::LogWriteFailureReporter;
@@ -111,6 +112,7 @@ pub use runtime::runtime_db_path_for_corruption_error;
 pub use runtime::sqlite_error_detail_is_lock;
 pub use runtime::sqlite_integrity_check;
 pub use sqlite::RuntimeDbPath;
+pub use superagent::open_superagent_db;
 pub use telemetry::DbTelemetry;
 pub use telemetry::DbTelemetryHandle;
 pub use telemetry::install_process_db_telemetry;

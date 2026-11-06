@@ -8,5 +8,7 @@ expression: "render_bottom_popup(&chat, 100)"
 
   n · new   s · from settings   e · edit   d · delete   esc · close
 
+   GPT-5.5 default │  /tmp/project
+
 
 › Ask Codex to do anything

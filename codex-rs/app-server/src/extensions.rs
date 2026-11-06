@@ -25,6 +25,7 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_queue_extension::QueuedItemService;
 use codex_rollout::state_db::StateDbHandle;
+use codex_superagent_extension::SuperagentService;
 
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
@@ -52,6 +53,14 @@ pub(crate) struct ThreadExtensionDependencies {
 pub(crate) fn thread_extensions(
     config: &Config,
     dependencies: ThreadExtensionDependencies,
+) -> Arc<ExtensionRegistry<Config>> {
+    thread_extensions_with_superagent(config, dependencies, /*superagent*/ None)
+}
+
+pub(crate) fn thread_extensions_with_superagent(
+    config: &Config,
+    dependencies: ThreadExtensionDependencies,
+    superagent: Option<Arc<SuperagentService>>,
 ) -> Arc<ExtensionRegistry<Config>> {
     let ThreadExtensionDependencies {
         sample_responses,
@@ -81,6 +90,9 @@ pub(crate) fn thread_extensions(
     }
     if let Some(queue_service) = queue_service {
         codex_queue_extension::install(&mut builder, queue_service);
+    }
+    if let Some(superagent) = superagent {
+        codex_superagent_extension::install(&mut builder, superagent);
     }
     codex_history_notes_extension::install(&mut builder, auth_manager.clone());
     codex_core::install_agent_message_board(&mut builder, thread_manager.clone());

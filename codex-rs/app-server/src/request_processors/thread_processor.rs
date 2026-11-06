@@ -6,6 +6,9 @@ mod daemon_snapshot;
 
 mod workspace_switching;
 
+#[path = "thread_auth_profile.rs"]
+mod thread_auth_profile;
+
 use super::persisted_resume_settings::PersistedResumeSettings;
 use super::persisted_resume_settings::latest_owned_thread_settings;
 use super::persisted_resume_settings::latest_persisted_model_settings;
@@ -15,12 +18,14 @@ use super::thread_input::can_accept_direct_input;
 use super::thread_input::ensure_direct_input_allowed;
 use super::thread_lifecycle::thread_closing_for_resume;
 use super::*;
+use crate::account_profiles::AccountProfileRegistry;
 use crate::connection_rpc_gate::ConnectionRpcGate;
 use crate::error_code::method_not_found;
 use crate::thread_sample::SampleTask;
 use crate::thread_sample::SampleThread;
 use crate::thread_sample::generate_sample;
 use codex_app_server_protocol::SelectedCapabilityRoot;
+use codex_app_server_protocol::ThreadExtra;
 use codex_app_server_protocol::ThreadHistoryMode as ApiThreadHistoryMode;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadItemsListAnchor;
@@ -505,6 +510,7 @@ pub(crate) struct ThreadRequestProcessor {
     pub(crate) pending_thread_unloads: PendingThreadUnloads,
     pub(super) thread_state_manager: ThreadStateManager,
     pub(super) thread_watch_manager: ThreadWatchManager,
+    pub(super) auth_transition_lock: Arc<Mutex<()>>,
     pub(super) thread_list_state_permit: Arc<Semaphore>,
     pub(super) thread_goal_processor: ThreadGoalRequestProcessor,
     pub(super) state_db: Option<StateDbHandle>,
@@ -514,6 +520,8 @@ pub(crate) struct ThreadRequestProcessor {
     pub(super) skills_watcher: Arc<SkillsWatcher>,
     pub(super) turn_cost_worker: Option<crate::turn_cost_worker::TurnCostWorkerHandle>,
     pub(super) initial_config_warnings: Arc<Vec<ConfigWarningNotification>>,
+    pub(super) account_profiles: Arc<AccountProfileRegistry>,
+    pub(crate) superagent: Option<Arc<codex_superagent_extension::SuperagentService>>,
 }
 
 /// Whether resume attaches a client or restores a cold runtime during daemon startup.
@@ -546,6 +554,7 @@ impl ThreadRequestProcessor {
         pending_thread_unloads: PendingThreadUnloads,
         thread_state_manager: ThreadStateManager,
         thread_watch_manager: ThreadWatchManager,
+        auth_transition_lock: Arc<Mutex<()>>,
         thread_list_state_permit: Arc<Semaphore>,
         thread_goal_processor: ThreadGoalRequestProcessor,
         state_db: Option<StateDbHandle>,
@@ -554,6 +563,7 @@ impl ThreadRequestProcessor {
         turn_cost_worker: Option<crate::turn_cost_worker::TurnCostWorkerHandle>,
         initial_config_warnings: Vec<ConfigWarningNotification>,
         sample_responses: Arc<crate::thread_sample::SampleResponseRegistry>,
+        account_profiles: Arc<AccountProfileRegistry>,
     ) -> Self {
         Self {
             auth_manager,
@@ -566,6 +576,7 @@ impl ThreadRequestProcessor {
             pending_thread_unloads,
             thread_state_manager,
             thread_watch_manager,
+            auth_transition_lock,
             thread_list_state_permit,
             thread_goal_processor,
             state_db,
@@ -575,6 +586,8 @@ impl ThreadRequestProcessor {
             skills_watcher,
             turn_cost_worker,
             initial_config_warnings: Arc::new(initial_config_warnings),
+            account_profiles,
+            superagent: None,
         }
     }
 
@@ -585,6 +598,7 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
+        auth_profile_id: Option<String>,
         request_context: RequestContext,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.thread_start_inner(
@@ -593,7 +607,9 @@ impl ThreadRequestProcessor {
             app_server_client_name,
             app_server_client_version,
             client_mcp_extensions,
+            auth_profile_id,
             request_context,
+            /*started*/ None,
         )
         .await
         .map(|()| None)
@@ -616,6 +632,7 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
+        auth_profile_id: Option<String>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let mut prepared_config = None;
         // Keep the resume future off the request handler's stack.
@@ -625,6 +642,7 @@ impl ThreadRequestProcessor {
             app_server_client_name.clone(),
             app_server_client_version.clone(),
             client_mcp_extensions.clone(),
+            auth_profile_id.clone(),
             &mut prepared_config,
         ))
         .await?
@@ -640,6 +658,7 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
+        auth_profile_id: Option<String>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         // Keep the large fork future out of the shared request dispatcher's stack frame.
         Box::pin(self.thread_fork_inner(
@@ -648,6 +667,7 @@ impl ThreadRequestProcessor {
             app_server_client_name,
             app_server_client_version,
             client_mcp_extensions,
+            auth_profile_id,
         ))
         .await
         .map(|()| None)
@@ -1131,7 +1151,7 @@ impl ThreadRequestProcessor {
             .await;
     }
 
-    async fn thread_unsubscribe_response_inner(
+    pub(super) async fn thread_unsubscribe_response_inner(
         &self,
         params: ThreadUnsubscribeParams,
         connection_id: ConnectionId,
@@ -1241,15 +1261,31 @@ impl ThreadRequestProcessor {
         .await
     }
 
-    async fn thread_start_inner(
+    pub(super) async fn thread_start_inner(
         &self,
         request_id: ConnectionRequestId,
         params: ThreadStartParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
+        auth_profile_id: Option<String>,
         request_context: RequestContext,
+        started: Option<tokio::sync::oneshot::Sender<ThreadId>>,
     ) -> Result<(), JSONRPCErrorError> {
+        let _auth_transition_guard = self.auth_transition_lock.lock().await;
+        if auth_profile_id.is_none() {
+            reload_auth_from_storage_if_idle(
+                &self.auth_manager,
+                &self.thread_manager,
+                &self.config_manager,
+                &self.config,
+                &self.outgoing,
+                &self.thread_watch_manager,
+                "thread/start",
+            )
+            .await;
+        }
+
         let ThreadStartParams {
             model,
             model_provider,
@@ -1343,8 +1379,10 @@ impl ThreadRequestProcessor {
         let config_manager = self.config_manager.clone();
         let thread_store = Arc::clone(&self.thread_store);
         let initial_config_warnings = Arc::clone(&self.initial_config_warnings);
+        let account_profiles = Arc::clone(&self.account_profiles);
         let outgoing = Arc::clone(&listener_task_context.outgoing);
         let error_request_id = request_id.clone();
+        let superagent = self.superagent.clone();
         let thread_start_task = async move {
             if let Err(error) = Self::thread_start_task(
                 listener_task_context,
@@ -1354,6 +1392,10 @@ impl ThreadRequestProcessor {
                 app_server_client_name,
                 app_server_client_version,
                 client_mcp_extensions,
+                auth_profile_id,
+                account_profiles,
+                superagent,
+                started,
                 config,
                 typesafe_overrides,
                 dynamic_tools,
@@ -1436,6 +1478,10 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
+        auth_profile_id: Option<String>,
+        account_profiles: Arc<AccountProfileRegistry>,
+        superagent: Option<Arc<codex_superagent_extension::SuperagentService>>,
+        started: Option<tokio::sync::oneshot::Sender<ThreadId>>,
         config_overrides: Option<HashMap<String, serde_json::Value>>,
         typesafe_overrides: ConfigOverrides,
         dynamic_tools: Option<Vec<DynamicToolSpec>>,
@@ -1584,6 +1630,14 @@ impl ThreadRequestProcessor {
             thread_extension_init.insert(selected_capability_roots);
         }
         let mut start_options = StartThreadOptions::new(config);
+        start_options.runtime = account_profiles
+            .runtime_for_profile(
+                &listener_task_context.thread_manager,
+                &start_options.config,
+                auth_profile_id.as_deref(),
+            )
+            .await
+            .map_err(invalid_params)?;
         let reserved_thread_id = if start_options.config.ephemeral {
             None
         } else {
@@ -1602,6 +1656,11 @@ impl ThreadRequestProcessor {
         let thread_id = reserved_thread_id
             .unwrap_or_else(|| listener_task_context.thread_manager.reserve_thread_id());
         start_options.reserved_thread_id = Some(thread_id);
+        if let Some(policy) =
+            crate::superagent_host::thread_tool_policy(superagent.as_deref(), thread_id)
+        {
+            thread_extension_init.insert(policy);
+        }
         // Startup can prewarm the Responses socket before start_thread returns.
         // Register the creating client first so that handshake can request attestation.
         listener_task_context
@@ -1686,6 +1745,10 @@ impl ThreadRequestProcessor {
             &config_snapshot,
             session_configured.rollout_path.clone(),
         );
+        thread.extra = auth_profile_id.clone().map(|account_profile| ThreadExtra {
+            account_profile: Some(account_profile),
+            account_id: None,
+        });
         thread.project_id = project_id.clone();
         thread.daybreak_enabled = daybreak_enabled;
 
@@ -1735,6 +1798,9 @@ impl ThreadRequestProcessor {
             thread_response_active_permission_profile(config_snapshot.active_permission_profile);
         let thread_originator = config_snapshot.originator.clone();
 
+        if let Some(started) = started {
+            let _ = started.send(thread_id);
+        }
         let response = ThreadStartResponse {
             thread: thread.clone(),
             disabled_plugin_ids: config_snapshot.disabled_plugin_ids,
@@ -2489,6 +2555,17 @@ impl ThreadRequestProcessor {
             )
             .await?;
         let response_history = thread_history.clone();
+        let runtime = self
+            .account_profiles
+            .runtime_for_account_id(
+                &self.thread_manager,
+                &config,
+                Some(thread_id),
+                thread_history.get_session_account_id().as_deref(),
+                /*fallback_profile_id*/ None,
+            )
+            .await
+            .map_err(invalid_params)?;
         let NewThread {
             thread_id: resumed_thread_id,
             thread: codex_thread,
@@ -2496,13 +2573,13 @@ impl ThreadRequestProcessor {
             ..
         } = self
             .thread_manager
-            .resume_thread_with_history(
-                config,
-                thread_history,
-                self.auth_manager.clone(),
-                self.request_trace_context(request_id).await,
+            .start_thread(StartThreadOptions {
+                runtime,
+                initial_history: thread_history,
+                parent_trace: self.request_trace_context(request_id).await,
                 client_mcp_extensions,
-            )
+                ..StartThreadOptions::new(config)
+            })
             .await
             .map_err(|err| internal_error(format!("error reloading thread after revert: {err}")))?;
         if resumed_thread_id != thread_id {
@@ -2731,7 +2808,7 @@ impl ThreadRequestProcessor {
         Ok(ThreadApproveGuardianDeniedActionResponse {})
     }
 
-    async fn thread_list_response_inner(
+    pub(super) async fn thread_list_response_inner(
         &self,
         params: ThreadListParams,
     ) -> Result<ThreadListResponse, JSONRPCErrorError> {
@@ -2877,11 +2954,12 @@ impl ThreadRequestProcessor {
         let fallback_provider = self.config.model_provider_id.clone();
 
         for stored_thread in stored_threads {
-            let (thread, _) = thread_from_stored_thread(
+            let (mut thread, _) = thread_from_stored_thread(
                 stored_thread,
                 fallback_provider.as_str(),
                 &self.config.cwd,
             );
+            self.resolve_thread_account_profile(&mut thread).await;
             data.push(thread);
         }
 
@@ -2997,11 +3075,12 @@ impl ThreadRequestProcessor {
         let fallback_provider = self.config.model_provider_id.clone();
         let mut data = Vec::with_capacity(search_results.len());
         for result in search_results {
-            let (thread, _) = thread_from_stored_thread(
+            let (mut thread, _) = thread_from_stored_thread(
                 result.thread,
                 fallback_provider.as_str(),
                 &self.config.cwd,
             );
+            self.resolve_thread_account_profile(&mut thread).await;
             data.push(ThreadSearchResult {
                 thread,
                 snippet: result.snippet,
@@ -3170,6 +3249,7 @@ impl ThreadRequestProcessor {
         };
 
         thread.daybreak_enabled = thread.daybreak_enabled.or(pending_daybreak_enabled);
+        self.resolve_thread_account_profile(&mut thread).await;
 
         let has_live_in_progress_turn = if let Some(loaded_thread) = loaded_thread.as_ref() {
             matches!(loaded_thread.agent_status().await, AgentStatus::Running)
@@ -3329,7 +3409,7 @@ impl ThreadRequestProcessor {
         Ok(())
     }
 
-    async fn thread_turns_list_response_inner(
+    pub(super) async fn thread_turns_list_response_inner(
         &self,
         params: ThreadTurnsListParams,
     ) -> Result<ThreadTurnsListResponse, JSONRPCErrorError> {
@@ -3929,8 +4009,23 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
+        auth_profile_id: Option<String>,
         prepared_config: &mut Option<PreparedResumeConfig>,
     ) -> Result<ControlFlow<()>, JSONRPCErrorError> {
+        let _auth_transition_guard = self.auth_transition_lock.lock().await;
+        if auth_profile_id.is_none() {
+            reload_auth_from_storage_if_idle(
+                &self.auth_manager,
+                &self.thread_manager,
+                &self.config_manager,
+                &self.config,
+                &self.outgoing,
+                &self.thread_watch_manager,
+                "thread/resume",
+            )
+            .await;
+        }
+
         if let Ok(thread_id) = ThreadId::from_string(&params.thread_id)
             && self
                 .pending_thread_unloads
@@ -4331,9 +4426,36 @@ impl ThreadRequestProcessor {
         }
         let response_history = thread_history.clone();
 
+        let runtime = self
+            .account_profiles
+            .runtime_for_account_id(
+                &self.thread_manager,
+                &config,
+                match &thread_history {
+                    InitialHistory::Resumed(resumed) => Some(resumed.conversation_id),
+                    InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => {
+                        None
+                    }
+                },
+                thread_history.get_session_account_id().as_deref(),
+                auth_profile_id.as_deref(),
+            )
+            .await
+            .map_err(invalid_params)?;
+        let mut resume_extension_init = ExtensionDataInit::new();
+        if let InitialHistory::Resumed(resumed) = &thread_history
+            && let Some(policy) = crate::superagent_host::thread_tool_policy(
+                self.superagent.as_deref(),
+                resumed.conversation_id,
+            )
+        {
+            resume_extension_init.insert(policy);
+        }
         match self
             .thread_manager
             .start_thread(StartThreadOptions {
+                runtime,
+                thread_extension_init: resume_extension_init,
                 initial_history: thread_history,
                 parent_trace: match target {
                     ThreadResumeTarget::Client(request_id) => {
@@ -4834,6 +4956,8 @@ impl ThreadRequestProcessor {
             thread_summary.session_id = existing_thread.startup_metadata().session_id.to_string();
             thread_summary.thread_source = config_snapshot.thread_source.clone().map(Into::into);
             apply_live_thread_settings(&mut thread_summary, &config_snapshot);
+            self.resolve_thread_account_profile(&mut thread_summary)
+                .await;
             thread_summary.can_accept_direct_input = Some(can_accept_direct_input(
                 existing_thread.multi_agent_version(),
                 &config_snapshot.session_source,
@@ -5229,6 +5353,7 @@ impl ThreadRequestProcessor {
             );
         }
         self.attach_thread_name(thread_id, &mut thread).await;
+        self.resolve_thread_account_profile(&mut thread).await;
         Ok(thread)
     }
 
@@ -5252,6 +5377,77 @@ impl ThreadRequestProcessor {
         }
     }
 
+    async fn resolve_thread_account_profile(&self, thread: &mut Thread) {
+        if let Ok(thread_id) = ThreadId::from_string(&thread.id)
+            && let Some(auth_manager) = self.thread_manager.auth_manager_for_thread(thread_id).await
+        {
+            thread.extra = Some(ThreadExtra {
+                account_profile: self
+                    .thread_manager
+                    .auth_profile_id_for_thread(thread_id)
+                    .await,
+                account_id: auth_manager
+                    .auth_cached()
+                    .and_then(|auth| auth.get_account_id()),
+            });
+            return;
+        }
+        if let Ok(thread_id) = ThreadId::from_string(&thread.id)
+            && let Ok(Some(profile)) = self.account_profiles.thread_profile(thread_id)
+            && let Ok(auth_manager) = self
+                .account_profiles
+                .auth_manager_for_profile(&profile)
+                .await
+        {
+            thread.extra = Some(ThreadExtra {
+                account_profile: Some(profile),
+                account_id: auth_manager
+                    .auth_cached()
+                    .and_then(|auth| auth.get_account_id()),
+            });
+            return;
+        }
+        let account_id = thread
+            .extra
+            .as_ref()
+            .and_then(|extra| extra.account_id.as_deref())
+            .map(ToOwned::to_owned);
+        let account_id = match account_id {
+            Some(account_id) => account_id,
+            None => {
+                let Some(path) = thread.path.as_deref() else {
+                    return;
+                };
+                let Ok(session_meta) = codex_rollout::read_session_meta_line(path).await else {
+                    return;
+                };
+                let Some(account_id) = session_meta.meta.creator_account_id else {
+                    return;
+                };
+                account_id
+            }
+        };
+        let Some(account_profile) = self
+            .account_profiles
+            .profile_for_account_id(account_id.as_str())
+            .await
+        else {
+            return;
+        };
+        match thread.extra.as_mut() {
+            Some(extra) => {
+                extra.account_profile = Some(account_profile);
+                extra.account_id = Some(account_id);
+            }
+            None => {
+                thread.extra = Some(ThreadExtra {
+                    account_profile: Some(account_profile),
+                    account_id: Some(account_id),
+                });
+            }
+        }
+    }
+
     async fn thread_fork_inner(
         &self,
         request_id: ConnectionRequestId,
@@ -5259,6 +5455,7 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
+        auth_profile_id: Option<String>,
     ) -> Result<(), JSONRPCErrorError> {
         if params.experimental_disable_prediction_mcp && !params.experimental_prediction_mode {
             return Err(invalid_request(
@@ -5608,7 +5805,7 @@ impl ThreadRequestProcessor {
             );
         }
         let (inherited_options, inherited_settings) = inherited_fork.unzip();
-        let options = if let Some(options) = inherited_options {
+        let mut options = if let Some(options) = inherited_options {
             *options
         } else {
             // Derive a Config using the same logic as new conversation, honoring overrides if provided.
@@ -5622,6 +5819,23 @@ impl ThreadRequestProcessor {
                 ..StartThreadOptions::new(config)
             }
         };
+        if options.runtime.is_none() {
+            let source_account_id = source_history_items.iter().find_map(|item| match item {
+                RolloutItem::SessionMeta(meta) => meta.meta.creator_account_id.clone(),
+                _ => None,
+            });
+            options.runtime = self
+                .account_profiles
+                .runtime_for_account_id(
+                    &self.thread_manager,
+                    &options.config,
+                    Some(source_thread_id),
+                    source_account_id.as_deref(),
+                    auth_profile_id.as_deref(),
+                )
+                .await
+                .map_err(invalid_params)?;
+        }
         let goals_enabled = options.config.features.enabled(Feature::Goals);
 
         let fallback_model_provider = options.config.model_provider_id.clone();
@@ -6625,10 +6839,17 @@ fn thread_from_stored_thread(
     );
     let history = thread.history;
     let thread_id = thread.thread_id.to_string();
+    let account_id = thread
+        .extra_config
+        .as_ref()
+        .and_then(|extra| extra.creator_account_id.clone());
     let thread = Thread {
         id: thread_id.clone(),
         environments: None,
-        extra: None,
+        extra: account_id.map(|account_id| ThreadExtra {
+            account_profile: None,
+            account_id: Some(account_id),
+        }),
         session_id: thread_id,
         forked_from_id: thread.forked_from_id.map(|id| id.to_string()),
         parent_thread_id: thread.parent_thread_id.map(|id| id.to_string()),

@@ -80,6 +80,16 @@ impl AgentsOverviewView {
         if self.center_shortcut_keys.is_pressed(key) {
             return false;
         }
+        if profile_switch_hint().is_press(key) {
+            if state.connection_notice.is_none()
+                && !state.creating_worktree
+                && state.removal.is_none()
+            {
+                drop(state);
+                self.app_event_tx.send(AppEvent::OpenAuthProfilePicker);
+            }
+            return true;
+        }
         if key.code == KeyCode::Char('?')
             && key.kind == KeyEventKind::Press
             && !key

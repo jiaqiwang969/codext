@@ -95,6 +95,7 @@ fn is_unsupported_untrusted_approval_policy_error(err: &std::io::Error) -> bool 
     )
 }
 
+mod account_profiles;
 mod analytics_utils;
 mod app_info;
 mod app_server_tracing;
@@ -145,6 +146,8 @@ mod request_serialization;
 mod server_request_error;
 mod skills_watcher;
 mod startup_warnings;
+mod superagent_host;
+mod superagent_status;
 mod thread_sample;
 mod thread_state;
 mod thread_status;
@@ -1070,6 +1073,7 @@ pub async fn run_main_with_transport_options(
                 let recovery_file = recovery_file.clone();
                 // Run independently: snapshot locks can require the event loop to make progress.
                 let task = tokio::spawn(async move {
+                    processor.drain_superagent().await;
                     let saved = processor.daemon_recovery_snapshot().await;
                     if let Err(err) = daemon_thread_recovery::snapshot(recovery_file, saved).await {
                         warn!("failed to save threads during daemon shutdown: {err}");

@@ -650,8 +650,15 @@ async fn fresh_startup_reads_destination_and_cleared_model_uses_catalog() -> Res
         app.chat_widget.handle_thread_session_quiet(started.session);
         if !remote {
             let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 80)
-                .replace(&destination.path().display().to_string(), "<PROJECT>");
-            insta::assert_snapshot!(rendered, @r"
+                .replace(&destination.path().display().to_string(), "<PROJECT>")
+                .replace(
+                    &crate::status::format_directory_display(destination.path(), None),
+                    "<PROJECT>",
+                );
+            insta::assert_snapshot!(rendered, @"
+               GPT-6.1-Sol high │  <PROJECT>
+
+
             › Ask Codex to do anything
 
               GPT-6.1-Sol high · <PROJECT>

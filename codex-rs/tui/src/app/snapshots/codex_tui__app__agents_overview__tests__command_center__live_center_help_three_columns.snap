@@ -1,6 +1,5 @@
 ---
 source: tui/src/app/agent_center_tests.rs
-assertion_line: 328
 expression: "screen(&view, width, height)"
 ---
   Agent command center  Group: Project  g
@@ -12,7 +11,7 @@ expression: "screen(&view, width, height)"
   ↑      Up           n          New             tab/⇧tab  Filter
   ↓      Down         w          New worktree    f3        Search
   enter  Open         o          Resume          g         Group
-  pgup   Page up      f          Fork
+  pgup   Page up      f          Fork            ⇧p        Switch profile
   pgdn   Page down    r          Rename
   ⌃c     Quit         x          Stop
                       a          Archive

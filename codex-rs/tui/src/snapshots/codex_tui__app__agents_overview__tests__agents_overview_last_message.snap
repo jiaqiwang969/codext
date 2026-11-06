@@ -10,6 +10,7 @@ expression: "render_bottom_popup(&app.chat_widget,\n96).replace(&format!(\"{proj
     ● Repair authentication                           │ Investigate parser
   › ○ Investigate parser                              │ ○ Inactive
                                                       │
+                                                      │ Profile: default
                                                       │ Model: provider/provider/provider/pro…
                                                       │ Reasoning: deliberatedeliberatedelibe…
                                                       │
@@ -19,10 +20,9 @@ expression: "render_bottom_popup(&app.chat_widget,\n96).replace(&format!(\"{proj
                                                       │ Last message
                                                       │ Found the regression in the parser.
                                                       │ Found the regression in the parser.
-                                                      │ Found the regression in the parser.
                                                       │ …
                                                       │
                                                       │ Prompt
                                                       │ Investigate parser
                                                       │ …
-  ? help  esc back  ↑/↓ move  enter open  n new
+  ? help  esc back  ↑/↓ move  enter open  n new  ⇧p profile

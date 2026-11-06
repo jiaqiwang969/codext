@@ -895,6 +895,32 @@ async fn live_app_server_user_message_item_completed_does_not_duplicate_rendered
 }
 
 #[tokio::test]
+async fn identical_external_inputs_in_distinct_turns_each_render_once() {
+    let (mut chat, mut events, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    for turn_id in ["first-turn", "second-turn"] {
+        for _ in 0..2 {
+            chat.handle_thread_item(
+                AppServerThreadItemPayload::UserMessage {
+                    id: format!("user-{turn_id}"),
+                    client_id: None,
+                    content: vec![AppServerUserInput::Text {
+                        text: "continue".to_owned(),
+                        text_elements: Vec::new(),
+                    }],
+                },
+                turn_id.to_owned(),
+                ThreadItemRenderSource::Live,
+            );
+        }
+        let rendered = drain_insert_history(&mut events)
+            .iter()
+            .map(|lines| lines_to_single_string(lines).trim().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(rendered, vec!["› continue".to_owned()]);
+    }
+}
+
+#[tokio::test]
 async fn live_app_server_user_message_omits_unsupported_media() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

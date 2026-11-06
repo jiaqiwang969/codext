@@ -1056,6 +1056,12 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::Error(ev) => {
+            codex_superagent_extension::incidents::note(
+                &conversation_id.to_string(),
+                Some(event_turn_id.as_str()),
+                &ev.message,
+                /*details*/ None,
+            );
             thread_watch_manager
                 .note_system_error(&conversation_id.to_string())
                 .await;
@@ -1080,6 +1086,12 @@ pub(crate) async fn apply_bespoke_event_handling(
             .await;
         }
         EventMsg::StreamError(ev) => {
+            codex_superagent_extension::incidents::note(
+                &conversation_id.to_string(),
+                Some(event_turn_id.as_str()),
+                &ev.message,
+                ev.additional_details.as_deref(),
+            );
             // We don't need to update the turn summary store for stream errors as they are intermediate error states for retries,
             // but we notify the client.
             let turn_error = TurnError {

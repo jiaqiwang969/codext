@@ -11,7 +11,7 @@ expression: "normalize_snapshot_paths(buffer_text(crate::custom_terminal::test_s
 
 
 
-
+   gpt-test default │  /tmp/project
 
 
 › Ask Codex to do anything

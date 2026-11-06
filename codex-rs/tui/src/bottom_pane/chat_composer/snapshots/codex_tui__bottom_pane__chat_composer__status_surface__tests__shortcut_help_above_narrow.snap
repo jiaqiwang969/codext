@@ -18,6 +18,7 @@ expression: text
   !        Shell command
   ⌃j       New line
   ⌃v       Paste image
+  ⌃⇧c      Copy draft
   ⌃g       External editor
   ⌃r       Search history
   esc esc  Edit last message

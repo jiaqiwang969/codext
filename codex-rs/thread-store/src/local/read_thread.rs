@@ -22,6 +22,7 @@ use super::helpers::set_thread_name;
 use super::helpers::sqlite_thread_name;
 use super::helpers::stored_thread_from_rollout_item;
 use super::thread_rollout_resolver;
+use crate::ExtraConfig;
 use crate::ReadThreadParams;
 use crate::StoredThread;
 use crate::StoredThreadHistory;
@@ -325,6 +326,13 @@ async fn read_thread_from_rollout_path(
     let meta_line = read_required_session_meta_line(path.as_path()).await?;
     thread.forked_from_id = meta_line.meta.forked_from_id;
     thread.parent_thread_id = meta_line.meta.parent_thread_id;
+    if thread.extra_config.is_none()
+        && let Some(creator_account_id) = meta_line.meta.creator_account_id.clone()
+    {
+        thread.extra_config = Some(ExtraConfig {
+            creator_account_id: Some(creator_account_id),
+        });
+    }
     thread.history_mode = meta_line.meta.history_mode;
     if let Some(model_provider) = meta_line
         .meta
@@ -405,12 +413,22 @@ async fn stored_thread_from_metadata(
 ) -> StoredThread {
     let forked_from_id = session_meta.as_ref().and_then(|meta| meta.forked_from_id);
     let parent_thread_id = session_meta.as_ref().and_then(|meta| meta.parent_thread_id);
+    let creator_account_id = metadata.creator_account_id.clone().or_else(|| {
+        session_meta
+            .as_ref()
+            .and_then(|meta| meta.creator_account_id.clone())
+    });
     let history_mode = session_meta
         .as_ref()
         .map(|meta| meta.history_mode)
         .unwrap_or(metadata.history_mode);
     let name = thread_name_from_metadata(store, &metadata, history_mode).await;
     let mut thread = stored_thread_from_state_metadata(store, metadata, parent_thread_id);
+    if thread.extra_config.is_none() {
+        thread.extra_config = creator_account_id.map(|creator_account_id| ExtraConfig {
+            creator_account_id: Some(creator_account_id),
+        });
+    }
     thread.originator = thread.originator.or_else(|| {
         session_meta
             .map(|meta| meta.originator)
@@ -439,9 +457,12 @@ pub(super) fn stored_thread_from_state_metadata(
         .unwrap_or_default();
     let permission_profile =
         permission_profile_from_metadata_value(&metadata.sandbox_policy, metadata.cwd.as_path());
+    let creator_account_id = metadata.creator_account_id.clone();
     StoredThread {
         thread_id: metadata.id,
-        extra_config: None,
+        extra_config: creator_account_id.map(|creator_account_id| ExtraConfig {
+            creator_account_id: Some(creator_account_id),
+        }),
         rollout_path: Some(rollout_path),
         forked_from_id: None,
         parent_thread_id,
@@ -542,9 +563,12 @@ fn stored_thread_from_meta_line(
         .map(DateTime::<Utc>::from)
         .unwrap_or(created_at);
     let rollout_path = codex_rollout::plain_rollout_path(path.as_path());
+    let creator_account_id = meta_line.meta.creator_account_id.clone();
     StoredThread {
         thread_id: meta_line.meta.id,
-        extra_config: None,
+        extra_config: creator_account_id.map(|creator_account_id| ExtraConfig {
+            creator_account_id: Some(creator_account_id),
+        }),
         rollout_path: Some(rollout_path),
         forked_from_id: meta_line.meta.forked_from_id,
         parent_thread_id: meta_line.meta.parent_thread_id,

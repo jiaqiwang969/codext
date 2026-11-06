@@ -10,6 +10,7 @@ expression: "render_bottom_popup(&app.chat_widget,\n96).replace(&format!(\"{proj
   › ● Check startup performance                       │ Check startup performance
                                                       │ ● Working
                                                       │
+                                                      │ Profile: default
                                                       │ Model: Unknown
                                                       │ Reasoning: Unknown
                                                       │
@@ -24,5 +25,4 @@ expression: "render_bottom_popup(&app.chat_widget,\n96).replace(&format!(\"{proj
                                                       │
                                                       │
                                                       │
-                                                      │
-  ? help  esc back  ↑/↓ move  enter open  n new
+  ? help  esc back  ↑/↓ move  enter open  n new  ⇧p profile

@@ -2,6 +2,8 @@
 source: tui/src/chatwidget/tests/luna_reserve_usage_tests.rs
 expression: rendered
 ---
+   Luna Reserve default │  /tmp/project │  75%
+
 
 › Ask Codex to do anything
 

@@ -20,8 +20,8 @@ expression: normalize_snapshot_paths(term.backend().vt100().screen().contents())
   ↳ Hello, world! 11
   ↳ Hello, world! 12
   ↳ Hello, world! 13
-  ↳ Hello, world! 14
-  ↳ Hello, world! 15
+   GPT-5.6-Sol default │  /tmp/project
+
 
 › Ask Codex to do anything
 

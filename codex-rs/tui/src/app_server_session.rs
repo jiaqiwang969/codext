@@ -60,6 +60,8 @@ use codex_app_server_protocol::ConfigWriteResponse;
 use codex_app_server_protocol::GetAccountParams;
 use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::GetAccountResponse;
+use codex_app_server_protocol::GetAuthStatusParams;
+use codex_app_server_protocol::GetAuthStatusResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::LogoutAccountResponse;
 use codex_app_server_protocol::MemoryResetResponse;
@@ -68,6 +70,7 @@ use codex_app_server_protocol::ModelListParams;
 use codex_app_server_protocol::ModelListResponse;
 use codex_app_server_protocol::NewThreadModelDefaults;
 use codex_app_server_protocol::RateLimitSnapshot;
+use codex_app_server_protocol::ReloadAccountResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ReviewDelivery;
 use codex_app_server_protocol::ReviewStartParams;
@@ -76,6 +79,8 @@ use codex_app_server_protocol::ReviewTarget;
 use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::SkillsListResponse;
+use codex_app_server_protocol::SwitchAuthProfileParams;
+use codex_app_server_protocol::SwitchAuthProfileResponse;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadApproveGuardianDeniedActionParams;
 use codex_app_server_protocol::ThreadApproveGuardianDeniedActionResponse;
@@ -353,6 +358,7 @@ pub(crate) struct AppServerSession {
     managed_new_thread_defaults: Option<NewThreadModelDefaults>,
     external_agent_config_import_id: Mutex<Option<String>>,
     dynamic_tool_mcp: Option<Arc<DynamicToolMcpServer>>,
+    account_profile_env_applied: bool,
     pub(crate) worktree_source_config_builder:
         Option<Box<crate::legacy_core::config::ConfigBuilder>>,
 }
@@ -528,6 +534,7 @@ impl AppServerSession {
             managed_new_thread_defaults: None,
             external_agent_config_import_id: Mutex::default(),
             dynamic_tool_mcp: None,
+            account_profile_env_applied: false,
             worktree_source_config_builder: None,
         }
     }
@@ -751,6 +758,7 @@ impl AppServerSession {
 
     pub(crate) async fn bootstrap(&mut self, config: &Config) -> Result<AppServerBootstrap> {
         let started_at = Instant::now();
+        self.ensure_env_account_profile().await?;
         let account = self.read_account().await?;
         let mut bootstrap = self.bootstrap_with_account(config, account).await?;
         bootstrap.duration = started_at.elapsed();
@@ -762,6 +770,7 @@ impl AppServerSession {
         config: &Config,
     ) -> Result<AppServerBootstrap> {
         let started_at = Instant::now();
+        self.ensure_env_account_profile().await?;
         let account = self.read_account().await?;
         let mut bootstrap = self
             .bootstrap_with_account_inner(config, account, EmptyCatalogFallback::ManagedNewThread)
@@ -967,8 +976,10 @@ impl AppServerSession {
     /// Used by both `bootstrap` (to populate the initial UI) and `get_login_status`
     /// (to check auth mode without the overhead of a full bootstrap).
     pub(crate) async fn read_account(&mut self) -> Result<GetAccountResponse> {
+        self.ensure_env_account_profile().await?;
         let account_request_id = self.next_request_id();
-        self.request_handle
+        let account: GetAccountResponse = self
+            .request_handle
             .request_typed(ClientRequest::GetAccount {
                 request_id: account_request_id,
                 params: GetAccountParams {
@@ -976,7 +987,64 @@ impl AppServerSession {
                 },
             })
             .await
-            .map_err(|err| bootstrap_request_error("account/read failed during TUI bootstrap", err))
+            .map_err(|err| {
+                bootstrap_request_error("account/read failed during TUI bootstrap", err)
+            })?;
+        if account.requires_openai_auth
+            && account.account.is_none()
+            && std::env::var_os("CODEX_ACCOUNT_PROFILE").is_some_and(|profile| !profile.is_empty())
+        {
+            color_eyre::eyre::bail!(
+                "The selected account profile needs login. Run `codext login` with the same CODEX_ACCOUNT_PROFILE, then reopen this session."
+            );
+        }
+        Ok(account)
+    }
+
+    async fn ensure_env_account_profile(&mut self) -> Result<()> {
+        if self.account_profile_env_applied {
+            return Ok(());
+        }
+        if let Ok(profile) = std::env::var("CODEX_ACCOUNT_PROFILE")
+            && !profile.trim().is_empty()
+        {
+            self.switch_auth_profile(profile, /*thread_id*/ None)
+                .await
+                .wrap_err("failed to select CODEX_ACCOUNT_PROFILE")?;
+            // account/read only inspects cached identity. Let the auth manager
+            // renew expired credentials (including a newer same-account login
+            // on disk) before deciding whether this profile is signed in.
+            let request_id = self.next_request_id();
+            let _: GetAuthStatusResponse = self
+                .request_handle
+                .request_typed(ClientRequest::GetAuthStatus {
+                    request_id,
+                    params: GetAuthStatusParams {
+                        include_token: Some(false),
+                        refresh_token: Some(false),
+                    },
+                })
+                .await
+                .wrap_err("failed to refresh the selected account profile")?;
+        } else {
+            self.account_profile_env_applied = true;
+        }
+        Ok(())
+    }
+
+    /// Reload auth from storage and return the refreshed account snapshot.
+    ///
+    /// Used by the TUI auth watcher to pick up the selected profile's
+    /// `auth.json` updates without restarting the app-server.
+    pub(crate) async fn reload_account_from_storage(&mut self) -> Result<ReloadAccountResponse> {
+        let account_request_id = self.next_request_id();
+        self.request_handle
+            .request_typed(ClientRequest::ReloadAccount {
+                request_id: account_request_id,
+                params: None,
+            })
+            .await
+            .wrap_err("account/reload failed while reloading auth from storage")
     }
 
     pub(crate) async fn next_event(&mut self) -> Option<AppServerSessionEvent> {
@@ -1810,6 +1878,33 @@ impl AppServerSession {
         Ok(())
     }
 
+    pub(crate) async fn switch_auth_profile(
+        &mut self,
+        name: String,
+        thread_id: Option<ThreadId>,
+    ) -> Result<SwitchAuthProfileResponse> {
+        let request_id = self.next_request_id();
+        let requested_thread_id = thread_id.map(|id| id.to_string());
+        let response: SwitchAuthProfileResponse = self
+            .request_handle
+            .request_typed(ClientRequest::SwitchAuthProfile {
+                request_id,
+                params: SwitchAuthProfileParams {
+                    name,
+                    thread_id: requested_thread_id.clone(),
+                },
+            })
+            .await
+            .wrap_err("account/profile/switch failed in TUI")?;
+        if response.thread_id != requested_thread_id {
+            color_eyre::eyre::bail!(
+                "the app-server did not switch this thread; restart it with the updated codext binary and retry /profile"
+            );
+        }
+        self.account_profile_env_applied = true;
+        Ok(response)
+    }
+
     pub(crate) async fn thread_unsubscribe(&mut self, thread_id: ThreadId) -> Result<()> {
         let request_id = self.next_request_id();
         let _: ThreadUnsubscribeResponse = self
@@ -2049,6 +2144,51 @@ pub(crate) fn status_account_display_from_auth_mode(
         | Some(AuthMode::BedrockApiKey)
         | Some(AuthMode::BedrockAccessKeys) => None,
         None => None,
+    }
+}
+
+/// Derive the TUI account-display state from an app-server account response.
+///
+/// Returns the status account display, plan type, whether the account is a
+/// ChatGPT account, and whether it has Codex-backend auth (used for rate-limit
+/// polling).
+pub(crate) fn account_state_from_reload_account_response(
+    account: &ReloadAccountResponse,
+) -> (
+    Option<StatusAccountDisplay>,
+    Option<codex_protocol::account::PlanType>,
+    bool,
+    bool,
+) {
+    account_state_from_account(account.account.as_ref())
+}
+
+pub(crate) fn account_state_from_account(
+    account: Option<&Account>,
+) -> (
+    Option<StatusAccountDisplay>,
+    Option<codex_protocol::account::PlanType>,
+    bool,
+    bool,
+) {
+    match account {
+        Some(Account::ApiKey {}) => (Some(StatusAccountDisplay::ApiKey), None, false, false),
+        Some(Account::Chatgpt {
+            email,
+            plan_type,
+            workspace_name,
+        }) => (
+            Some(StatusAccountDisplay::ChatGpt {
+                email: email.clone(),
+                plan: Some(plan_type_display_name(*plan_type)),
+                workspace: workspace_display(workspace_name.clone(), /*routing*/ None),
+            }),
+            Some(*plan_type),
+            true,
+            true,
+        ),
+        Some(Account::AmazonBedrock { .. }) | Some(Account::Gcp {}) => (None, None, false, false),
+        None => (None, None, false, false),
     }
 }
 
