@@ -50,6 +50,10 @@
 
    端到端的事实要全部通过。之后再用真模型让实验室的 Router 推进一个小目标，确认通知、`say`、插话和换号都正常。
 
+   用 `codex-account-next list --home ~/242-superagent-codext-lab/.codex --binary ~/242-superagent-codext-lab/build/current/bin/codex` 查询实验室账号池；选重置最早、剩余额度至少 5%、且未冷却的付费账号，记录实际使用的账号。额度耗尽冷却到重置时间，模型满载冷却 15 分钟，然后按同一规则换号重试。
+
+   真模型验证使用专用测试 Router 和会话。现有引擎默认把推进通知送给 `pm-threads` 的首位：测试期间把专用 Router 临时放首位，结束后恢复原列表，不能仅追加在旧 Router 后面。`start` 即使指定已有会话，也要提供它的 `folder`。先核对可用检查手段；受系统代理等环境限制时，保留原始失败并给出可复核的替代验证。
+
 6. **用户验收后再发。** 快进 `main` 并推送；日常仓库切到新的 `main`，再运行 `scripts/superagent/promote.sh daily`。
 
 什么时候更新由用户决定：用户在 Router 里说要更新才开始，不定时自动更新。

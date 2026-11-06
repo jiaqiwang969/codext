@@ -116,7 +116,6 @@ destructure that still used the previous host interface.
 required byte-identical engine; unrelated formatter churn and mandatory unchanged
 packaging/helper carry-overs were also restored.
 
-Package, daemon, end-to-end and live-model evidence will be recorded here when complete.
 Validation uses only laboratory state and test sessions. The user removed the fixed
 account constraint: select the eligible paid profile with the earliest reset, at least
 5% remaining and no active cooldown; on quota/capacity failure use the engine's cooldown,
@@ -126,7 +125,49 @@ account switching and retry policy. Record the actually used profile(s).
 and explicit account policy were applied. `codex-account-next list` was run with
 explicit laboratory `--home` and `--binary` arguments, preventing its default daily
 home from being used. The initial eligible profile was `JannLinegarA0k`, Pro, 95%
-remaining, resetting at `2026-11-08T06:55:04Z`, with no cooldown. Refresh before live use.
+remaining, resetting at `2026-11-08T06:55:04Z`, with no cooldown. The live query refreshed
+at `2026-11-06T07:53:38Z` selected the same profile with the same quota.
+
+## Completed laboratory candidate
+
+- Packaged code commit: `f4acb77c9d7b88acfb5053e5811dfefbbdf00ae2`, directly atop
+  `rust-v0.167.0`; candidate branch `feat/rust-v0.167.0`.
+- Package version: `0.167.0-f4acb77c9d`, macOS ARM64 development profile, incremental
+  compilation and debug information disabled. The canonical workspace invocation built
+  `codex`, `codex-code-mode-host` and `codex-exec-server` together successfully.
+- Package: `/Users/jqwang/242-superagent-codext-lab/build/pkg-f4acb77c9d`.
+  The lab's current package points there. Its managed daemon matches the full SHA-256
+  of the entrypoint, both companions, ripgrep and package manifest. Auto-update remains
+  disabled; Superagent status is healthy before and after the live run.
+- Evidence: [local run index](../../tests/runs/rust-v0.167.0-f4acb77c9d/README.md).
+  It includes checks, package build/install logs, manifest/hashes, account selection,
+  mock facts, live records and boundary checks.
+- Mock end-to-end: ordinary start/report/say guards, anchored audit/delivery, worker
+  capacity failover/replay and Router capacity failover/replay passed. The two logged
+  ERROR entries are the deliberately rejected jargon and unfounded `builds_on` calls.
+  Anchors in this mock are synthetic fixtures, not a new project-management structure.
+- Successful real-model run: `tests/h/r167-live2`, `gpt-6-astra` with low reasoning.
+  Worker `01a1afe0-6c88-7b90-a35b-43d488a2fa3c` and Router
+  `01a1afe0-7982-7b83-8c51-7f7aed5dbf47` both report `JannLinegarA0k` as their runtime
+  profile. Exactly two worker turns have `drive` attribution. A running turn received
+  the correction; both reports reached the test Router; `say` supplied the recorded
+  basis and root request; the file contains exactly `candidate-ready`, `steered`,
+  `verified`. The Router stopped the drive, and its ledger record is absent.
+- The first real attempt is retained as unsuccessful evidence: appending the test
+  Router left the older lab Router first, so that Router received notifications and
+  advanced the same bounded test goal using its existing `kalliesallerwu` profile.
+  Thus the actual accounts across both attempts are **JannLinegarA0k and kalliesallerwu**.
+  The corrected run temporarily placed the test Router first, stopped the prior drive,
+  and restored the original registry exactly. A missing required `folder` in the test
+  start arguments was also corrected; no production code change was needed.
+- No real quota/capacity failure occurred and no cooldown was created. Cooldown until
+  reset, capacity cooldown of 15 minutes, account selection and retry are covered by
+  the unchanged engine tests and injected mock failures, not claimed as real failures.
+- Final boundary checks: existing drive records unchanged; no live test drive remains;
+  no live `.engineering` directory; engine Git tree identical to old main; `main` and
+  `origin/main` still `31ed25924830e51d471ef2e6cc660cab3270929b`; the daily daemon's
+  process identity and start time are unchanged. Subsequent branch commits only add
+  this evidence and validation guidance; the packaged code commit above is fixed.
 
 The candidate remains subject to user acceptance. Do not advance/push `main`, publish,
 or install/restart anything in the daily environment before that acceptance.
