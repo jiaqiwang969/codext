@@ -1,149 +1,96 @@
 # Codext
 
-An opinionated Codex CLI. This is strictly a personal hobby project, forked from openai/codex. Its main feature is the Superagent Router: one session that watches every session on the machine and drives the ones you hand it.
+Codext 是 [openai/codex](https://github.com/openai/codex) 的一个分支，主打 **Superagent Router**：一个常驻会话替你看着本机所有 Codex 会话，按你的意思推进其中的会话。
 
-![Preview](https://github.com/user-attachments/assets/cd4bf293-85c4-4e3f-83d3-6c0dd45c9dc6)
+当前基于上游稳定版 `rust-v0.167.0`。这是个人项目，按作者自己的使用习惯维护。
 
+## Router：替你看着所有会话
 
-## Quick Start
+- **看**：Router 不加载会话就能读本机所有会话，知道哪些在做事、哪些在等你（报错、等批准、等回答）。
+- **先问清楚再动手**：你说一件事，它先问清楚要做到什么样、在哪里做，用一句话复述打算，你同意才开始。需要时它会新建项目文件夹和会话。
+- **推进**：被推进的会话每做完一步，结论以一张 `[通知]` 卡片回到 Router。Router 要么转告你，要么接着回 worker 一句话。引擎会核对这句话：它接着哪句结论说、为了你原话里的哪一点，都要能在记录里找到；有方法名、skill 名或编号这类行话就退回。
+- **纠偏**：你发现方向错了，worker 还在做，话会直接插进它正在做的那一步；做错了就打断。
+- **换号**：一步因为额度用完或模型满载（"Selected model is at capacity"）失败时，那个账号先冷却，工作换到额度重置最早的账号上重来。顺序和 `codex-account-next list` 一样，跳过免费账号和额度快用完的账号。Router 自己的回合也一样。
+- **完全访问**：推进的步骤不加沙箱、不问批准，可以用本机软件和浏览器。
+- **长期记住的事**：写进 `~/.codex/AGENTS.md`。每个会话（包括 Router）每走一步都会重读它，改了下一回合就生效，适合记仓库位置、项目文件夹规则、账号习惯这类事。
 
-Build from source:
+推进分两档：一句话就能说清的事，在一个文件夹里做，由你验收；多阶段的工程项目，用项目的 `.engineering` 锚定目标，每一步都判定是否可交付、是否偏离、有没有进展。
 
-```shell
+## Codext 底座
+
+这些是 Router 之外的改动，完整清单见 [CHANGED.md](CHANGED.md)：
+
+- **账号池**：`/profile` 切换当前对话用的账号，历史和设置保留，其他对话不受影响；`codex-account-next <账号>` 用指定账号开会话，`codex-account-next list` 按额度重置时间列出全部账号。
+- **状态栏**：模型和推理强度、当前目录、git 状态、额度剩余和重置时间、账号。
+- **额度用完时**：排队的消息先停住不发；额度恢复或换号后自动接着做。模型满载时按 15 秒到 240 秒逐步退避，重试原来那一轮。
+- **小功能**：`Ctrl+Shift+C` 复制输入框草稿；在 `/resume` 列表里按 `Ctrl+R` 给会话改名。
+
+## 安装和使用
+
+需要 Rust 1.95.0。
+
+从源码运行：
+
+```sh
 cd codex-rs
 cargo run --bin codex
 ```
 
-To install a local build as the daily `codext` and app-server daemon, use `scripts/superagent/promote.sh` (see [docs/superagent/updating.md](docs/superagent/updating.md)). The `@loongphy/codext` npm package is Loongphy's build and does not include the Router.
+装成本机日常使用的 `codext` 和 app-server daemon，用 `scripts/superagent/promote.sh`：
 
-## Features
-
-> Full change log: see [CHANGED.md](./CHANGED.md).
-
----
-
-### Superagent Router
-
-A Router session watches every session on the machine and drives the ones you hand it:
-
-* **Asks first**: it asks what you want, says in one sentence how it will go about it, and starts only when you agree. It can open a new folder and session for the work.
-* **Conclusions come back**: when a driven session finishes a step, its conclusion reaches the Router as a short notice card. The Router relays it to you or answers the session itself. The engine checks that each answer quotes what it builds on and the request it serves, and refuses jargon.
-* **Corrections land at once**: a correction is steered into the running step, or the step is interrupted when it is going the wrong way.
-* **Account switching**: when a step, or the Router itself, hits a usage limit or "Selected model is at capacity", that account cools down and the work moves to the account whose quota resets soonest, in `codex-account-next list` order.
-* **Full access**: driven steps run without a sandbox or approvals, so they can use apps and browsers.
-
-Enable it with `[features] superagent = true` in `~/.codex/config.toml`, write `drive` to `~/.codex/superagent/router-mode`, and create the Router with `python3 -I scripts/superagent/router.py create`. Then open `/agents`: the Router is the first row. Details: [docs/superagent/README.md](docs/superagent/README.md).
-
-### TUI: Status Header
-
-The TUI header provides a compact overview of the active session:
-- **Context**: Displays the active model, effort level, and current working directory (`cwd`).
-- **Git Status**: Background-polled summary of the repository state for the session `cwd`.
-- **Rate Limits**: ChatGPT usage-limit snapshots that refresh while the UI is idle.
-- **Account Info**: Email + Plan, API Key
-
-![Status Header Preview](https://github.com/user-attachments/assets/23350e86-2597-48ea-82a6-378f8f01ac74)
-
-### Copy to Clipboard
-
-* **`Ctrl+Shift+C`**: Copies the current draft to the system clipboard.
-* **`Ctrl+C`**: Retains existing behavior; remains backward-compatible with legacy logic when the draft is empty.
-
-### Rename Sessions in the Picker
-
-* **`Ctrl+R`** in `codext resume` (the `/resume` picker): Opens a blank inline editor to give the highlighted session a new name.
-* **`Enter`**: Saves the name and updates the picker in place.
-* **`Esc`**: Cancels the rename and returns to search mode.
-
-### Prompt Queue on usage limit
-
-![Prompt Queue](https://github.com/user-attachments/assets/534e927d-a306-4fef-b97c-629542bf8906)
-
-This feature helps manage follow-up messages when quota or rate limits are reached:
-
-* **Paused and Waiting**: Queued messages wait instead of being sent into more failed turns.
-* **Append While Limited**: Even while autosend is paused, you can still press `Tab` to add messages to the queue.
-* **Resume on Availability**: Once a later rate-limit snapshot shows quota is available again, Codext sends the **first** queued message.
-
-### Account Switching
-
-![Account Changed](https://github.com/user-attachments/assets/35059463-b846-45c7-9d05-57a6e1082d8d)
-
-Use `/profile <name>` (or `/profile` to open the picker) to change the account
-used by the current conversation. Finish or interrupt active work first. The
-conversation keeps its history and settings, remembers the selected profile
-across restarts, and leaves other conversations' accounts unchanged. A successful
-switch releases any recovery prompt parked after a usage-limit error. Upgrade
-both the CLI and app-server before using this behavior.
-
-Codex now reloads authentication after external `auth.json` writes settle, so account changes can be picked up without restarting at safe boundaries.
-
-* **TUI**: Polls metadata for the selected profile’s `auth.json` (or the default account file) every 200 ms, with a trailing debounce, without scanning the whole `CODEX_HOME` directory. Auth is deferred until any active task completes; transient read errors do not clear cached auth.
-* **App-server**: Reloads auth before `thread/start`, `thread/resume`, and `turn/start` when no turn is running, so the new account is picked up at the next safe request boundary.
-
-This enables auth refresh for TUI and Codex App flows when external tools update `auth.json`.
-
-It also supports Codex App account switching via [codex-auth#103](https://github.com/Loongphy/codex-auth/pull/103).
-
-### Automatic Resumption
-
-After a turn stops on `UsageLimitExceeded`, the TUI can park a recovery prompt and dispatch it after a later `auth.json` reload changes account identity.
-
-You can configure this behavior using `[tui].usage_limit_resume_prompt`:
-
-* **Custom Prompt**: Define a specific string to be sent as the "resumption turn." This prompt will be used to signal the model to continue where it left off.
-* **Disable**: Set to `""` (empty string) to disable this automatic recovery behavior entirely.
-* **Default**: If left unset, the system uses the following built-in prompt:
-
-  ```text
-  The usage limit has been reset, so you can resume from where you left off.
-  ```
-
-  Example:
-
-  ```toml
-  [tui]
-  usage_limit_resume_prompt = ""
-  ```
-
-### Server Overload Auto-Resume When `Selected model is at capacity`
-
-When the selected model is overloaded, Codext retries the original turn with bounded exponential backoff (15s → 30s → 60s → 120s → 240s, up to the provider's stream retry limit). This preserves the original prompt and does not add a synthetic `Continue` message to the thread.
-
-```toml
-[tui]
-server_overloaded_resume = false   # default true; set false to disable
+```sh
+scripts/superagent/promote.sh build   # 构建当前提交的完整包
+scripts/superagent/promote.sh daily   # 更新日常 daemon 和 ~/.local/bin 里的 codex、codext（会重启 daemon）
 ```
 
-## Project Goals
+这个脚本按作者本机的目录写成：构建产物默认放在实验室目录 `~/242-superagent-codext-lab/build`。换一台机器用时，先设 `CODEXT_LAB` 和 `CODEXT_BUILD_DIR`。npm 上的 `@loongphy/codext` 是 Loongphy 的版本，不含 Router。
 
-`main` is the latest upstream stable release, plus the Codext base ([CHANGED.md](./CHANGED.md)), plus Superagent. We will never merge code from the upstream repo; instead, we re-implement our changes on top of the latest upstream code. Each bump starts from the openai/codex tag; Loongphy/codext is only a reference.
+打开 Router：
 
-Iteration flow (aligned with `.agents/skills/codex-upstream-reapply` and [docs/superagent/updating.md](docs/superagent/updating.md)):
+1. 在 `~/.codex/config.toml` 里打开功能：
+
+   ```toml
+   [features]
+   superagent = true
+   ```
+
+2. 往 `~/.codex/superagent/router-mode` 里写 `drive`。
+3. 运行 `python3 -I scripts/superagent/router.py create` 建 Router 会话，再运行 `python3 -I scripts/superagent/router.py pin` 把它放到 `/agents` 第一行。
+4. 打开 `codext`（或 `codex-account-next <账号>`），输入 `/agents`，第一行就是 Router。
+
+自动换号需要 `~/.local/bin/codex-account-status`，由 `scripts/install-codex-account-tools.py` 安装。
+
+## 文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [docs/superagent/README.md](docs/superagent/README.md) | Router 现在能做什么、怎么开、代码在哪、怎么测试 |
+| [docs/superagent/seams.md](docs/superagent/seams.md) | Superagent 在 codex 里的每一个接入点，升级上游时逐个重接 |
+| [docs/superagent/updating.md](docs/superagent/updating.md) | 更新计划：跟上游升级、更新 Superagent、发到日常 |
+| [CHANGED.md](CHANGED.md) | 相对上游的全部改动，升级时照着保留 |
+| [docs/reapply-0.167.0.md](docs/reapply-0.167.0.md) | 这一版在 `rust-v0.167.0` 上重做的记录 |
+| [AGENTS.md](AGENTS.md) | 给在这个仓库里干活的 agent 看的规则 |
+
+## 怎么跟着上游更新
+
+`main` 始终等于上游最新稳定版，加上 Codext 底座，再加上 Superagent。上游的代码不合并进来，每次都从上游的 `rust-vX.Y.Z` tag 新开分支，把我们的改动重新做一遍：
 
 ```mermaid
 flowchart TD
-      A[Fetch upstream tags] --> B[Choose latest stable rust tag]
-      B --> C[Create fresh branch from tag]
-      C --> D[Generate old-branch reference bundle]
-      D --> E[Read intent docs and old changes<br/>CHANGED.md / README.md / AGENTS.md<br/>bundle diff / changed-files / commits]
-      E --> F[Re-implement the base on fresh branch]
-      F --> G[Carry ext/superagent over<br/>reconnect docs/superagent/seams.md]
-      G --> H[Build: cargo build -p codex-cli<br/>Test: cargo test -p codex-superagent-extension]
-      H --> I[Try it in the lab]
-      I --> J[After acceptance: move main to the new branch<br/>promote to daily]
+      A[上游出了新的稳定版 tag] --> B[从 tag 新开 feat/rust-vX.Y.Z]
+      B --> C[按 CHANGED.md 重做底座]
+      C --> D[整个带上 ext/superagent<br/>按 seams.md 重接接入点]
+      D --> E[构建，跑 Superagent 引擎测试]
+      E --> F[在实验室试：端到端和真实模型]
+      F --> G[用户验收后，main 换到新分支<br/>再发到日常]
 ```
 
-## Skills
+- 什么时候更新由用户决定：用户在 Router 里说要更新，Router 就派一个会话按 [updating.md](docs/superagent/updating.md) 去做，做完停下来等验收。
+- 重做底座用 `.agents/skills/codex-upstream-reapply` 这个 skill。
+- 发布流水线 `rust-release.yml` 只能手动触发，推送 `main` 不会自动构建。
 
-When syncing to the latest upstream codex version, use `.agents/skills/codex-upstream-reapply` to re-implement our custom requirements on top of the newest code, avoiding merge conflicts from the old branch history.
+## 致谢
 
-Example:
-
-```
-$codex-upstream-reapply old_branch feat/rust-v0.130.0, new origin tag: rust-v0.131.0
-```
-
-## Credits
-
-Status bar design reference: <https://linux.do/t/topic/1481797>
+- [openai/codex](https://github.com/openai/codex)：上游。
+- [Loongphy/codext](https://github.com/Loongphy/codext)：底座的状态栏、额度队列、auth 重载等功能最早来自这里，本仓库最初也是从它分出来的。
+- 状态栏设计参考：<https://linux.do/t/topic/1481797>
