@@ -1200,6 +1200,10 @@ impl App {
             AppEvent::OpenAuthProfilePicker => {
                 self.chat_widget.show_auth_profile_picker();
             }
+            AppEvent::AlignAccountProfile { thread_id, profile } => {
+                self.align_account_profile(app_server, thread_id, profile)
+                    .await;
+            }
             AppEvent::FatalExitRequest(message) => {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }

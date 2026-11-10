@@ -276,6 +276,7 @@ mod startup;
 pub(crate) mod startup_bootstrap;
 mod startup_prompts;
 mod startup_warnings;
+mod thread_account_profile;
 mod thread_event_buffer;
 mod thread_events;
 mod thread_goal_actions;

@@ -17,6 +17,7 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::Thread;
+use codex_app_server_protocol::ThreadExtra;
 use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
@@ -173,6 +174,15 @@ impl App {
             ServerNotification::ThreadNameUpdated(name) => {
                 if let Some(thread) = thread {
                     thread.name.clone_from(&name.thread_name);
+                }
+            }
+            ServerNotification::ThreadAccountProfileUpdated(update) => {
+                // The next read restores the account id; the notification names only the profile.
+                if let Some(thread) = thread {
+                    thread.extra = Some(ThreadExtra {
+                        account_profile: Some(update.account_profile.clone()),
+                        account_id: None,
+                    });
                 }
             }
             ServerNotification::ThreadSettingsUpdated(settings) => {

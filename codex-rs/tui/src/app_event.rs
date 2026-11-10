@@ -708,6 +708,15 @@ pub(crate) enum AppEvent {
     /// Open the account-pool profile picker from the agents command center.
     OpenAuthProfilePicker,
 
+    /// The shown thread runs on `profile`: select it as this connection's default, without
+    /// rebinding the thread, so the header's account and quota follow the thread. Sent when
+    /// another client or the Superagent engine moves the shown thread, and when a restored blank
+    /// task skips the resume that would align it.
+    AlignAccountProfile {
+        thread_id: ThreadId,
+        profile: String,
+    },
+
     /// Request to exit the application due to a fatal error.
     #[allow(dead_code)]
     FatalExitRequest(String),

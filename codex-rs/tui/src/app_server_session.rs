@@ -3,6 +3,7 @@
 //! This module owns the typed JSON-RPC calls needed by the TUI and keeps
 //! request/response plumbing out of `App` and `ChatWidget`.
 
+mod account_profile;
 mod daybreak_api_key_compat;
 mod events;
 mod external_agent_config;
@@ -359,6 +360,9 @@ pub(crate) struct AppServerSession {
     external_agent_config_import_id: Mutex<Option<String>>,
     dynamic_tool_mcp: Option<Arc<DynamicToolMcpServer>>,
     account_profile_env_applied: bool,
+    /// The profile this connection last selected; account reads and quota polling use it.
+    /// `None` until the first selection, while the connection uses the shared default account.
+    auth_profile: Option<String>,
     pub(crate) worktree_source_config_builder:
         Option<Box<crate::legacy_core::config::ConfigBuilder>>,
 }
@@ -535,6 +539,7 @@ impl AppServerSession {
             external_agent_config_import_id: Mutex::default(),
             dynamic_tool_mcp: None,
             account_profile_env_applied: false,
+            auth_profile: None,
             worktree_source_config_builder: None,
         }
     }
@@ -1902,6 +1907,7 @@ impl AppServerSession {
             );
         }
         self.account_profile_env_applied = true;
+        self.auth_profile = Some(response.name.clone());
         Ok(response)
     }
 

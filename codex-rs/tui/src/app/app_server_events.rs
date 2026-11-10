@@ -297,6 +297,7 @@ impl App {
             ServerNotification::ThreadStarted(_)
                 | ServerNotification::ThreadStatusChanged(_)
                 | ServerNotification::ThreadSettingsUpdated(_)
+                | ServerNotification::ThreadAccountProfileUpdated(_)
                 | ServerNotification::ThreadNameUpdated(_)
                 | ServerNotification::ThreadArchived(_)
                 | ServerNotification::ThreadDeleted(_)
@@ -381,6 +382,10 @@ impl App {
                     // Background inference may publish a hard stop without a foreground Error.
                     self.refresh_rate_limits(app_server_client, RateLimitRefreshOrigin::Recovery);
                 }
+                return;
+            }
+            ServerNotification::ThreadAccountProfileUpdated(update) => {
+                self.on_thread_account_profile_updated(update);
                 return;
             }
             ServerNotification::AccountUpdated(notification) => {

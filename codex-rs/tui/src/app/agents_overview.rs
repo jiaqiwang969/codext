@@ -637,6 +637,17 @@ impl App {
                 restored_blank_session = true;
                 let mut blank = blank.clone();
                 blank.session.thread_name.clone_from(&target_thread.name);
+                // Skipping resume also skips its account alignment. Follow the task's account.
+                if let Some(profile) = target_thread
+                    .extra
+                    .as_ref()
+                    .and_then(|extra| extra.account_profile.clone())
+                {
+                    self.app_event_tx.send(AppEvent::AlignAccountProfile {
+                        thread_id: root_thread_id,
+                        profile,
+                    });
+                }
                 (blank, false)
             } else {
                 match app_server

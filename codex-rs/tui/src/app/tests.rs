@@ -10487,3 +10487,6 @@ mod navigation_reconnect;
 
 #[path = "tests/backend_event_tests.rs"]
 mod backend_event_tests;
+
+#[path = "tests/thread_account_profile_tests.rs"]
+mod thread_account_profile_tests;
