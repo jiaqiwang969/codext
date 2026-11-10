@@ -1,4 +1,4 @@
-# codext 0.167.0：Superagent Router 版
+# codext 0.167.0-4243539db3：Superagent Router 版
 
 本 fork 第一次在 GitHub 上发版。基础是 openai/codex `rust-v0.167.0`，在它上面加了 Codext 底座和 Superagent。Superagent 有两部分：daemon 里的推进引擎，以及一个常驻的 Router 会话。
 
@@ -20,7 +20,7 @@
   - 网络断了，自动重发一次。
 - **更大的项目**：可以按项目单独开 Router。起草者和引擎自动用重置卡也有了，这两样默认关。
 - **终端界面**：别处给会话换了号，开着的窗口状态栏当场跟着换。
-- **发版**：只发到 GitHub，不发 npm；macOS x64 改为交叉编译。
+- **发版**：附件只有一个，是作者本机编译、日常在用的 macOS arm64（Apple 芯片）版本，和日常环境运行的程序逐字节相同。
 
 ## 详细说明
 
@@ -93,9 +93,11 @@
 
 ### 六、发版（11-10）
 
-- 发版只发到 GitHub。npm 上的包名属于上游 codext，所以发 npm 要在触发时显式打开 `publish_npm`，默认关。
-- 发布说明来自仓库里的 `docs/release-notes.md`。
-- macOS x64 改在 Apple 芯片的编译机上交叉编译：Intel 编译机在 4 小时的时限内编不完。
+- **这一版的附件**：作者在本机（Apple 芯片的 Mac）编出、日常在用的那一份，只有 macOS arm64。程序 `bin/codex` 的 SHA256 以 `0496f9e371caf4d7` 开头，和日常环境里运行的一致。这次没有用 GitHub 的编译流程：那边的 macOS 编译机暂时排不上队。
+- **编译流程也改了**，以后用它发版时生效：
+  - 只发到 GitHub；npm 上的包名属于上游 codext，要发 npm 得在触发时显式打开 `publish_npm`，默认关。
+  - 发布说明来自仓库里的 `docs/release-notes.md`。
+  - macOS x64 改在 Apple 芯片的编译机上交叉编译。
 
 ## 设置项（环境变量，在启动 daemon 时给）
 
@@ -123,7 +125,10 @@
 
 ## 安装与升级
 
-- 从下面的附件里下载对应平台的压缩包：macOS arm64/x64、Linux x64/arm64（musl）、Windows x64。
+- **附件**：只有一个，`codext-0.167.0-4243539db3-darwin-arm64.tar.gz`，适用于 Apple 芯片的 Mac，旁边附 SHA256 校验文件。
+- **解压后的内容**：`bin/codex` 是主程序，`bin/codex-exec-server`、`bin/codex-code-mode-host` 和 `codex-path/rg` 是它要用到的辅助程序；`codex-package.json` 写着版本 `0.167.0-4243539db3`。
+- **先去掉隔离属性**：程序没有签名和公证，下载后先执行 `xattr -dr com.apple.quarantine <解压出的目录>`。
+- **其他平台**：请从源码编译。
 - 打开 Superagent：
   1. 在 `config.toml` 里写 `[features] superagent = true`；
   2. 在 `~/.codex/superagent/router-mode` 里写 `drive`（不写或写 `observe` 时只看不推）；
@@ -132,6 +137,7 @@
 
 ## 已知限制
 
+- 只提供 macOS arm64。程序没有签名和公证，而且带着调试符号，所以压缩包较大（约 280 MB）。
 - 不发布到 npm。
 - 子 agent 一类的会话在后台被换号时，窗口要等下次打开它才对齐。用共享默认账号的会话，窗口没法切回默认账号。
 - 实验室里见过，Router 偶尔把"做到哪停"这类本该自己掌握的话，转告给工作会话；不影响后面的等待和推进。
