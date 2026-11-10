@@ -226,6 +226,8 @@ impl DriveService {
             report: Some(kept),
             ..record
         });
+        // A session waiting for this conclusion goes back to the Router with it, in one message.
+        self.look_at_waits().await?;
         self.notify(&record, &told).await
     }
 

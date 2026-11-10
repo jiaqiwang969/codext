@@ -22,6 +22,8 @@ pub fn drive_attention(record: &DriveRecord) -> Option<&'static str> {
         DriveState::Reported { .. } => Some("交了结论，等你转告用户或回它"),
         DriveState::Deliverable { .. } => Some("可交付，等你验收"),
         DriveState::NeedsDecision { .. } => Some("推进需要你决定"),
+        // Parked on purpose: the engine wakes it when what it waits for comes.
+        DriveState::Paused { .. } if record.wait.is_some() => None,
         DriveState::Paused { .. } => Some("推进已暂停"),
     }
 }

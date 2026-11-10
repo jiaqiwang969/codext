@@ -10,6 +10,7 @@ use std::collections::HashSet;
 
 use codex_protocol::ThreadId;
 
+use super::DriveRecord;
 use super::DriveService;
 use super::DriveState;
 use super::accounts;
@@ -18,29 +19,41 @@ use super::accounts::Thresholds;
 use super::cooldown::Cooldown;
 
 impl DriveService {
-    /// The sessions at work, by the account each runs on now.
-    pub(super) async fn account_load(&self) -> anyhow::Result<HashMap<String, usize>> {
-        let mut load = HashMap::new();
-        let mut threads: Vec<String> = self
-            .records()
-            .await?
-            .into_iter()
+    /// The account each session at work runs on now, by thread: the driven sessions working on a
+    /// step or waiting for their next one, and the Routers.
+    pub(super) async fn accounts_at_work(
+        &self,
+        records: &[DriveRecord],
+    ) -> HashMap<String, String> {
+        let mut threads: Vec<String> = records
+            .iter()
             .filter(|record| {
                 matches!(
                     record.state,
                     DriveState::Driving | DriveState::Reported { .. }
                 )
             })
-            .map(|record| record.thread_id)
+            .map(|record| record.thread_id.clone())
             .collect();
         threads.extend((self.inner.routers)());
+        let mut on = HashMap::new();
         for thread in threads {
             let Ok(id) = ThreadId::from_string(&thread) else {
                 continue;
             };
             if let Ok(Some(account)) = self.inner.host.thread_profile(id).await {
-                *load.entry(account).or_insert(0) += 1;
+                on.insert(thread, account);
             }
+        }
+        on
+    }
+
+    /// The sessions at work, by the account each runs on now.
+    pub(super) async fn account_load(&self) -> anyhow::Result<HashMap<String, usize>> {
+        let records = self.records().await?;
+        let mut load = HashMap::new();
+        for account in self.accounts_at_work(&records).await.into_values() {
+            *load.entry(account).or_insert(0) += 1;
         }
         Ok(load)
     }

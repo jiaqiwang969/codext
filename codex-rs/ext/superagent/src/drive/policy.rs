@@ -2,6 +2,7 @@
 //! a Router turn stuck on its account is stopped and moved. Each has a default and an
 //! environment variable, read once when the engine starts (`lib.rs`).
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -45,6 +46,9 @@ pub struct DriveOptions {
     pub routers: Routers,
     /// How long a step whose turn broke off on the network waits before it goes again.
     pub retry_after: Duration,
+    /// The file the drives' events go to, `$CODEX_HOME/superagent/events.jsonl`; `None` writes
+    /// none.
+    pub events: Option<PathBuf>,
 }
 
 /// How the engine keeps the Router and the driven sessions on accounts with quota left.

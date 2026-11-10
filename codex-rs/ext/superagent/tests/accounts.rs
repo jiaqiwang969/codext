@@ -397,6 +397,7 @@ async fn setup_with(policy: AccountPolicy) -> anyhow::Result<Setup> {
             policy,
             routers: Arc::new(|| vec![ROUTER.to_owned()]),
             retry_after: Duration::ZERO,
+            events: None,
         },
     )
     .await?;

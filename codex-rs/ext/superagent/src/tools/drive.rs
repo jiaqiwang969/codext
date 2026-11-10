@@ -33,6 +33,7 @@ use crate::drive::Feedback;
 use crate::drive::Goal;
 use crate::drive::Say;
 use crate::drive::StandingScope;
+use crate::drive::WaitOn;
 
 pub const DRIVE_TOOL: &str = "superagent_drive";
 const PROMPT_CHARS: usize = 1_500;
@@ -52,6 +53,17 @@ enum Action {
     Feedback,
     Remember,
     Forget,
+    Wait,
+}
+
+/// What `wait` waits for.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum WaitKind {
+    Session,
+    Minutes,
+    File,
+    Person,
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,6 +83,14 @@ struct DriveArgs {
     until: Option<String>,
     #[serde(default)]
     rule: Option<String>,
+    #[serde(default)]
+    wait_for: Option<WaitKind>,
+    #[serde(default)]
+    after: Option<String>,
+    #[serde(default)]
+    file: Option<String>,
+    #[serde(default)]
+    minutes: Option<u32>,
     #[serde(default)]
     account: Option<String>,
     #[serde(default)]
@@ -123,13 +143,32 @@ impl DriveTool {
             (
                 "action".to_owned(),
                 JsonSchema::string_enum(
-                    vec![json!("start"), json!("say"), json!("interrupt"), json!("switch_account"), json!("feedback"), json!("pause"), json!("resume"), json!("stop"), json!("history"), json!("remember"), json!("forget")],
-                    Some("start: take a session under drive (or open a new session in `folder`) and send it the first message `text`; say: answer the worker's last conclusion with `text`, quoting in `builds_on` and `serves` what it follows from (while the worker's turn runs, the text is said into it instead) — say goes on from a pause or a handed-back session directly, no resume first; interrupt: stop the running step because the person found it going wrong, then say the next thing; switch_account: move a session (driven or not) to another account, `account` or else the next by quota reset time — the engine also does this by itself before a step whose account runs low and when a step fails on quota or model capacity; feedback: the person's acceptance feedback on an anchored goal; pause: the person takes the session over; resume: hand it back when you have nothing to say yet; stop: release it; history: the person's words, the last conclusions and every step with its basis; remember: keep the person's words `text` as a standing rule, for every session, for the sessions under `folder`, or for `thread_id`; forget: drop the standing rule `rule`.".to_owned()),
+                    vec![json!("start"), json!("say"), json!("interrupt"), json!("switch_account"), json!("feedback"), json!("pause"), json!("resume"), json!("stop"), json!("history"), json!("remember"), json!("forget"), json!("wait")],
+                    Some("start: take a session under drive (or open a new session in `folder`) and send it the first message `text`; say: answer the worker's last conclusion with `text`, quoting in `builds_on` and `serves` what it follows from (while the worker's turn runs, the text is said into it instead) — say goes on from a pause or a handed-back session directly, no resume first; interrupt: stop the running step because the person found it going wrong, then say the next thing; switch_account: move a session (driven or not) to another account, `account` or else the next by quota reset time — the engine also does this by itself before a step whose account runs low and when a step fails on quota or model capacity; feedback: the person's acceptance feedback on an anchored goal; pause: the person takes the session over; resume: hand it back when you have nothing to say yet; stop: release it; history: the person's words, the last conclusions and every step with its basis; remember: keep the person's words `text` as a standing rule, for every session, for the sessions under `folder`, or for `thread_id`; forget: drop the standing rule `rule`; wait: park the session until something comes — another session's next conclusion, some minutes, a file, or the person's answer (`wait_for`) — with `text` saying what; the engine hands it back with a notice when it comes, and reminds you once after `minutes` when nothing came.".to_owned()),
                 ),
             ),
             (
                 "until".to_owned(),
                 JsonSchema::string(Some("say: where this step should stop, in plain words (a whole small goal, not one action); told to the worker after the message.".to_owned())),
+            ),
+            (
+                "wait_for".to_owned(),
+                JsonSchema::string_enum(
+                    vec![json!("session"), json!("minutes"), json!("file"), json!("person")],
+                    Some("wait: session (the next conclusion of the driven session `after`), minutes (`minutes` from now), file (the absolute path `file` appears or changes), person (the person's answer).".to_owned()),
+                ),
+            ),
+            (
+                "after".to_owned(),
+                JsonSchema::string(Some("wait for session: the driven session whose next conclusion this one waits for.".to_owned())),
+            ),
+            (
+                "file".to_owned(),
+                JsonSchema::string(Some("wait for file: the absolute path of the file.".to_owned())),
+            ),
+            (
+                "minutes".to_owned(),
+                JsonSchema::integer(Some("wait for minutes: how long; with the other waits: remind you once after this many minutes if nothing came.".to_owned())),
             ),
             (
                 "rule".to_owned(),
@@ -170,7 +209,7 @@ impl DriveTool {
             ),
             (
                 "text".to_owned(),
-                JsonSchema::string(Some("start, say: the message to the session, in plain words; feedback: the person's words about what they tried, verbatim; remember: the person's words to keep, verbatim.".to_owned())),
+                JsonSchema::string(Some("start, say: the message to the session, in plain words; feedback: the person's words about what they tried, verbatim; remember: the person's words to keep, verbatim; wait: what the session waits for, in plain words.".to_owned())),
             ),
             (
                 "passed".to_owned(),
@@ -460,6 +499,49 @@ impl DriveTool {
                     .await
                     .map_err(refused)?;
                 Ok(json!({ "remembered": rule.line() }))
+            }
+            Action::Wait => {
+                let id = thread_id()?;
+                let on = match args.wait_for {
+                    Some(WaitKind::Session) => WaitOn::Session(
+                        args.after
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|after| !after.is_empty())
+                            .ok_or_else(|| {
+                                FunctionCallError::RespondToModel(
+                                    "wait_for session 需要 after：等哪一路的结论".to_owned(),
+                                )
+                            })?
+                            .to_owned(),
+                    ),
+                    Some(WaitKind::Minutes) => WaitOn::Minutes(args.minutes.ok_or_else(|| {
+                        FunctionCallError::RespondToModel(
+                            "wait_for minutes 需要 minutes：等几分钟".to_owned(),
+                        )
+                    })?),
+                    Some(WaitKind::File) => WaitOn::File(path(&args.file).ok_or_else(|| {
+                        FunctionCallError::RespondToModel(
+                            "wait_for file 需要 file：等哪个文件（绝对路径）".to_owned(),
+                        )
+                    })?),
+                    Some(WaitKind::Person) => WaitOn::Person,
+                    None => {
+                        return Err(FunctionCallError::RespondToModel(
+                            "wait 需要 wait_for：session、minutes、file 或 person".to_owned(),
+                        ));
+                    }
+                };
+                let remind = match on {
+                    WaitOn::Minutes(_) => None,
+                    WaitOn::Session(_) | WaitOn::File(_) | WaitOn::Person => args.minutes,
+                };
+                drive
+                    .wait(&id, args.text.as_deref().unwrap_or_default(), on, remind)
+                    .await
+                    .map_err(refused)?
+                    .map(answer)
+                    .ok_or_else(|| missing(&id))
             }
             Action::Forget => {
                 let id = args

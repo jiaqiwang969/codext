@@ -40,6 +40,8 @@ pub(super) enum Topic {
     State,
     /// The session moved to another account.
     Account,
+    /// What the engine's round noticed (`sweep.rs`).
+    Marks,
 }
 
 impl Topic {
@@ -47,6 +49,7 @@ impl Topic {
         match self {
             Self::State => "",
             Self::Account => "#account",
+            Self::Marks => "#marks",
         }
     }
 }

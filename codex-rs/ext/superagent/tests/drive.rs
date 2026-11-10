@@ -15,6 +15,7 @@ use codex_protocol::ThreadId;
 use codex_superagent_extension::BoxFut;
 use codex_superagent_extension::Effects;
 use codex_superagent_extension::HealthBoard;
+use codex_superagent_extension::Store;
 use codex_superagent_extension::drive::AccountInfo;
 use codex_superagent_extension::drive::AccountSource;
 use codex_superagent_extension::drive::Audit;
@@ -28,6 +29,8 @@ use codex_superagent_extension::drive::Goal;
 use codex_superagent_extension::drive::Judge;
 use codex_superagent_extension::drive::Say;
 use codex_superagent_extension::drive::StandingScope;
+use codex_superagent_extension::drive::WaitOn;
+use codex_superagent_extension::drive::drive_key;
 use codex_superagent_extension::host::DeliveryMode;
 use codex_superagent_extension::host::GoalStatus;
 use codex_superagent_extension::host::StepStart;
@@ -356,6 +359,9 @@ struct Setup {
     accounts: Arc<FakeAccounts>,
     effects: Effects,
     drive: DriveService,
+    store: Store,
+    /// Where the drives' events go (`setup_routed` only).
+    events: PathBuf,
 }
 
 /// The effect queue is not started: each test runs the looks itself, in order.
@@ -369,7 +375,7 @@ async fn setup_with(stall: std::time::Duration) -> anyhow::Result<Setup> {
     let effects =
         Effects::new(store.clone(), HealthBoard::new(), FakeClock::at(T0).clock()).await?;
     let drive = DriveService::install(
-        store,
+        store.clone(),
         effects.clone(),
         host.clone() as Arc<dyn SuperagentHost>,
         judge.clone() as Arc<dyn Judge>,
@@ -377,6 +383,7 @@ async fn setup_with(stall: std::time::Duration) -> anyhow::Result<Setup> {
         stall,
     )
     .await?;
+    let events = dir.path().join("events.jsonl");
     Ok(Setup {
         _dir: dir,
         work,
@@ -386,6 +393,8 @@ async fn setup_with(stall: std::time::Duration) -> anyhow::Result<Setup> {
         accounts,
         effects,
         drive,
+        store,
+        events,
     })
 }
 
@@ -405,8 +414,9 @@ async fn setup_routed(routers: &[&str]) -> anyhow::Result<Setup> {
     let effects =
         Effects::new(store.clone(), HealthBoard::new(), FakeClock::at(T0).clock()).await?;
     let routers: Vec<String> = routers.iter().map(|router| (*router).to_owned()).collect();
+    let events = dir.path().join("events.jsonl");
     let drive = DriveService::install_with(
-        store,
+        store.clone(),
         effects.clone(),
         host.clone() as Arc<dyn SuperagentHost>,
         judge.clone() as Arc<dyn Judge>,
@@ -416,6 +426,7 @@ async fn setup_routed(routers: &[&str]) -> anyhow::Result<Setup> {
             policy: codex_superagent_extension::drive::AccountPolicy::default(),
             routers: Arc::new(move || routers.clone()),
             retry_after: std::time::Duration::ZERO,
+            events: Some(events.clone()),
         },
     )
     .await?;
@@ -428,10 +439,25 @@ async fn setup_routed(routers: &[&str]) -> anyhow::Result<Setup> {
         accounts,
         effects,
         drive,
+        store,
+        events,
     })
 }
 
 impl Setup {
+    /// Changes a record behind the engine's back, as time passing would.
+    async fn rewrite(
+        &self,
+        thread: &str,
+        change: impl FnOnce(&mut DriveRecord),
+    ) -> anyhow::Result<()> {
+        let key = drive_key(thread);
+        let mut record: DriveRecord = self.store.kv_get(&key).await?.expect("a drive record");
+        change(&mut record);
+        self.store
+            .atomic(async |tx| tx.kv_set(&key, &record).await)
+            .await
+    }
     /// A simple drive in the work folder.
     async fn start(&self) -> anyhow::Result<DriveRecord> {
         self.drive
@@ -1883,6 +1909,268 @@ async fn say_raises_the_cap_and_tells_the_worker_where_to_stop() -> anyhow::Resu
     assert_eq!(
         s.host.delivered().last().map(String::as_str),
         Some("接着写索引。\n\n这一步做到这里停：索引写好、能按日期排序为止")
+    );
+    Ok(())
+}
+
+/// Minutes ago, as the record keeps times.
+fn minutes_ago(minutes: i64) -> String {
+    (chrono::Utc::now() - chrono::Duration::minutes(minutes))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+#[tokio::test]
+async fn a_session_waiting_for_another_ones_conclusion_goes_back_to_the_router_with_it()
+-> anyhow::Result<()> {
+    let s = setup_routed(&[ROUTER]).await?;
+    s.start().await?;
+    s.turn("分好了 3 个主题目录").await?;
+    s.drive
+        .start(OPENED, simple(s.work.path().to_owned()))
+        .await?;
+    let waiting = "等另一路把索引脚本写好";
+    // A session at work does not park.
+    let busy = s
+        .drive
+        .wait(OPENED, waiting, WaitOn::Session(THREAD.to_owned()), None)
+        .await;
+    assert!(format!("{:#}", busy.expect_err("at work")).contains("还在做"));
+    let record = s
+        .drive
+        .wait(
+            THREAD,
+            waiting,
+            WaitOn::Session(OPENED.to_owned()),
+            Some(30),
+        )
+        .await?
+        .expect("a record");
+    assert_eq!(
+        record.state,
+        DriveState::Paused {
+            reason: format!("等待：{waiting}")
+        }
+    );
+    assert!(
+        record.line().contains(&format!("| 等待：{waiting}")),
+        "{}",
+        record.line()
+    );
+    assert_eq!(
+        codex_superagent_extension::router::drive_attention(&record),
+        None,
+        "parked on purpose, not waiting for the person"
+    );
+
+    s.drive.turn_started(OPENED).await?;
+    s.host
+        .finish("completed", "索引脚本放在 tools/index.py，按日期排");
+    s.drive.turn_stopped(OPENED).await?;
+    s.drive.step(OPENED).await?;
+    let record = s.record().await?;
+    assert_eq!(
+        (record.state, record.wait),
+        (
+            DriveState::Reported {
+                summary: format!("等的东西到了：{waiting}")
+            },
+            None
+        )
+    );
+    let notices = s.notices().await?;
+    assert!(
+        notices.iter().any(|notice| notice
+            .starts_with(&format!("推进 · 整理笔记 · 等的东西到了：{waiting}"))
+            && notice.contains("索引脚本放在 tools/index.py")),
+        "{notices:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_round_wakes_a_wait_for_a_file_or_a_time_and_reminds_once_of_a_long_wait()
+-> anyhow::Result<()> {
+    let s = setup_routed(&[ROUTER]).await?;
+    s.start().await?;
+    s.turn("分好了 3 个主题目录").await?;
+    let file = s.work.path().join("对照结果.csv");
+    s.drive
+        .wait(THREAD, "等对照结果", WaitOn::File(file.clone()), Some(20))
+        .await?;
+    s.drive.sweep().await?;
+    assert!(s.record().await?.wait.is_some(), "nothing came yet");
+    // Past the reminder: told once.
+    s.rewrite(THREAD, |record| {
+        if let Some(wait) = record.wait.as_mut() {
+            wait.remind = Some(minutes_ago(1));
+        }
+    })
+    .await?;
+    s.drive.sweep().await?;
+    s.drive.sweep().await?;
+    let reminders = s
+        .notices()
+        .await?
+        .into_iter()
+        .filter(|notice| notice.contains("还在等：等对照结果"))
+        .count();
+    assert_eq!(reminders, 1);
+
+    std::fs::write(&file, "a,b\n")?;
+    s.drive.sweep().await?;
+    assert_eq!(
+        s.record().await?.state,
+        DriveState::Reported {
+            summary: "等的东西到了：等对照结果".to_owned()
+        }
+    );
+
+    s.drive
+        .say(
+            THREAD,
+            say(
+                "用对照结果核一遍目录。",
+                "分好了 3 个主题目录",
+                "按主题分好",
+            ),
+        )
+        .await?;
+    s.turn("核过了，没问题").await?;
+    s.drive
+        .wait(THREAD, "等十分钟后服务起来", WaitOn::Minutes(10), None)
+        .await?;
+    s.rewrite(THREAD, |record| {
+        if let Some(wait) = record.wait.as_mut() {
+            wait.on = codex_superagent_extension::drive::WaitFor::Time { at: minutes_ago(1) };
+        }
+    })
+    .await?;
+    s.drive.sweep().await?;
+    assert_eq!(s.record().await?.wait, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_round_marks_what_it_notices_and_tells_the_router_once() -> anyhow::Result<()> {
+    let s = setup_routed(&[ROUTER]).await?;
+    s.start().await?;
+    s.turn("分好了 3 个主题目录").await?;
+    s.drive.sweep().await?;
+    assert!(s.record().await?.marks.is_empty());
+
+    // Nobody answered the conclusion for half an hour.
+    s.rewrite(THREAD, |record| {
+        record.changed = Some(minutes_ago(31));
+        record.acted = Some(minutes_ago(40));
+    })
+    .await?;
+    s.drive.sweep().await?;
+    s.drive.sweep().await?;
+    let record = s.record().await?;
+    assert_eq!(record.marks, vec!["交了结论半小时以上没人回".to_owned()]);
+    assert!(
+        record.line().ends_with("| 注意：交了结论半小时以上没人回"),
+        "{}",
+        record.line()
+    );
+    let told: Vec<String> = s
+        .notices()
+        .await?
+        .into_iter()
+        .filter(|notice| notice.contains("注意："))
+        .collect();
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(
+        told[0].contains("在等别的事就用 wait 写明等什么"),
+        "{}",
+        told[0]
+    );
+
+    // Answered: the mark goes with the state it was about.
+    s.drive
+        .say(
+            THREAD,
+            say("再写个索引。", "分好了 3 个主题目录", "按主题分好"),
+        )
+        .await?;
+    assert!(s.record().await?.marks.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn small_steps_and_the_same_conclusion_twice_show_in_the_line() -> anyhow::Result<()> {
+    let s = setup().await?;
+    s.start().await?;
+    let same = "目录还在整理中，已经处理了一部分笔记，剩下的部分下一步继续处理完毕再报告";
+    s.turn(&format!("{same}（一）")).await?;
+    for n in 2..=6 {
+        let last = s.record().await?.report.expect("a report").text;
+        s.drive
+            .say(
+                THREAD,
+                say(&format!("接着整理第 {n} 批。"), &last, "按主题分好"),
+            )
+            .await?;
+        s.turn(&format!("{same}（{n}）")).await?;
+    }
+    s.drive.sweep().await?;
+    assert_eq!(
+        s.record().await?.marks,
+        vec![
+            "最近两次结论开头一样，可能在原地打转".to_owned(),
+            "连着 5 步都不到 3 分钟：一步交代一个完整的小目标，说清做到哪停".to_owned(),
+        ]
+    );
+    assert!(
+        s.notices()
+            .await?
+            .iter()
+            .all(|notice| !notice.contains("注意：")),
+        "marks the Router reads in its list are not told"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn every_change_of_a_drive_is_one_line_of_its_events() -> anyhow::Result<()> {
+    let s = setup_routed(&[ROUTER]).await?;
+    s.start().await?;
+    s.turn("分好了 3 个主题目录").await?;
+    s.drive
+        .say(
+            THREAD,
+            say("再写个索引。", "分好了 3 个主题目录", "按主题分好"),
+        )
+        .await?;
+    s.drive.stop(THREAD).await?;
+    let events: Vec<serde_json::Value> = std::fs::read_to_string(&s.events)?
+        .lines()
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()?;
+    let seen: Vec<(String, u64)> = events
+        .iter()
+        .map(|event| {
+            (
+                event["event"].as_str().unwrap_or_default().to_owned(),
+                event["drive"]["step"].as_u64().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            ("started".to_owned(), 1),
+            ("reported".to_owned(), 1),
+            ("driving".to_owned(), 2),
+            ("released".to_owned(), 2),
+        ]
+    );
+    assert_eq!(
+        (
+            events[1]["drive"]["thread"].clone(),
+            events[1]["drive"]["detail"].clone()
+        ),
+        (json!(THREAD), json!("分好了 3 个主题目录"))
     );
     Ok(())
 }

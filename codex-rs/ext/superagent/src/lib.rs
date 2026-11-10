@@ -406,6 +406,7 @@ impl SuperagentService {
                                 }),
                                 routers: Arc::new(move || routers.list()),
                                 retry_after: drive::RETRY_AFTER,
+                                events: Some(self.dir.join("events.jsonl")),
                             },
                         )
                         .await?;
@@ -416,6 +417,7 @@ impl SuperagentService {
                         incidents::limit_to(drive.incident_scope());
                         incidents::subscribe(drive.incident_listener());
                         drive.start_account_watch().await?;
+                        drive.start_sweep().await?;
                         let pm = Arc::new(pm::PmRuntime {
                             engine: Arc::new(integration::PmEngine(engine.clone())),
                             host,

@@ -75,7 +75,7 @@ const UNTIL: &str = "这一步做到这里停：";
 const REFUSED_CHARS: usize = 200;
 
 /// Letters and digits only, lowercased: quotes survive changed spacing and punctuation.
-fn normalize(text: &str) -> String {
+pub(super) fn normalize(text: &str) -> String {
     text.chars()
         .filter(|c| c.is_alphanumeric())
         .flat_map(char::to_lowercase)
@@ -355,6 +355,7 @@ impl DriveService {
                 record.acted = Some(now_iso());
                 record.max_steps = max_steps;
                 record.refused = None;
+                record.wait = None;
                 if !steering {
                     record.steps = n;
                     record.inflight = Some(n);

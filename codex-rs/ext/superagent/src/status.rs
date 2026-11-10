@@ -69,6 +69,8 @@ pub struct Status {
     /// The usage-limit cooldowns the drive ended early because a fresh read showed the quota
     /// back, oldest first.
     pub ended_cooldowns: Vec<crate::drive::EndedCooldown>,
+    /// Every driven session, in the shape of the drives' events.
+    pub drives: Vec<crate::drive::DriveStatus>,
     /// The exit code the watchdog acts on (`exit_code`).
     pub exit_code: i32,
 }
@@ -182,6 +184,7 @@ pub async fn status_with(
     let mut effects = BTreeMap::new();
     let mut account_moves = Vec::new();
     let mut ended_cooldowns = Vec::new();
+    let mut drives = Vec::new();
     let mut tickets = Vec::new();
     let mut attention = Vec::new();
     let mut pm_groups = pm_threads
@@ -208,6 +211,12 @@ pub async fn status_with(
         if let Some(drive) = &runtime.drive {
             account_moves = drive.account_moves().await?;
             ended_cooldowns = drive.ended_cooldowns().await?;
+            drives = drive
+                .records()
+                .await?
+                .iter()
+                .map(crate::drive::DriveStatus::of)
+                .collect();
         }
         let host = service.host();
         let open_ticket_rows = runtime.store.tickets_open().await?;
@@ -258,6 +267,7 @@ pub async fn status_with(
         watchdog_heartbeat,
         account_moves,
         ended_cooldowns,
+        drives,
         exit_code: 0,
     };
     status.exit_code = exit_code(&status);
@@ -543,7 +553,6 @@ fn parse_ms(at: &str) -> Option<i64> {
     DateTime::parse_from_rfc3339(at)
         .ok()
         .map(|t| t.timestamp_millis())
-
 }
 
 fn iso(ms: i64) -> String {

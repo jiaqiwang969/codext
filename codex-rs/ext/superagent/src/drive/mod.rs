@@ -16,6 +16,7 @@ mod audit;
 mod basis;
 mod context;
 mod cooldown;
+mod events;
 mod feedback;
 mod lifecycle;
 mod load;
@@ -31,8 +32,10 @@ mod router_rescue;
 mod say;
 mod standing;
 mod step_account;
+mod sweep;
 mod switch;
 mod turns;
+mod wait;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -70,6 +73,7 @@ pub use context::DriveContext;
 pub use cooldown::COOLDOWN_KEY;
 pub use cooldown::Cooldown;
 pub use cooldown::EndedCooldown;
+pub use events::DriveStatus;
 pub use feedback::Feedback;
 pub use lifecycle::DriveLifecycle;
 pub use look::DONE_WHILE_PAUSED;
@@ -90,6 +94,12 @@ pub use say::Say;
 pub use standing::STANDING_KEY;
 pub use standing::StandingRule;
 pub use standing::StandingScope;
+pub use sweep::KIND_SWEEP;
+pub use sweep::SWEEP_EVERY;
+pub use wait::WAITING;
+pub use wait::Wait;
+pub use wait::WaitFor;
+pub use wait::WaitOn;
 
 use crate::cards::truncate_chars;
 use crate::core::now_iso;
@@ -249,6 +259,16 @@ pub struct DriveRecord {
     /// Why the Router's last message to the session was refused, until one goes out.
     #[serde(default)]
     pub refused: Option<String>,
+    /// What the session, parked on purpose, waits for (`wait.rs`).
+    #[serde(default)]
+    pub wait: Option<Wait>,
+    /// What the engine's round noticed about the session (`sweep.rs`), cleared when the state
+    /// changes.
+    #[serde(default)]
+    pub marks: Vec<String>,
+    /// When the state last changed, RFC 3339.
+    #[serde(default)]
+    pub changed: Option<String>,
     /// The latest steps, oldest first.
     pub history: Vec<Step>,
     pub since: String,
@@ -261,6 +281,7 @@ impl DriveRecord {
         let state = match &self.state {
             DriveState::Driving => "worker 正在做".to_owned(),
             DriveState::Reported { summary } => format!("交了结论：{summary}"),
+            DriveState::Paused { reason } if self.wait.is_some() => reason.clone(),
             DriveState::Paused { reason } => format!("已暂停：{reason}"),
             DriveState::Deliverable { summary } => format!("可交付，等你验收：{summary}"),
             DriveState::NeedsDecision { reason } => format!("需要你决定：{reason}"),
@@ -281,8 +302,13 @@ impl DriveRecord {
                 )
             })
             .unwrap_or_default();
+        let marks = if self.marks.is_empty() {
+            String::new()
+        } else {
+            format!(" | 注意：{}", self.marks.join("；"))
+        };
         format!(
-            "{} | {} | 第 {}/{} 步 | {state}{account}{refused}",
+            "{} | {} | 第 {}/{} 步 | {state}{account}{refused}{marks}",
             self.thread_id,
             truncate_chars(&self.title, 40),
             self.steps,
@@ -367,6 +393,8 @@ struct Inner {
     retry_after: std::time::Duration,
     /// One delivery of notices at a time (`notices.rs`).
     notices: tokio::sync::Mutex<()>,
+    /// Where the drives' events go (`events.rs`); `None` writes none.
+    events: Option<PathBuf>,
 }
 
 impl DriveService {
@@ -386,6 +414,7 @@ impl DriveService {
             policy: AccountPolicy::default(),
             routers: Arc::new(Vec::new),
             retry_after: retry::RETRY_AFTER,
+            events: None,
         };
         Self::install_with(store, effects, host, judge, options).await
     }
@@ -404,6 +433,7 @@ impl DriveService {
             policy,
             routers,
             retry_after,
+            events,
         } = options;
         let service = Self {
             inner: Arc::new(Inner {
@@ -422,6 +452,7 @@ impl DriveService {
                 seen: std::sync::Mutex::new(HashMap::new()),
                 retry_after,
                 notices: tokio::sync::Mutex::new(()),
+                events,
             }),
         };
         let runner = service.clone();
@@ -445,6 +476,7 @@ impl DriveService {
         router_account::install_router_handlers(&service, &effects).await?;
         retry::install_retry_handler(&service, &effects).await?;
         notices::install_notice_handler(&service, &effects).await?;
+        sweep::install_sweep_handler(&service, &effects).await?;
         Ok(service)
     }
 
@@ -487,18 +519,34 @@ impl DriveService {
         change: impl FnOnce(&mut DriveRecord) -> R,
     ) -> anyhow::Result<Option<R>> {
         let key = drive_key(thread_id);
-        self.inner
+        let changed = self
+            .inner
             .store
             .atomic(async |tx| {
                 let Some(mut record) = tx.kv_get::<DriveRecord>(&key).await? else {
                     return Ok(None);
                 };
+                let before = (record.state.clone(), record.steps, record.account.clone());
                 let result = change(&mut record);
-                record.updated = now_iso();
+                let now = now_iso();
+                if record.state != before.0 {
+                    record.changed = Some(now.clone());
+                    record.marks.clear();
+                }
+                record.updated = now;
                 tx.kv_set(&key, &record).await?;
-                Ok(Some(result))
+                let moved = record.state != before.0
+                    || record.steps != before.1
+                    || record.account != before.2;
+                Ok(Some((result, moved.then_some(record))))
             })
-            .await
+            .await?;
+        Ok(changed.map(|(result, moved)| {
+            if let Some(record) = moved {
+                self.log_event(&record, /*event*/ None);
+            }
+            result
+        }))
     }
 
     async fn schedule(&self, thread_id: &str) -> anyhow::Result<()> {
@@ -614,6 +662,9 @@ impl DriveService {
             router,
             acted: Some(now.clone()),
             refused: None,
+            wait: None,
+            marks: Vec::new(),
+            changed: Some(now.clone()),
             history: vec![Step {
                 n: 1,
                 at: now.clone(),
@@ -643,6 +694,7 @@ impl DriveService {
                 })
                 .await?;
         }
+        self.log_event(&record, Some("started"));
         self.hand_over(thread_id, thread, &record.title, 1, first)
             .await?;
         Ok(self.record(thread_id).await?.unwrap_or(record))
@@ -660,6 +712,7 @@ impl DriveService {
             };
             record.acted = Some(now_iso());
             record.refused = None;
+            record.wait = None;
             record.clone()
         })
         .await
@@ -682,6 +735,7 @@ impl DriveService {
             }
             record.acted = Some(now_iso());
             record.refused = None;
+            record.wait = None;
             record.clone()
         })
         .await
@@ -713,6 +767,7 @@ impl DriveService {
             }
             record.unchanged = 0;
             record.acted = Some(now_iso());
+            record.wait = None;
             record.clone()
         })
         .await
@@ -742,6 +797,7 @@ impl DriveService {
                 .await?
         };
         if let Some(record) = &record {
+            self.log_event(record, Some("released"));
             self.withdraw_steps(record).await?;
         }
         Ok(record)
