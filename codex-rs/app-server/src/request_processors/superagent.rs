@@ -1,6 +1,7 @@
 //! Internal organization requests reuse the client lifecycle and account checks.
 
 use super::thread_processor::ThreadResumeTarget;
+use super::thread_processor::thread_read_view_error;
 use super::*;
 use codex_protocol::mcp::ClientMcpExtensions;
 
@@ -37,6 +38,20 @@ impl ThreadRequestProcessor {
             attached_to_thread_id: None,
         })
         .await
+    }
+
+    /// The account profile a thread that is not loaded will load with, as the session index
+    /// shows it: its saved binding, else the profile of the account that created it. Read from
+    /// metadata only; nothing is loaded and no history is replayed.
+    pub(crate) async fn thread_account_profile_internal(
+        &self,
+        thread_id: ThreadId,
+    ) -> Result<Option<String>, JSONRPCErrorError> {
+        let thread = self
+            .read_thread_view(thread_id, /*include_turns*/ false)
+            .await
+            .map_err(thread_read_view_error)?;
+        Ok(thread.extra.and_then(|extra| extra.account_profile))
     }
 
     /// A session's latest turns, newest first, summarized, for the organization's Router. Read

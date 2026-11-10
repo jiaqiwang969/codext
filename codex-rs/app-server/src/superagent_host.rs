@@ -189,10 +189,24 @@ impl SuperagentHost for AppServerSuperagentHost {
 
     fn thread_profile(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<Option<String>>> {
         Box::pin(async move {
-            Ok(self
+            if let Some(profile) = self
                 .thread_manager()?
                 .auth_profile_id_for_thread(thread)
-                .await)
+                .await
+            {
+                return Ok(Some(profile));
+            }
+            if self.thread(thread).await.is_ok() {
+                // loaded on the default credentials
+                return Ok(None);
+            }
+            // Not loaded: the profile it will load with (saved binding, else its creator's).
+            self.processor()?
+                .thread_account_profile_internal(thread)
+                .await
+                .map_err(|err| {
+                    anyhow::anyhow!("reading the account of {thread} failed: {}", err.message)
+                })
         })
     }
 

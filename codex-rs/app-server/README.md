@@ -68,7 +68,11 @@ a PM or worker thread is recorded by the coordinator, including input steered
 into a busy turn.
 
 Thread creation and profile changes reuse app-server's account validation and
-runtime replacement. Cold delivery resumes the saved thread before enqueueing;
+runtime replacement. For a thread that is not loaded, the coordinator reads the
+account it will load with (its saved binding, else its creator's account) from
+metadata, and a profile change only rewrites that binding, so a Router can be
+moved off a spent account without loading it. Cold delivery resumes the saved
+thread before enqueueing;
 0.166's queue wakes itself, so the host does not start it a second time. Recovery
 reconciliation finishes before effect dispatch starts. Shutdown serializes with
 initialization, stops scheduling, and drains deliveries already in progress.
