@@ -46,6 +46,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::PoisonError;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -103,6 +104,9 @@ pub struct SuperagentService {
     host: Mutex<Option<Arc<dyn SuperagentHost>>>,
     /// Every text the engine delivered, so the intake does not read it back as a trigger.
     ledger: Arc<host::DeliveryLedger>,
+    /// What every engine delivery passes first, once the drive runs: it moves a Router whose
+    /// account runs low before the delivery starts the Router's next turn.
+    gate: Arc<OnceLock<host::DeliveryGate>>,
     executor_config: Mutex<Option<ExecutorConfig>>,
 }
 
@@ -122,14 +126,18 @@ impl SuperagentService {
             pm: OnceCell::new(),
             host: Mutex::new(None),
             ledger: Arc::new(host::DeliveryLedger::default()),
+            gate: Arc::new(OnceLock::new()),
             executor_config: Mutex::new(None),
         }
     }
 
     /// The app-server's implementation of the host interface; supply it before the start.
     pub fn set_host(&self, host: Arc<dyn SuperagentHost>) {
-        let host: Arc<dyn SuperagentHost> =
-            Arc::new(host::LedgerHost::new(host, Arc::clone(&self.ledger)));
+        let host: Arc<dyn SuperagentHost> = Arc::new(host::LedgerHost::with_gate(
+            host,
+            Arc::clone(&self.ledger),
+            Arc::clone(&self.gate),
+        ));
         *self.host.lock().unwrap_or_else(PoisonError::into_inner) = Some(host);
     }
 
@@ -340,18 +348,36 @@ impl SuperagentService {
                             pm::PmThreads::new(self.dir.join("pm-threads")),
                         )
                         .await?;
-                        let drive = drive::DriveService::install(
+                        // Account knobs (`drive/policy.rs`): the quota thresholds, the watch
+                        // period and the Router rescue.
+                        let routers = self.pm_threads.clone();
+                        let drive = drive::DriveService::install_with(
                             store.clone(),
                             effects.clone(),
                             Arc::clone(&host),
                             Arc::new(drive::Oev2Judge::for_home(
                                 self.dir.parent().unwrap_or(&self.dir),
                             )),
-                            drive::StatusHelper::for_home(self.dir.parent().unwrap_or(&self.dir))
+                            drive::DriveOptions {
+                                accounts: drive::StatusHelper::for_home(
+                                    self.dir.parent().unwrap_or(&self.dir),
+                                )
                                 .map(|helper| Arc::new(helper) as Arc<dyn drive::AccountSource>),
-                            drive::STALL,
+                                stall: drive::STALL,
+                                policy: drive::AccountPolicy::from_env(|name| {
+                                    std::env::var(name).ok()
+                                }),
+                                routers: Arc::new(move || routers.list()),
+                            },
                         )
                         .await?;
+                        // Router deliveries move a Router whose account runs low first; the
+                        // Routers' model incidents feed the rescue of a turn stuck on its
+                        // account, beside the executor's capacity policy.
+                        let _ = self.gate.set(drive.delivery_gate());
+                        incidents::limit_to(drive.incident_scope());
+                        incidents::subscribe(drive.incident_listener());
+                        drive.start_account_watch().await?;
                         let pm = Arc::new(pm::PmRuntime {
                             engine: Arc::new(integration::PmEngine(engine.clone())),
                             host,
@@ -428,6 +454,13 @@ impl SuperagentService {
     /// The Router's level, read from `superagent/router-mode` on each use (`router.rs`).
     pub fn router_mode(&self) -> router::RouterMode {
         router::RouterMode::read(&self.dir)
+    }
+
+    /// Whether a Router's queued input waits while the drive moves it to another account.
+    pub fn holds_queue(&self, thread_id: &str) -> bool {
+        self.runtime()
+            .and_then(|runtime| runtime.drive.clone())
+            .is_some_and(|drive| drive.holds_queue(thread_id))
     }
 
     /// Whether the organization drives this thread: a PM thread, a session under drive, or the

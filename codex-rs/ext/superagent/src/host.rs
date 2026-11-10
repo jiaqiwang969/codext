@@ -177,6 +177,14 @@ pub trait SuperagentHost: Send + Sync {
         let _ = (thread, item_id);
         Box::pin(async { Ok(false) })
     }
+    /// Starts the oldest item of the thread's persistent queue as a turn when the thread is idle,
+    /// as the queue itself does when a turn ends; answers whether a turn started. The drive calls
+    /// it after it held a Router's queue while moving the Router to another account. A host
+    /// without a persistent queue starts nothing.
+    fn start_queued(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<bool>> {
+        let _ = thread;
+        Box::pin(async { Ok(false) })
+    }
     /// Interrupts the current turn.
     fn interrupt(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<()>>;
     /// Ends the thread's background commands.
@@ -207,6 +215,10 @@ pub trait SuperagentHost: Send + Sync {
 pub use ledger::DeliveryLedger;
 pub use ledger::LedgerHost;
 
+/// Runs before the engine hands text to a thread (`deliver`), once it is set: the drive moves a
+/// Router off an account without headroom before the text starts the Router's next turn.
+pub type DeliveryGate = std::sync::Arc<dyn Fn(ThreadId) -> BoxFut<'static, ()> + Send + Sync>;
+
 mod ledger {
     use std::collections::VecDeque;
     use std::hash::DefaultHasher;
@@ -214,10 +226,12 @@ mod ledger {
     use std::hash::Hasher;
     use std::sync::Arc;
     use std::sync::Mutex;
+    use std::sync::OnceLock;
     use std::sync::PoisonError;
 
     use codex_protocol::ThreadId;
 
+    use super::DeliveryGate;
     use super::DeliveryMode;
     use super::GoalStatus;
     use super::SessionPage;
@@ -262,15 +276,31 @@ mod ledger {
         }
     }
 
-    /// The host as the engine uses it: every delivery is noted in the ledger first.
+    /// The host as the engine uses it: every delivery is noted in the ledger first, and passes
+    /// the delivery gate once one is set.
     pub struct LedgerHost {
         inner: Arc<dyn SuperagentHost>,
         ledger: Arc<DeliveryLedger>,
+        gate: Arc<OnceLock<DeliveryGate>>,
     }
 
     impl LedgerHost {
         pub fn new(inner: Arc<dyn SuperagentHost>, ledger: Arc<DeliveryLedger>) -> Self {
-            Self { inner, ledger }
+            Self::with_gate(inner, ledger, Arc::new(OnceLock::new()))
+        }
+
+        /// Like `new`, with the slot the delivery gate is set in later (`lib.rs`, once the drive
+        /// runs).
+        pub fn with_gate(
+            inner: Arc<dyn SuperagentHost>,
+            ledger: Arc<DeliveryLedger>,
+            gate: Arc<OnceLock<DeliveryGate>>,
+        ) -> Self {
+            Self {
+                inner,
+                ledger,
+                gate,
+            }
         }
     }
 
@@ -312,7 +342,13 @@ mod ledger {
             mode: DeliveryMode,
         ) -> BoxFut<'_, anyhow::Result<()>> {
             self.ledger.note(&text);
-            self.inner.deliver(thread, text, mode)
+            let gate = self.gate.get().cloned();
+            Box::pin(async move {
+                if let Some(gate) = gate {
+                    gate(thread).await;
+                }
+                self.inner.deliver(thread, text, mode).await
+            })
         }
 
         fn start_step(&self, thread: ThreadId, text: String) -> BoxFut<'_, anyhow::Result<()>> {
@@ -352,6 +388,11 @@ mod ledger {
             self.inner.withdraw_queued(thread, item_id)
         }
 
+        fn start_queued(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<bool>> {
+
+            self.inner.start_queued(thread)
+        }
+
         fn interrupt(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<()>> {
             self.inner.interrupt(thread)
         }
@@ -389,5 +430,4 @@ mod ledger {
             self.inner.tokens_used(thread)
         }
     }
-
 }

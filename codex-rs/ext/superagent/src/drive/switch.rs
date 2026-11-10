@@ -1,5 +1,7 @@
 //! Moving a driven session to another account (`accounts.rs`): by itself when a step's account
-//! could not carry it (out of quota, model at capacity), or when the Router asks.
+//! could not carry it (out of quota, model at capacity), or when the Router asks. The move before
+//! a step whose account runs low is in `pool.rs`; the Router's own moves are in
+//! `router_account.rs` and `router_rescue.rs`.
 
 use std::collections::BTreeMap;
 
@@ -12,23 +14,16 @@ use super::DriveState;
 use super::KEY_PREFIX;
 use super::NOTICE;
 use super::accounts;
+use super::accounts::AccountInfo;
 use super::accounts::Cooldown;
 use super::accounts::Trouble;
+use super::accounts::now;
+use super::pool::STEP_MOVED_KEY;
+use super::pool::step_key;
 use crate::core::now_iso;
-use crate::host::DeliveryMode;
-
-/// The effect kind that moves the Router itself to another account after a failed turn.
-pub const KIND_ROUTER: &str = "drive-router-account";
-/// The ledger key of the Router turns already moved, so one failure moves the Router once.
-const ROUTER_MOVED_KEY: &str = "drive-router-moved";
-const ROUTER_MOVED: usize = 50;
 
 /// How the pause while an account is being switched ends; only such a pause is resumed by it.
 pub const SWITCHING: &str = "正在换号";
-
-fn now() -> i64 {
-    chrono::Utc::now().timestamp()
-}
 
 fn local_time(at: i64) -> String {
     chrono::DateTime::from_timestamp(at, 0)
@@ -73,7 +68,32 @@ impl DriveService {
             .collect())
     }
 
-    async fn cool_down(&self, account: &str, until: i64, reason: &str) -> anyhow::Result<()> {
+    /// Until when `account` cools down after `trouble`: until its quota resets (or an hour when
+    /// that is unknown), or a while for a model at capacity.
+    pub(super) fn cooldown_until(
+        &self,
+        pool: &[AccountInfo],
+        account: &str,
+        trouble: Trouble,
+        now: i64,
+    ) -> i64 {
+        match trouble {
+            Trouble::UsageLimit => pool
+                .iter()
+                .find(|info| info.name == account)
+                .and_then(|info| info.resets_at)
+                .filter(|at| *at > now)
+                .unwrap_or(now + accounts::QUOTA_COOLDOWN.as_secs() as i64),
+            Trouble::Capacity => now + self.inner.capacity_cooldown.as_secs() as i64,
+        }
+    }
+
+    pub(super) async fn cool_down(
+        &self,
+        account: &str,
+        until: i64,
+        reason: &str,
+    ) -> anyhow::Result<()> {
         let account = account.to_owned();
         let reason = reason.to_owned();
         let now = now();
@@ -133,14 +153,14 @@ impl DriveService {
         trouble: Trouble,
     ) -> anyhow::Result<()> {
         let n = record.steps;
-        let Some(source) = self.inner.accounts.clone() else {
+        if self.inner.accounts.is_none() {
             return self
                 .stop_switching(&record, format!("第 {n} 步{}", trouble.describe()))
                 .await;
-        };
+        }
         let now = now();
         let current = self.inner.host.thread_profile(thread).await.unwrap_or(None);
-        let pool = match source.accounts().await {
+        let pool = match self.live_pool().await {
             Ok(pool) => pool,
             Err(err) => {
                 let reason = format!("第 {n} 步{}，但读不到账号状态：{err:#}", trouble.describe());
@@ -148,19 +168,14 @@ impl DriveService {
             }
         };
         if let Some(name) = &current {
-            let until = match trouble {
-                Trouble::UsageLimit => pool
-                    .iter()
-                    .find(|account| &account.name == name)
-                    .and_then(|account| account.resets_at)
-                    .filter(|at| *at > now)
-                    .unwrap_or(now + accounts::QUOTA_COOLDOWN.as_secs() as i64),
-                Trouble::Capacity => now + self.inner.capacity_cooldown.as_secs() as i64,
-            };
+            let until = self.cooldown_until(&pool, name, trouble, now);
             self.cool_down(name, until, trouble.describe()).await?;
         }
         let cooling = self.cooldowns().await?;
-        let Some(next) = accounts::choose(&pool, &cooling, now, current.as_deref()).cloned() else {
+        let thresholds = self.inner.policy.thresholds;
+        let Some(next) =
+            accounts::pick(&pool, &cooling, now, current.as_deref(), thresholds).cloned()
+        else {
             let soonest = cooling
                 .values()
                 .map(|cooldown| cooldown.until)
@@ -174,6 +189,19 @@ impl DriveService {
             let reason = format!("第 {n} 步{}；换到 {} 失败：{err:#}", trouble.describe(), next.name);
             return self.stop_switching(&record, reason).await;
         }
+        // The step goes again on the account it just moved to: the check before it leaves it.
+        self.claim(
+            STEP_MOVED_KEY,
+            &step_key(&record.thread_id, &record.since, n),
+        )
+        .await?;
+        self.note_move(
+            &record.thread_id,
+            current.as_deref(),
+            &next.name,
+            &format!("第 {n} 步{}", trouble.describe()),
+        )
+        .await;
         let Some(text) = step_text(&record) else {
             return self
                 .stop_switching(&record, format!("第 {n} 步换号后找不到它的原话"))
@@ -237,12 +265,11 @@ impl DriveService {
             .first()
             .is_some_and(|turn| turn.status == "inProgress");
         anyhow::ensure!(!running, "这个会话正在做一轮：先 interrupt，再换号");
-        let source = self
-            .inner
-            .accounts
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("没有账号状态程序（codex-account-status），不能换号"))?;
-        let pool = source.accounts().await?;
+        anyhow::ensure!(
+            self.inner.accounts.is_some(),
+            "没有账号状态程序（codex-account-status），不能换号"
+        );
+        let pool = self.live_pool().await?;
         let current = self.inner.host.thread_profile(thread).await.unwrap_or(None);
         let next = match wanted.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
             Some(name) => pool
@@ -252,7 +279,8 @@ impl DriveService {
                 .ok_or_else(|| anyhow::anyhow!("账号池里没有 {name}"))?,
             None => {
                 let cooling = self.cooldowns().await?;
-                accounts::choose(&pool, &cooling, now(), current.as_deref())
+                let thresholds = self.inner.policy.thresholds;
+                accounts::pick(&pool, &cooling, now(), current.as_deref(), thresholds)
                     .cloned()
                     .ok_or_else(|| anyhow::anyhow!("没有可换的账号：额度见底或都在冷却"))?
             }
@@ -261,6 +289,8 @@ impl DriveService {
             .host
             .bind_profile(thread, next.name.clone())
             .await?;
+        self.note_move(thread_id, current.as_deref(), &next.name, "Router 让换号")
+            .await;
         let name = next.name.clone();
         let record = self
             .change(thread_id, |record| {
@@ -269,96 +299,5 @@ impl DriveService {
             })
             .await?;
         Ok((record, next.label()))
-    }
-
-    /// A Router turn ended: look at it soon, outside the turn's hook.
-    pub async fn router_turn_ended(&self, thread_id: &str) -> anyhow::Result<()> {
-        self.inner
-            .effects
-            .enqueue_now(KIND_ROUTER, thread_id, &json!({}))
-            .await
-    }
-
-    /// The Router's last turn failed on its account (quota used up, model at capacity): that
-    /// account cools down, the Router moves to the next account by reset time, and what the turn
-    /// was about (the person's words or an engine notice) is handed to it again with a line on
-    /// the switch. Each failed turn moves the Router once.
-    pub async fn router_turn_failed(&self, thread_id: &str) -> anyhow::Result<()> {
-        let Some(source) = self.inner.accounts.clone() else {
-            return Ok(());
-        };
-        let thread = ThreadId::from_string(thread_id)?;
-        let latest = self.inner.host.session_turns(thread, 1).await?;
-        let Some(turn) = latest.first() else {
-            return Ok(());
-        };
-        if turn.status == "inProgress" {
-            return Ok(());
-        }
-        let Some(trouble) = accounts::trouble(turn) else {
-            return Ok(());
-        };
-        let turn_id = turn.id.clone();
-        let first_time = self
-            .inner
-            .store
-            .atomic(async |tx| {
-                let mut moved: Vec<String> =
-                    tx.kv_get(ROUTER_MOVED_KEY).await?.unwrap_or_default();
-                if moved.contains(&turn_id) {
-                    return Ok(false);
-                }
-                moved.push(turn_id);
-                if moved.len() > ROUTER_MOVED {
-                    moved.remove(0);
-                }
-                tx.kv_set(ROUTER_MOVED_KEY, &moved).await?;
-                Ok(true)
-            })
-            .await?;
-        if !first_time {
-            return Ok(());
-        }
-        let words = turn.user.join("\n\n").trim().to_owned();
-        let now = now();
-        let current = self.inner.host.thread_profile(thread).await.unwrap_or(None);
-        let pool = source.accounts().await?;
-        if let Some(name) = &current {
-            let until = match trouble {
-                Trouble::UsageLimit => pool
-                    .iter()
-                    .find(|account| &account.name == name)
-                    .and_then(|account| account.resets_at)
-                    .filter(|at| *at > now)
-                    .unwrap_or(now + accounts::QUOTA_COOLDOWN.as_secs() as i64),
-                Trouble::Capacity => now + self.inner.capacity_cooldown.as_secs() as i64,
-            };
-            self.cool_down(name, until, trouble.describe()).await?;
-        }
-        let cooling = self.cooldowns().await?;
-        let Some(next) = accounts::choose(&pool, &cooling, now, current.as_deref()).cloned() else {
-            tracing::warn!(
-                "superagent: the Router's account cannot carry its turn ({}) and no account is free",
-                trouble.describe()
-            );
-            return Ok(());
-        };
-        self.inner
-            .host
-            .bind_profile(thread, next.name.clone())
-            .await?;
-        if words.is_empty() {
-            return Ok(());
-        }
-        let from = current.unwrap_or_else(|| "原账号".to_owned());
-        let text = format!(
-            "[通知] Router 的账号{}（{from}），已换到 {}。下面是刚才没处理完的话，请接着处理：\n{words}",
-            trouble.describe(),
-            next.label()
-        );
-        self.inner
-            .host
-            .deliver(thread, text, DeliveryMode::Steer)
-            .await
     }
 }

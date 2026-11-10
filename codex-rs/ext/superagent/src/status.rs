@@ -64,6 +64,8 @@ pub struct Status {
     pub hook_errors: Option<u64>,
     /// The external watchdog's last run (`t` of its state file), when the file exists.
     pub watchdog_heartbeat: Option<String>,
+    /// The account moves the drive made (the Router's and the driven sessions'), oldest first.
+    pub account_moves: Vec<crate::drive::AccountMove>,
     /// The exit code the watchdog acts on (`exit_code`).
     pub exit_code: i32,
 }
@@ -175,6 +177,7 @@ pub async fn status_with(
         .or_insert_with(|| Health::ready("not tracked in A1", None));
     let runtime = service.runtime();
     let mut effects = BTreeMap::new();
+    let mut account_moves = Vec::new();
     let mut tickets = Vec::new();
     let mut attention = Vec::new();
     let mut pm_groups = pm_threads
@@ -197,6 +200,9 @@ pub async fn status_with(
                     failing: row.try_get::<Option<i64>, _>("failing")?.unwrap_or(0),
                 },
             );
+        }
+        if let Some(drive) = &runtime.drive {
+            account_moves = drive.account_moves().await?;
         }
         let host = service.host();
         let open_ticket_rows = runtime.store.tickets_open().await?;
@@ -245,6 +251,7 @@ pub async fn status_with(
         attention,
         hook_errors,
         watchdog_heartbeat,
+        account_moves,
         exit_code: 0,
     };
     status.exit_code = exit_code(&status);
@@ -530,6 +537,7 @@ fn parse_ms(at: &str) -> Option<i64> {
     DateTime::parse_from_rfc3339(at)
         .ok()
         .map(|t| t.timestamp_millis())
+
 }
 
 fn iso(ms: i64) -> String {
@@ -537,4 +545,3 @@ fn iso(ms: i64) -> String {
         .map(|t| t.to_rfc3339_opts(SecondsFormat::Millis, true))
         .unwrap_or_default()
 }
-

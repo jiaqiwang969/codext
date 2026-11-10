@@ -305,6 +305,7 @@ fn simple(folder: PathBuf) -> DriveStart {
         request: REQUEST.to_owned(),
         goal: None,
         first: FIRST.to_owned(),
+        account: None,
     }
 }
 

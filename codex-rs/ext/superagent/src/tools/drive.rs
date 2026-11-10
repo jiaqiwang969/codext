@@ -117,13 +117,13 @@ impl DriveTool {
                 "action".to_owned(),
                 JsonSchema::string_enum(
                     vec![json!("start"), json!("say"), json!("interrupt"), json!("switch_account"), json!("feedback"), json!("pause"), json!("resume"), json!("stop"), json!("history")],
-                    Some("start: take a session under drive (or open a new session in `folder`) and send it the first message `text`; say: answer the worker's last conclusion with `text`, quoting in `builds_on` and `serves` what it follows from (while the worker's turn runs, the text is said into it instead); interrupt: stop the running step because the person found it going wrong, then resume and say the next thing; switch_account: move a session (driven or not) to another account, `account` or else the next by quota reset time — the engine also does this by itself when a step fails on quota or model capacity; feedback: the person's acceptance feedback on an anchored goal; pause: the person takes the session over; resume: hand it back; stop: release it; history: the person's words, the last conclusion and every step with its basis.".to_owned()),
+                    Some("start: take a session under drive (or open a new session in `folder`) and send it the first message `text`; say: answer the worker's last conclusion with `text`, quoting in `builds_on` and `serves` what it follows from (while the worker's turn runs, the text is said into it instead); interrupt: stop the running step because the person found it going wrong, then resume and say the next thing; switch_account: move a session (driven or not) to another account, `account` or else the next by quota reset time — the engine also does this by itself before a step whose account runs low and when a step fails on quota or model capacity; feedback: the person's acceptance feedback on an anchored goal; pause: the person takes the session over; resume: hand it back; stop: release it; history: the person's words, the last conclusion and every step with its basis.".to_owned()),
                 ),
             ),
             ("thread_id".to_owned(), JsonSchema::string(Some("The session; start may leave it out and give `folder` to open a new one.".to_owned()))),
             (
                 "account".to_owned(),
-                JsonSchema::string(Some("switch_account: the account to move to, as `codex-account-next list` names it; leave out to take the next by quota reset time.".to_owned())),
+                JsonSchema::string(Some("start: the account the session works under from its first step, as `codex-account-next list` names it, when the person named one; leave out to keep the session's account (a new session takes yours). switch_account: the account to move to; leave out to take the next by quota reset time.".to_owned())),
             ),
             (
                 "folder".to_owned(),
@@ -266,6 +266,12 @@ impl DriveTool {
                         ));
                     }
                 };
+                let account = args
+                    .account
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|account| !account.is_empty())
+                    .map(str::to_owned);
                 let thread_id = match given.clone() {
                     Some(id) => id,
                     None => {
@@ -274,10 +280,12 @@ impl DriveTool {
                                 "新开会话需要 folder：在哪个文件夹做".to_owned(),
                             )
                         })?;
-                        drive
-                            .open_session(&folder, self.caller.as_deref())
-                            .await
-                            .map_err(refused)?
+                        // A new session runs under the account named, else under the Router's.
+                        match account.as_deref() {
+                            Some(account) => drive.open_session_on(&folder, account).await,
+                            None => drive.open_session(&folder, self.caller.as_deref()).await,
+                        }
+                        .map_err(refused)?
                     }
                 };
                 let start = DriveStart {
@@ -288,6 +296,7 @@ impl DriveTool {
                     request,
                     goal,
                     first: args.text.clone().unwrap_or_default(),
+                    account,
                 };
                 drive
                     .start(&thread_id, start)

@@ -16,7 +16,11 @@ mod audit;
 mod context;
 mod feedback;
 mod lifecycle;
+mod policy;
+mod pool;
 mod report;
+mod router_account;
+mod router_rescue;
 mod say;
 mod switch;
 
@@ -31,11 +35,19 @@ use serde_json::json;
 
 pub use accounts::AccountInfo;
 pub use accounts::AccountSource;
+pub use accounts::Activity;
 pub use accounts::Cooldown;
+pub use accounts::Headroom;
+pub use accounts::Plan;
 pub use accounts::StatusHelper;
+pub use accounts::Thresholds;
 pub use accounts::Trouble;
 pub use accounts::choose;
+pub use accounts::choose_above;
+pub use accounts::headroom;
 pub use accounts::parse_pool;
+pub use accounts::pick;
+pub use accounts::plan;
 pub use anchor::Goal;
 pub use audit::Anchor;
 pub use audit::Audit;
@@ -46,6 +58,15 @@ pub use audit::workspace;
 pub use context::DriveContext;
 pub use feedback::Feedback;
 pub use lifecycle::DriveLifecycle;
+pub use policy::AccountPolicy;
+pub use policy::DriveOptions;
+pub use policy::Routers;
+pub use pool::AccountMove;
+pub use router_account::KIND_ROUTER;
+pub use router_account::KIND_WATCH;
+pub use router_rescue::KIND_RESCUE;
+pub use router_rescue::error_trouble;
+pub use router_rescue::rescue_due;
 pub use say::Say;
 
 use crate::cards::truncate_chars;
@@ -240,6 +261,9 @@ pub struct DriveStart {
     pub goal: Option<Goal>,
     /// The first message to the session, in the Router's words.
     pub first: String,
+    /// The account the session runs its steps under, as the Router named it; without one the
+    /// session keeps its account (a new session takes the Router's).
+    pub account: Option<String>,
 }
 
 /// The drive side of the engine.
@@ -253,7 +277,7 @@ struct Inner {
     effects: Effects,
     host: Arc<dyn SuperagentHost>,
     judge: Arc<dyn Judge>,
-    /// The account pool, for moving a session whose account cannot carry a step.
+    /// The account pool, for moving a thread whose account runs low or cannot carry a turn.
     accounts: Option<Arc<dyn AccountSource>>,
     /// How long an account cools down after the model was at capacity on it.
     capacity_cooldown: std::time::Duration,
@@ -261,10 +285,17 @@ struct Inner {
     stall: std::time::Duration,
     /// Serializes changes to the records, so a turn's end and a tool call never interleave.
     lock: tokio::sync::Mutex<()>,
+    policy: AccountPolicy,
+    routers: Routers,
+    /// What the account checks keep between calls (`pool.rs`).
+    watch: std::sync::Mutex<pool::Watch>,
+    /// One read of the pool at a time, so checks that come together share it.
+    refresh: tokio::sync::Semaphore,
 }
 
 impl DriveService {
-    /// Builds the service and registers its step handler; call before the effects start.
+    /// Builds the service with the default account policy and no Routers to watch, and
+    /// registers its handlers; call before the effects start.
     pub async fn install(
         store: Store,
         effects: Effects,
@@ -273,6 +304,29 @@ impl DriveService {
         accounts: Option<Arc<dyn AccountSource>>,
         stall: std::time::Duration,
     ) -> anyhow::Result<Self> {
+        let options = DriveOptions {
+            accounts,
+            stall,
+            policy: AccountPolicy::default(),
+            routers: Arc::new(Vec::new),
+        };
+        Self::install_with(store, effects, host, judge, options).await
+    }
+
+    /// Builds the service and registers its handlers; call before the effects start.
+    pub async fn install_with(
+        store: Store,
+        effects: Effects,
+        host: Arc<dyn SuperagentHost>,
+        judge: Arc<dyn Judge>,
+        options: DriveOptions,
+    ) -> anyhow::Result<Self> {
+        let DriveOptions {
+            accounts,
+            stall,
+            policy,
+            routers,
+        } = options;
         let service = Self {
             inner: Arc::new(Inner {
                 stall,
@@ -283,6 +337,10 @@ impl DriveService {
                 host,
                 judge,
                 lock: tokio::sync::Mutex::new(()),
+                policy,
+                routers,
+                watch: std::sync::Mutex::new(pool::Watch::default()),
+                refresh: tokio::sync::Semaphore::new(1),
             }),
         };
         let runner = service.clone();
@@ -303,22 +361,7 @@ impl DriveService {
                     .retry(5_000, 60_000),
             )
             .await?;
-        let mover = service.clone();
-        effects
-            .handle(
-                switch::KIND_ROUTER,
-                Arc::new(move |_payload, thread_id| {
-                    let mover = mover.clone();
-                    Box::pin(async move {
-                        mover
-                            .router_turn_failed(&thread_id)
-                            .await
-                            .map_err(|err| EffectError::Later(format!("{err:#}")))
-                    })
-                }),
-                HandlerOptions::default().retry(10_000, 120_000),
-            )
-            .await?;
+        router_account::install_router_handlers(&service, &effects).await?;
         Ok(service)
     }
 
@@ -389,6 +432,18 @@ impl DriveService {
         folder: &Path,
         asked_by: Option<&str>,
     ) -> anyhow::Result<String> {
+        let profile = match asked_by.map(ThreadId::from_string) {
+            Some(Ok(thread)) => self.inner.host.thread_profile(thread).await?,
+            Some(Err(_)) | None => None,
+        };
+        self.open_session_under(folder, profile).await
+    }
+
+    async fn open_session_under(
+        &self,
+        folder: &Path,
+        profile: Option<String>,
+    ) -> anyhow::Result<String> {
         anyhow::ensure!(
             folder.is_absolute(),
             "文件夹要写绝对路径：{}",
@@ -400,10 +455,6 @@ impl DriveService {
             folder.display()
         );
         std::fs::create_dir_all(folder)?;
-        let profile = match asked_by.map(ThreadId::from_string) {
-            Some(Ok(thread)) => self.inner.host.thread_profile(thread).await?,
-            Some(Err(_)) | None => None,
-        };
         let thread = self
             .inner
             .host
@@ -428,6 +479,7 @@ impl DriveService {
             request,
             goal,
             first,
+            account,
         } = start;
         anyhow::ensure!(!request.trim().is_empty(), "需要用户的原话（request）");
         let first = say::spoken(&first)?;
@@ -448,6 +500,14 @@ impl DriveService {
             ),
         }
         let now = now_iso();
+        // A drive started on a named account runs from its first step there (`pool.rs`).
+        let account = match account.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+            Some(wanted) => Some(
+                self.bind_start_account(thread_id, thread, wanted, &now)
+                    .await?,
+            ),
+            None => None,
+        };
         let record = DriveRecord {
             thread_id: thread_id.to_owned(),
             title,
@@ -459,7 +519,7 @@ impl DriveService {
             request: request.trim().to_owned(),
             corrections: Vec::new(),
             report: None,
-            account: None,
+            account,
             unchanged: 0,
             digest: None,
             notes: Vec::new(),
@@ -888,6 +948,8 @@ impl DriveService {
         n: u32,
         text: String,
     ) -> anyhow::Result<()> {
+        // The step goes out on an account with headroom, moved before it when need be.
+        self.check_step_account(thread_id, thread, n).await;
         // Under the drive's own sandbox: a cold session resumes with the config's defaults
         // rather than the settings it had.
         let delivered = self.inner.host.start_step(thread, text).await;

@@ -9,7 +9,7 @@ Superagent 是跑在 app-server daemon 里的组织引擎。Router 是它管的�
 **推进。**
 
 1. 用户说要做什么，Router 先问清楚，用一句话复述打算怎么做。
-2. 用户同意后，Router 用 `start` 开始推进。它可以新建文件夹和新会话（用 Router 自己的账号），第一句话由 Router 自己写。
+2. 用户同意后，Router 用 `start` 开始推进。它可以新建文件夹和新会话（默认用 Router 自己的账号；用户指定了账号时带上 `account`，见下面的换号），第一句话由 Router 自己写。
 3. 被推进的会话每做完一步，引擎取它最后一段回答作为结论，用一张 `[通知]` 卡片交给 Router。
 4. Router 对每个结论二选一：转告用户，或者用 `say` 回 worker。
 5. `say` 要带依据：它接着哪句话说（`builds_on`），要照抄 worker 最近结论、用户原话或纠正里的一段；它为了源头的哪一点（`serves`），要照抄用户原话、纠正或验收清单里的一段。引擎核对不上就退回。有方法名、skill 名、`A1` 这类编号的话也退回，因为说给人听要用人话。
@@ -22,12 +22,26 @@ Superagent 是跑在 app-server daemon 里的组织引擎。Router 是它管的�
 
 一次推进会停在下面四种状态之一，Router 都会收到通知：交了结论、可交付等用户验收、需要用户决定、已暂停（附原因）。
 
-**换号。**
+**换号。** 引擎在账号用完之前就换（引擎查账号不花模型额度），失败后再换只是兜底。
 
-- 推进的一步因为账号额度用完（`usageLimitExceeded`）或模型满载（`serverOverloaded`，"Selected model is at capacity"）而失败时，引擎让这个账号冷却：额度用完的冷却到重置时间，满载的冷却 15 分钟。
-- 然后按 `codex-account-next list` 的顺序挑下一个账号：重置最早的优先，跳过免费账号、剩余不到 5% 的和还在冷却的。会话换到新账号后，同一步重发。
-- Router 自己的回合也一样，每次失败只换一次。
-- Router 也可以用 `switch_account` 手动换。
+- 提前换 Router 的号：引擎每 2 分钟用 `codex-account-status` 读一次账号池，看 Router 用的账号。剩余额度低于软阈值（10%），或者低于硬阈值（3%）、在冷却、用不了，Router 空闲时马上换；Router 正在回答时不打断，等这一轮结束再换。
+- 一轮结束时、引擎给 Router 送通知或任何话之前，也按最近读到的账号池看一次，所以下一轮总在有余量的账号上开始。这一轮结束要换号时，Router 排队的话先等一等（最多一分钟），换好由引擎接着开始。
+- 提前换推进会话的号：每一步交出去之前看一次会话的账号，规则相同；需要换就先换再交这一步，推进记录里的账号跟着变。一步做到一半不换。
+- 挑号：按 `codex-account-next list` 的顺序，重置最早的优先，跳过免费账号和还在冷却的。提前换只换到剩余不低于软阈值的账号；账号已经快用完时，才退一步接受剩余不低于硬阈值、也不低于 5% 的账号。没有能换的就不动，只记一次警告。同一个账号在一轮（推进的一步）之后只会被换走一次，不会来回换。
+- 兜底：推进的一步、或 Router 自己的一轮，因为账号额度用完（`usageLimitExceeded`）或模型满载（`serverOverloaded`，"Selected model is at capacity"）而失败时，这个账号冷却（额度用完的冷却到重置时间，满载的冷却 15 分钟），换号后把这一步重发、把这一轮的话重新交给 Router。
+- 兜底：Router 的一轮卡在重连里结束不了（同一轮 3 分钟内出现 2 次满载或额度用完）时，引擎打断这一轮，按上一条换号，再把这一轮的话交给 Router。没有能换的账号时不打断。Router 的每一轮最多因此换一次。
+- 手动：Router 可以用 `switch_account` 给会话换号。用户指定新的推进用哪个账号时，`start` 带上 `account`：新会话直接在这个账号上开，已有的会话在第一步之前换过去，这一步不会被提前换走。
+- 每次换号都记在 `superagent/status` 的 `accountMoves` 里（最近 30 次）。
+
+可调的值放在 daemon 的环境变量里，daemon 启动时读一次：
+
+| 环境变量 | 默认 | 含义 |
+| --- | --- | --- |
+| `CODEXT_SUPERAGENT_QUOTA_SOFT_PERCENT` | 10 | 剩余额度低于它，在两轮（两步）之间换号 |
+| `CODEXT_SUPERAGENT_QUOTA_HARD_PERCENT` | 3 | 低于它（或在冷却、用不了）算快用完；不高于软阈值 |
+| `CODEXT_SUPERAGENT_QUOTA_WATCH_SECS` | 120 | 多久读一次账号池；0 关掉定时查看，一轮结束、送话前和每步前照样看（账号池最多 4 分钟读一次） |
+| `CODEXT_SUPERAGENT_ROUTER_RESCUE_THRESHOLD` | 2 | Router 同一轮出现几次满载或额度用完就打断换号；0 关掉 |
+| `CODEXT_SUPERAGENT_ROUTER_RESCUE_WINDOW_SECS` | 180 | 上面这几次要落在多少秒之内 |
 
 **权限。** 推进的步骤用完全访问：不加沙箱，不问批准，可以用本机软件和浏览器。
 
@@ -60,7 +74,9 @@ daemon 可以随时重启。重启后引擎逐个检查推进中的会话：已�
 | `drive/mod.rs` | 推进记录和状态，开始、暂停、恢复、停止、交接、重启对账 |
 | `drive/say.rs` | `say` 的依据核对和话的检查，插话 |
 | `drive/report.rs` | 取结论、判定、通知卡片 |
-| `drive/accounts.rs`、`drive/switch.rs` | 账号池、挑号、冷却、换号（含 Router 自己） |
+| `drive/accounts.rs`、`drive/policy.rs` | 账号池、挑号、要不要换号的判断（`plan`）、可调的值 |
+| `drive/pool.rs`、`drive/switch.rs` | 读账号池、换号记录、每步前的检查、推进会话失败后的换号 |
+| `drive/router_account.rs`、`drive/router_rescue.rs` | Router 提前换号（定时查看、一轮结束、送话前）和兜底（失败或卡在重连的一轮） |
 | `drive/anchor.rs`、`drive/audit.rs` | 锚定目标和 oev2 判定 |
 | `drive/context.rs` | 给被推进会话的常驻规则（`<superagent_driven>`） |
 | `drive/feedback.rs`、`drive/lifecycle.rs` | 用户验收反馈；回合开始和结束的钩子 |
@@ -73,7 +89,7 @@ daemon 可以随时重启。重启后引擎逐个检查推进中的会话：已�
 
 ## 测试
 
-- 引擎：`cd codex-rs && cargo test -p codex-superagent-extension`。推进的测试在 `ext/superagent/tests/drive.rs`。
+- 引擎：`cd codex-rs && cargo test -p codex-superagent-extension`。推进的测试在 `ext/superagent/tests/drive.rs`，换号的在 `tests/accounts.rs`。
 - 端到端：实验室的 `~/242-superagent-codext-lab/tests/scripts/drive_e2e.py`，用 mock 模型跑简单、锚定、换号、Router 换号四个场景。
 - 真实模型：在实验室 daemon 上让 Router 推进一个小目标，看通知、`say`、插话、换号是否正常。
 

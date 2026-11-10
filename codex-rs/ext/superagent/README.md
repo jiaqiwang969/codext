@@ -51,6 +51,9 @@ Router 的规则和上下文在 `src/router.rs`，推进在 `src/drive/`，工�
 持久化；设置 `CODEXT_SUPERAGENT_CAPACITY_CONTINUE_MAX=0` 关闭续跑。
 旧版缺少失败回合证据的待续跑动作不会被自动执行。
 
+Router 和被推进的会话按账号额度提前换号，回合失败或卡在重连时再兜底换号，见
+[docs/superagent](../../../docs/superagent/README.md) 的“换号”。
+
 build-27 移植到 0.166 的记录见
 [0.166 整合记录](../../../docs/superagent/history/superagent-0.166-integration.md)，宿主接口见
 [宿主接口说明](../../app-server/README.md#organization-coordinator-experimental)。

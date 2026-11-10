@@ -1,4 +1,6 @@
-//! Keeps Codext's own automatic drivers off the threads the organization drives.
+//! Keeps Codext's own automatic drivers off the threads the organization drives, and holds a
+//! Router's queued input while the drive moves the Router to another account at the end of a
+//! turn (`drive/router_account.rs`), so the next turn starts on the new account.
 
 use std::sync::Arc;
 use std::sync::Weak;
@@ -14,6 +16,8 @@ use crate::SuperagentService;
 /// Queue starts stay allowed: the engine delivers through the queue, and a person's queued
 /// message is a person's input.
 const ENGINE_DECIDES: &[&str] = &["goal", "daemon_recovery"];
+/// The trigger of a start the persistent queue makes when a turn ends.
+const QUEUE: &str = "queue";
 
 pub struct SuperagentArbiter {
     service: Weak<SuperagentService>,
@@ -36,13 +40,19 @@ impl AutomaticTurnArbiter for SuperagentArbiter {
             let Some(trigger) = input.turn_trigger else {
                 return true;
             };
-            if !ENGINE_DECIDES.contains(&trigger) {
-                return true;
-            }
             let Some(service) = self.service.upgrade() else {
                 return true;
             };
             let thread_id = input.thread_store.level_id();
+            if trigger == QUEUE && service.holds_queue(thread_id) {
+                tracing::info!(
+                    "superagent: the queued input of {thread_id} waits for its account move"
+                );
+                return false;
+            }
+            if !ENGINE_DECIDES.contains(&trigger) {
+                return true;
+            }
             if service.owns_thread(thread_id).await {
                 tracing::info!(
                     "superagent: declined a {trigger} turn on {thread_id}; the engine drives this thread"

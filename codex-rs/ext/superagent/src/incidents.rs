@@ -2,6 +2,9 @@
 //! and writes nothing to the rollout, so the host reports every stream or turn error here and
 //! the engine keeps its own record of the threads it drives: one JSON line per incident in
 //! `<dir>/incidents.jsonl`, a warn log line, and the last few in memory for status.
+//!
+//! Several parts listen: the executor's capacity policy (worker fallback model) and the drive's
+//! Router rescue each subscribe, and each limits the record to the threads it cares about.
 
 use std::collections::VecDeque;
 use std::io::Write;
@@ -18,21 +21,38 @@ use serde::Serialize;
 static SINK: OnceLock<IncidentLog> = OnceLock::new();
 /// Told about every incident recorded, on the recording task: keep it quick.
 pub type Listener = Arc<dyn Fn(&Incident) + Send + Sync>;
-static LISTENER: OnceLock<Listener> = OnceLock::new();
+static LISTENERS: Mutex<Vec<Listener>> = Mutex::new(Vec::new());
 
-/// Registers the one listener (the executor's capacity policy); later calls are ignored.
+/// Adds a listener (the executor's capacity policy, the drive's Router rescue); every listener
+/// is told about every incident recorded, after it is in `recent`.
 pub fn subscribe(listener: Listener) {
-    let _ = LISTENER.set(listener);
+    LISTENERS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(listener);
 }
 
 /// Which threads' incidents are recorded; answered on the reporting task: keep it quick.
 pub type Scope = Arc<dyn Fn(&str) -> bool + Send + Sync>;
-static SCOPE: OnceLock<Scope> = OnceLock::new();
+static SCOPES: Mutex<Vec<Scope>> = Mutex::new(Vec::new());
 
-/// Records only the threads `scope` accepts (the executor's: the PM and live worker threads);
-/// later calls are ignored. Until a scope is set, every thread is recorded.
+/// Records the threads `scope` accepts (the executor's: the PM and live worker threads; the
+/// drive's: the Routers), besides those an earlier scope accepts. Until a scope is set, every
+/// thread is recorded.
 pub fn limit_to(scope: Scope) {
-    let _ = SCOPE.set(scope);
+    SCOPES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(scope);
+}
+
+/// Whether some scope accepts the thread, or none is set.
+fn in_scope(thread: &str) -> bool {
+    let scopes = SCOPES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    scopes.is_empty() || scopes.iter().any(|scope| scope(thread))
 }
 const RECENT: usize = 100;
 
@@ -86,7 +106,7 @@ pub fn note(thread: &str, turn: Option<&str>, message: &str, details: Option<&st
     let Some(kind) = classify(message, details) else {
         return;
     };
-    if SCOPE.get().is_some_and(|scope| !scope(thread)) {
+    if !in_scope(thread) {
         return;
     }
     let message = match details {
@@ -120,14 +140,22 @@ pub fn note(thread: &str, turn: Option<&str>, message: &str, details: Option<&st
             let _ = writeln!(file, "{line}");
         }
     }
-    if let Some(listener) = LISTENER.get() {
+    {
+        let mut recent = log.recent.lock().unwrap_or_else(PoisonError::into_inner);
+        if recent.len() >= RECENT {
+
+            recent.pop_front();
+        }
+        recent.push_back(incident.clone());
+    }
+    // Outside the lock: a listener counts the recent incidents, this one included.
+    let listeners = LISTENERS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    for listener in listeners {
         listener(&incident);
     }
-    let mut recent = log.recent.lock().unwrap_or_else(PoisonError::into_inner);
-    if recent.len() >= RECENT {
-        recent.pop_front();
-    }
-    recent.push_back(incident);
 }
 
 /// The incidents this process recorded, oldest first (at most the last 100).
@@ -143,4 +171,3 @@ pub fn recent() -> Vec<Incident> {
         })
         .unwrap_or_default()
 }
-
