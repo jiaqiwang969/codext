@@ -532,6 +532,9 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
                 rpc_transport: AppServerRpcTransport::InProcess,
                 remote_control_handle: None,
                 plugin_startup_tasks: Some(PluginStartupConfig::Current),
+                // `codex exec` and a TUI without a daemon run here, beside the daemon that owns
+                // the Superagent engine of the same `CODEX_HOME`.
+                superagent_host: false,
             }));
             let mut thread_created_rx = processor.thread_created_receiver();
             let session = Arc::new(ConnectionSessionState::new(

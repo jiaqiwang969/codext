@@ -293,6 +293,11 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) remote_control_handle: Option<RemoteControlHandle>,
     /// `None` skips startup tasks; otherwise preserve the initial config-loading path.
     pub(crate) plugin_startup_tasks: Option<PluginStartupConfig>,
+    /// Whether this process may run the Superagent engine when the feature is on: only the
+    /// managed daemon does. An embedded app-server (`codex exec`, a TUI without a daemon) or a
+    /// stdio app-server opens the same `CODEX_HOME` beside the daemon, and a second engine there
+    /// would take the daemon's driven sessions for interrupted and pause them.
+    pub(crate) superagent_host: bool,
 }
 
 impl MessageProcessor {
@@ -321,6 +326,7 @@ impl MessageProcessor {
             rpc_transport,
             remote_control_handle,
             plugin_startup_tasks,
+            superagent_host,
         } = args;
         // Startup credential reads must not open a browser before initialize selects the policy.
         let gateway_login_control =
@@ -354,7 +360,9 @@ impl MessageProcessor {
         let turn_start_admission: Arc<dyn TurnStartAdmission> = Arc::new(turn_admission.clone());
         let extension_event_sink =
             app_server_extension_event_sink(outgoing.clone(), thread_state_manager.clone());
-        let superagent = if config.features.enabled(codex_features::Feature::Superagent) {
+        let superagent = if superagent_host
+            && config.features.enabled(codex_features::Feature::Superagent)
+        {
             state_db.as_ref().map(|state_db| {
                 Arc::new(codex_superagent_extension::SuperagentService::new(
                     Arc::clone(state_db),

@@ -284,6 +284,7 @@ pub(super) async fn build_test_processor(
         rpc_transport: AppServerRpcTransport::Stdio,
         remote_control_handle: None,
         plugin_startup_tasks: Some(PluginStartupConfig::Current),
+        superagent_host: false,
     }));
     (processor, outgoing_rx)
 }

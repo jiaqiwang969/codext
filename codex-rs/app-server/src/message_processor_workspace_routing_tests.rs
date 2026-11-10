@@ -88,6 +88,7 @@ async fn background_routing_call_sites_skip_config(api_key: Option<&str>) -> any
         remote_control_handle: None,
         // Isolate routing from unrelated plugin startup configuration loads.
         plugin_startup_tasks: None,
+        superagent_host: false,
     }));
     // The model catalog has its own legitimate config refresh, outside routing.
     processor.models_refresh_worker.shutdown();
