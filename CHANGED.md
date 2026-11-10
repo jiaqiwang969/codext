@@ -106,6 +106,7 @@ Implementation must follow the status-header skill .agents/skills/status-header/
 - Release-note and manual-update links point to `jiaqiwang969/codext`. A third-party npm update must not replace a Router-enabled daemon.
 - Candidate package metadata includes the commit suffix (`<base>-<sha>`) so daemon seeding does not opt into upstream stable auto-updates.
 - The legacy npm release configuration remains manual and unpublished by this workflow.
+- `rust-release.yml` publishes to npm only when dispatched with `publish_npm: true` (default off): the npm package name `@loongphy/codext` belongs to upstream codext, so this fork's releases stay on GitHub. The release notes come from `docs/release-notes.md` when it exists, after the upstream link. `x86_64-apple-darwin` is cross-compiled on the Apple Silicon `macos-15` runner, because the Intel runner could not finish within the 240-minute job limit.
 
 ## Release artifact parity
 

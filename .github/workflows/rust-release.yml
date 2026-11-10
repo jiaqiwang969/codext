@@ -4,6 +4,11 @@ name: rust-release
 # use local packages (scripts/superagent/promote.sh); run this when a published release is wanted.
 on:
   workflow_dispatch:
+    inputs:
+      publish_npm:
+        description: Publish the npm packages too (the package name belongs to upstream codext; leave off for this fork)
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}
@@ -36,7 +41,8 @@ jobs:
             target: x86_64-unknown-linux-musl
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-          - runner: macos-15-intel
+          # Cross-compiled on Apple Silicon: the Intel runner could not finish within the job limit.
+          - runner: macos-15
             target: x86_64-apple-darwin
           - runner: macos-15
             target: aarch64-apple-darwin
@@ -347,12 +353,16 @@ jobs:
           upstream_url="https://github.com/openai/codex/releases/tag/${upstream_tag}"
           {
             printf 'For upstream changes, see [%s](%s).\n\n' "${upstream_label}" "${upstream_url}"
-            # Cap the commit message the way the upstream publisher does:
-            # keep a 124,999-character budget and reserve the last character
-            # for a trailing newline so GitHub's markdown renderer does not run
-            # the last line into subsequent content.
-            git log -1 --format=%B "${GITHUB_SHA}" |
-              python3 -c 'import sys; print(sys.stdin.read()[:124998])'
+            # The release's own notes live in docs/release-notes.md; without it, use the commit message.
+            # Cap either the way the upstream publisher does: keep a 124,999-character budget and
+            # reserve the last character for a trailing newline so GitHub's markdown renderer does
+            # not run the last line into subsequent content.
+            if [[ -f docs/release-notes.md ]]; then
+              python3 -c 'import sys; print(open("docs/release-notes.md", encoding="utf-8").read()[:124998])'
+            else
+              git log -1 --format=%B "${GITHUB_SHA}" |
+                python3 -c 'import sys; print(sys.stdin.read()[:124998])'
+            fi
             echo
           } > "${notes_path}"
           echo "path=${notes_path}" >> "$GITHUB_OUTPUT"
@@ -472,6 +482,7 @@ jobs:
             --clobber
 
   publish-npm:
+    if: ${{ inputs.publish_npm }}
     needs:
       - build-unix
       - build-windows
