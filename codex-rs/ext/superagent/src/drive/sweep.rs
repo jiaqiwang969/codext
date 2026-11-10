@@ -2,7 +2,8 @@
 //! schedules itself again). It hands a parked session back when what it waits for came
 //! (`wait.rs`), looks again at a step whose end was never read, and marks what someone watching
 //! the drives would notice. The marks show in the session's line; the ones the Router should act
-//! on go to it once, as a notice, when they appear.
+//! on go to it once, as a notice, when they appear. At most every `LOOK_EVERY` it also looks at
+//! the machine's disk (`machine.rs`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -178,9 +179,12 @@ fn marks(
 }
 
 impl DriveService {
-    /// One round: wake the sessions whose wait came, look again at steps whose end was never
-    /// read, and mark what the round notices.
+    /// One round: look at the machine's disk when it is time, wake the sessions whose wait
+    /// came, look again at steps whose end was never read, and mark what the round notices.
     pub async fn sweep(&self) -> anyhow::Result<()> {
+        if let Err(err) = self.look_at_machine().await {
+            tracing::warn!("superagent drive: the look at the machine: {err:#}");
+        }
         {
             let _lock = self.inner.lock.lock().await;
             self.look_at_waits().await?;

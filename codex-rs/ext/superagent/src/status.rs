@@ -73,6 +73,9 @@ pub struct Status {
     pub drives: Vec<crate::drive::DriveStatus>,
     /// The reset cards the drive used when no account could take a move, oldest first.
     pub reset_cards: Vec<crate::drive::CardUse>,
+    /// What the drive last read of the volume that holds `CODEX_HOME`, and when it last told the
+    /// main Router the disk runs low; `None` before its first look.
+    pub machine: Option<crate::drive::MachineStatus>,
     /// The exit code the watchdog acts on (`exit_code`).
     pub exit_code: i32,
 }
@@ -188,6 +191,7 @@ pub async fn status_with(
     let mut ended_cooldowns = Vec::new();
     let mut drives = Vec::new();
     let mut reset_cards = Vec::new();
+    let mut machine = None;
     let mut tickets = Vec::new();
     let mut attention = Vec::new();
     let mut pm_groups = pm_threads
@@ -221,6 +225,7 @@ pub async fn status_with(
                 .map(crate::drive::DriveStatus::of)
                 .collect();
             reset_cards = drive.card_uses().await?;
+            machine = drive.machine_status().await?;
         }
         let host = service.host();
         let open_ticket_rows = runtime.store.tickets_open().await?;
@@ -273,6 +278,7 @@ pub async fn status_with(
         ended_cooldowns,
         drives,
         reset_cards,
+        machine,
         exit_code: 0,
     };
     status.exit_code = exit_code(&status);

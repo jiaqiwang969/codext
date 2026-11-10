@@ -388,6 +388,7 @@ impl SuperagentService {
                         // Account knobs (`drive/policy.rs`): the quota thresholds, the watch
                         // period and the Router rescue.
                         let routers = self.pm_threads.clone();
+                        let main_router = self.pm_threads.clone();
                         let drive = drive::DriveService::install_with(
                             store.clone(),
                             effects.clone(),
@@ -407,6 +408,13 @@ impl SuperagentService {
                                 routers: Arc::new(move || routers.list()),
                                 retry_after: drive::RETRY_AFTER,
                                 events: Some(self.dir.join("events.jsonl")),
+                                // The disk knob (`drive/machine.rs`): the free space below which
+                                // the main Router is told.
+                                machine: drive::MachineWatch::for_home(
+                                    self.dir.parent().unwrap_or(&self.dir),
+                                    Arc::new(move || main_router.main_router()),
+                                    |name| std::env::var(name).ok(),
+                                ),
                             },
                         )
                         .await?;

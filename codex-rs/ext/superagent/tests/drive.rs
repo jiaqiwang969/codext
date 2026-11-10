@@ -427,6 +427,7 @@ async fn setup_routed(routers: &[&str]) -> anyhow::Result<Setup> {
             routers: Arc::new(move || routers.clone()),
             retry_after: std::time::Duration::ZERO,
             events: Some(events.clone()),
+            machine: None,
         },
     )
     .await?;

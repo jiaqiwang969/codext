@@ -1,8 +1,10 @@
 //! The drives' events: one JSON line in `$CODEX_HOME/superagent/events.jsonl` each time a driven
-//! session changes state, step or account, starts or is released. Someone watching the drives
-//! follows the file instead of scanning every session's history; the engine never reads it back.
-//! The file is cut over to `events.1.jsonl` once it grows past `MAX_BYTES`. `superagent/status`
-//! lists every drive in the same shape (`DriveStatus`).
+//! session changes state, step or account, starts or is released, and each time the engine tells
+//! the main Router the disk runs low or the free space came back (`machine.rs`). Someone watching
+//! the drives follows the file instead of scanning every session's history; the engine never
+//! reads it back. The file is cut over to `events.1.jsonl` once it grows past `MAX_BYTES`.
+//! `superagent/status` lists every drive (`DriveStatus`) and the machine (`MachineStatus`) in the
+//! same shapes.
 
 use std::io::Write;
 use std::path::Path;
@@ -14,6 +16,7 @@ use serde_json::json;
 use super::DriveRecord;
 use super::DriveService;
 use super::DriveState;
+use super::machine::MachineStatus;
 use crate::core::now_iso;
 
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
@@ -93,6 +96,25 @@ impl DriveService {
             tracing::warn!(
                 "superagent drive: the event of {} was not written to {}: {err}",
                 record.thread_id,
+                path.display()
+            );
+        }
+    }
+
+    /// Writes an event about the machine: `event` names it (`disk_low`, `disk_rearmed`), and
+    /// `machine` is what the engine read.
+    pub(super) fn log_machine_event(&self, event: &str, machine: &MachineStatus) {
+        let Some(path) = &self.inner.events else {
+            return;
+        };
+        let line = json!({
+            "at": now_iso(),
+            "event": event,
+            "machine": machine,
+        });
+        if let Err(err) = append(path, &line.to_string()) {
+            tracing::warn!(
+                "superagent drive: the event {event} was not written to {}: {err}",
                 path.display()
             );
         }

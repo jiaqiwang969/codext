@@ -10,6 +10,7 @@ use super::accounts::AccountSource;
 use super::accounts::HARD_REMAINING;
 use super::accounts::SOFT_REMAINING;
 use super::accounts::Thresholds;
+use super::machine::MachineWatch;
 
 /// Below this quota (percent) a thread leaves its account between turns.
 pub const SOFT_PERCENT_VAR: &str = "CODEXT_SUPERAGENT_QUOTA_SOFT_PERCENT";
@@ -56,6 +57,8 @@ pub struct DriveOptions {
     /// The file the drives' events go to, `$CODEX_HOME/superagent/events.jsonl`; `None` writes
     /// none.
     pub events: Option<PathBuf>,
+    /// The round's look at the machine's disk (`machine.rs`); `None` looks at nothing.
+    pub machine: Option<MachineWatch>,
 }
 
 /// How the engine keeps the Router and the driven sessions on accounts with quota left.

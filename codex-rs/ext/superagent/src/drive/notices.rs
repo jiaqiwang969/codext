@@ -6,7 +6,9 @@
 //! the notice is about.
 //!
 //! A session's notices go to the Router that started its drive, while that thread is still a
-//! registered Router; otherwise, and for drives of earlier versions, to the first one.
+//! registered Router; otherwise, and for drives of earlier versions, to the first one. A notice
+//! about no session goes to the Router it names: a reset card's to the first one, a low disk's to
+//! the main Router (`machine.rs`).
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -27,8 +29,10 @@ use crate::effects::Effects;
 use crate::effects::HandlerOptions;
 use crate::effects::QueuedRow;
 use crate::host::DeliveryMode;
+use crate::store::Tx;
 
-/// The effect kind of the drive's notices, keyed `<router>|drive:<session>[#topic]`.
+/// The effect kind of the drive's notices, keyed `<router>|drive:<session>[#topic]`, or
+/// `<router>|<key>` for a notice about no session in particular.
 pub const KIND_NOTICE: &str = "drive-notice";
 /// How long a notice waits before it looks at its busy Router again.
 const BUSY_RETRY_MS: i64 = 2_000;
@@ -155,6 +159,21 @@ impl DriveService {
             .into_iter()
             .next()
             .unwrap_or_default();
+        self.inner
+            .store
+            .atomic(async |tx| self.tell_in(tx, &router, key, summary).await)
+            .await
+    }
+
+    /// Queues in `tx` a notice about no session in particular for `router` (when it is empty, the
+    /// first registered Router at delivery), keyed `key` among such notices.
+    pub(super) async fn tell_in(
+        &self,
+        tx: &mut Tx,
+        router: &str,
+        key: &str,
+        summary: String,
+    ) -> anyhow::Result<()> {
         let payload = json!({
             "router": router,
             "summary": summary,
@@ -162,7 +181,7 @@ impl DriveService {
         });
         self.inner
             .effects
-            .enqueue_now(KIND_NOTICE, &format!("{router}|{key}"), &payload)
+            .enqueue(tx, KIND_NOTICE, &format!("{router}|{key}"), &payload)
             .await
     }
 

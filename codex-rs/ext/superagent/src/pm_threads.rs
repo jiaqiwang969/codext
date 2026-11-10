@@ -93,13 +93,27 @@ impl PmThreads {
     pub fn accounts(&self) -> Vec<String> {
         let mut accounts: Vec<String> = Vec::new();
         for (_, project) in self.entries() {
-            if let Some(account) = project.account {
-                if !accounts.contains(&account) {
-                    accounts.push(account);
-                }
+            if let Some(account) = project.account
+                && !accounts.contains(&account)
+            {
+                accounts.push(account);
             }
         }
         accounts
+    }
+
+    /// The main Router: the first registered thread whose line names no project. A project
+    /// Router's line names its project (`project=<name>`).
+    pub fn main_router(&self) -> Option<String> {
+        self.entries()
+            .into_iter()
+            .find(|(_, project)| {
+                project
+                    .name
+                    .as_deref()
+                    .is_none_or(|name| name.trim().is_empty())
+            })
+            .map(|(id, _)| id)
     }
 
     pub fn is_pm(&self, thread_id: &str) -> bool {
@@ -123,4 +137,3 @@ impl PmThreads {
         std::fs::write(&self.file, text)
     }
 }
-

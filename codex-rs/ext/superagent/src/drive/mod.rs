@@ -22,6 +22,7 @@ mod feedback;
 mod lifecycle;
 mod load;
 mod look;
+mod machine;
 mod notices;
 mod policy;
 mod pool;
@@ -82,6 +83,19 @@ pub use events::DriveStatus;
 pub use feedback::Feedback;
 pub use lifecycle::DriveLifecycle;
 pub use look::DONE_WHILE_PAUSED;
+pub use machine::DISK_FREE_PERCENT_VAR;
+pub use machine::DiskReader;
+pub use machine::DiskSpace;
+pub use machine::DiskState;
+pub use machine::DiskVerdict;
+pub use machine::LOOK_EVERY;
+pub use machine::MACHINE_KEY;
+pub use machine::MachineStatus;
+pub use machine::MachineWatch;
+pub use machine::MainRouter;
+pub use machine::REARM_POINTS;
+pub use machine::REPEAT_EVERY;
+pub use machine::disk_space;
 pub use notices::KIND_NOTICE;
 pub use policy::AccountPolicy;
 pub use policy::DriveOptions;
@@ -421,6 +435,9 @@ struct Inner {
     notices: tokio::sync::Mutex<()>,
     /// Where the drives' events go (`events.rs`); `None` writes none.
     events: Option<PathBuf>,
+    /// The round's look at the machine's disk (`machine.rs`), and when it last read the disk.
+    machine: Option<machine::MachineWatch>,
+    machine_looked: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 impl DriveService {
@@ -441,6 +458,7 @@ impl DriveService {
             routers: Arc::new(Vec::new),
             retry_after: retry::RETRY_AFTER,
             events: None,
+            machine: None,
         };
         Self::install_with(store, effects, host, judge, options).await
     }
@@ -460,6 +478,7 @@ impl DriveService {
             routers,
             retry_after,
             events,
+            machine,
         } = options;
         let service = Self {
             inner: Arc::new(Inner {
@@ -479,6 +498,8 @@ impl DriveService {
                 retry_after,
                 notices: tokio::sync::Mutex::new(()),
                 events,
+                machine,
+                machine_looked: std::sync::Mutex::new(None),
             }),
         };
         let runner = service.clone();
