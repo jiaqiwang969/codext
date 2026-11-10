@@ -32,6 +32,7 @@ use crate::drive::DriveStart;
 use crate::drive::Feedback;
 use crate::drive::Goal;
 use crate::drive::Say;
+use crate::drive::StandingScope;
 
 pub const DRIVE_TOOL: &str = "superagent_drive";
 const PROMPT_CHARS: usize = 1_500;
@@ -49,6 +50,8 @@ enum Action {
     Stop,
     History,
     Feedback,
+    Remember,
+    Forget,
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,6 +67,10 @@ struct DriveArgs {
     serves: Option<String>,
     #[serde(default)]
     correction: Option<String>,
+    #[serde(default)]
+    until: Option<String>,
+    #[serde(default)]
+    rule: Option<String>,
     #[serde(default)]
     account: Option<String>,
     #[serde(default)]
@@ -116,9 +123,17 @@ impl DriveTool {
             (
                 "action".to_owned(),
                 JsonSchema::string_enum(
-                    vec![json!("start"), json!("say"), json!("interrupt"), json!("switch_account"), json!("feedback"), json!("pause"), json!("resume"), json!("stop"), json!("history")],
-                    Some("start: take a session under drive (or open a new session in `folder`) and send it the first message `text`; say: answer the worker's last conclusion with `text`, quoting in `builds_on` and `serves` what it follows from (while the worker's turn runs, the text is said into it instead); interrupt: stop the running step because the person found it going wrong, then resume and say the next thing; switch_account: move a session (driven or not) to another account, `account` or else the next by quota reset time — the engine also does this by itself before a step whose account runs low and when a step fails on quota or model capacity; feedback: the person's acceptance feedback on an anchored goal; pause: the person takes the session over; resume: hand it back; stop: release it; history: the person's words, the last conclusion and every step with its basis.".to_owned()),
+                    vec![json!("start"), json!("say"), json!("interrupt"), json!("switch_account"), json!("feedback"), json!("pause"), json!("resume"), json!("stop"), json!("history"), json!("remember"), json!("forget")],
+                    Some("start: take a session under drive (or open a new session in `folder`) and send it the first message `text`; say: answer the worker's last conclusion with `text`, quoting in `builds_on` and `serves` what it follows from (while the worker's turn runs, the text is said into it instead) — say goes on from a pause or a handed-back session directly, no resume first; interrupt: stop the running step because the person found it going wrong, then say the next thing; switch_account: move a session (driven or not) to another account, `account` or else the next by quota reset time — the engine also does this by itself before a step whose account runs low and when a step fails on quota or model capacity; feedback: the person's acceptance feedback on an anchored goal; pause: the person takes the session over; resume: hand it back when you have nothing to say yet; stop: release it; history: the person's words, the last conclusions and every step with its basis; remember: keep the person's words `text` as a standing rule, for every session, for the sessions under `folder`, or for `thread_id`; forget: drop the standing rule `rule`.".to_owned()),
                 ),
+            ),
+            (
+                "until".to_owned(),
+                JsonSchema::string(Some("say: where this step should stop, in plain words (a whole small goal, not one action); told to the worker after the message.".to_owned())),
+            ),
+            (
+                "rule".to_owned(),
+                JsonSchema::string(Some("forget: the standing rule's id, as the list of standing rules shows it (r1, r2, ...).".to_owned())),
             ),
             ("thread_id".to_owned(), JsonSchema::string(Some("The session; start may leave it out and give `folder` to open a new one.".to_owned()))),
             (
@@ -131,15 +146,15 @@ impl DriveTool {
             ),
             (
                 "builds_on".to_owned(),
-                JsonSchema::string(Some("say: words copied from the worker's last conclusion (or the person's words) this message follows from.".to_owned())),
+                JsonSchema::string(Some("say: words copied from what this message follows from: the worker's recent conclusions, the person's request or corrections, what the person told you, a standing rule, or another driven session's conclusion (the step records which session).".to_owned())),
             ),
             (
                 "serves".to_owned(),
-                JsonSchema::string(Some("say: words copied from the person's request (or a correction, or an acceptance item) this message serves.".to_owned())),
+                JsonSchema::string(Some("say: words copied from what this message serves: the person's request, a correction, an acceptance item, what the person told you, or a standing rule.".to_owned())),
             ),
             (
                 "correction".to_owned(),
-                JsonSchema::string(Some("say: what the person just told you about this goal, verbatim; kept with the goal.".to_owned())),
+                JsonSchema::string(Some("say: what the person just told you about this goal, verbatim; kept with the goal. Required to go on after the engine stopped for the person's decision.".to_owned())),
             ),
             (
                 "project".to_owned(),
@@ -151,11 +166,11 @@ impl DriveTool {
             ),
             (
                 "max_steps".to_owned(),
-                JsonSchema::integer(Some("start: the most steps to send before pausing; 20 by default.".to_owned())),
+                JsonSchema::integer(Some("start: the most steps to send before pausing; 20 by default. say, resume: raise the cap when the person agreed to more steps.".to_owned())),
             ),
             (
                 "text".to_owned(),
-                JsonSchema::string(Some("start, say: the message to the session, in plain words; feedback: the person's words about what they tried, verbatim.".to_owned())),
+                JsonSchema::string(Some("start, say: the message to the session, in plain words; feedback: the person's words about what they tried, verbatim; remember: the person's words to keep, verbatim.".to_owned())),
             ),
             (
                 "passed".to_owned(),
@@ -312,6 +327,8 @@ impl DriveTool {
                     builds_on: args.builds_on.unwrap_or_default(),
                     serves: args.serves.unwrap_or_default(),
                     correction: args.correction,
+                    until: args.until,
+                    max_steps: args.max_steps,
                 };
                 drive
                     .say(&id, say)
@@ -401,10 +418,16 @@ impl DriveTool {
                             "at": step.at,
                             "text": truncate_chars(&step.text, PROMPT_CHARS),
                             "builds_on": step.builds_on,
+                            "from": step.from,
                             "serves": step.serves,
                             "audit": step.audit,
                         })
                     })
+                    .collect();
+                let earlier: Vec<String> = record
+                    .earlier
+                    .iter()
+                    .map(|text| truncate_chars(text, PROMPT_CHARS))
                     .collect();
                 Ok(json!({
                     "drive": record.line(),
@@ -416,8 +439,45 @@ impl DriveTool {
                         "text": truncate_chars(&report.text, PROMPT_CHARS),
                         "audit": report.audit,
                     })),
+                    "earlier": earlier,
+                    "refused": record.refused,
                     "steps": steps,
                 }))
+            }
+            Action::Remember => {
+                let scope = match (given.clone(), path(&args.folder)) {
+                    (Some(thread), None) => StandingScope::Session { thread },
+                    (None, Some(path)) => StandingScope::Folder { path },
+                    (None, None) => StandingScope::All,
+                    (Some(_), Some(_)) => {
+                        return Err(FunctionCallError::RespondToModel(
+                            "remember 只给一个范围：thread_id（这一路）或 folder（这个文件夹下的各路），都不给就是全部".to_owned(),
+                        ));
+                    }
+                };
+                let rule = drive
+                    .remember(args.text.as_deref().unwrap_or_default(), scope)
+                    .await
+                    .map_err(refused)?;
+                Ok(json!({ "remembered": rule.line() }))
+            }
+            Action::Forget => {
+                let id = args
+                    .rule
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|rule| !rule.is_empty())
+                    .ok_or_else(|| {
+                        FunctionCallError::RespondToModel(
+                            "需要 rule：忘掉哪一条（r1、r2…）".to_owned(),
+                        )
+                    })?;
+                drive
+                    .forget(id)
+                    .await
+                    .map_err(refused)?
+                    .map(|rule| json!({ "forgot": rule.line() }))
+                    .ok_or_else(|| FunctionCallError::RespondToModel(format!("没有长期规矩 {id}")))
             }
         }
     }

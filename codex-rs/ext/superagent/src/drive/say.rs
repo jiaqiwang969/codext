@@ -1,9 +1,11 @@
 //! The Router answers a driven session (`say`): one message in plain words, with its basis — the
-//! words of the worker's last conclusion (or the person's) it follows from, and the words of the
-//! person's request it serves. The engine checks the basis against its own records before the
-//! message goes out, so a Router that misremembers or lost its context after compaction cannot
-//! send a step detached from what happened: a quote must really be there, the message must not
-//! repeat the last ones, must not recite method names or item ids, and stays within the step cap.
+//! words of the worker's conclusions (or the person's) it follows from, and the words of the
+//! person's request it serves (where quotes may come from: `basis.rs`). The engine checks the
+//! basis against its own records before the message goes out, so a Router that misremembers or
+//! lost its context after compaction cannot send a step detached from what happened: a quote must
+//! really be there, the message must not repeat the last ones, must not recite method names or
+//! item ids, and stays within the step cap. A drive the engine stopped for the person goes on
+//! only with the person's words.
 //!
 //! The person's words to the Router are logged as they arrive (`heard`), so a correction the
 //! Router passes on can be checked against what the person actually said.
@@ -17,6 +19,8 @@ use super::DriveService;
 use super::DriveState;
 use super::NOTES;
 use super::Step;
+use super::basis::Found;
+use super::basis::conclusion_opening;
 use super::drive_key;
 use super::push_limited;
 use crate::cards::truncate_chars;
@@ -51,13 +55,24 @@ const JARGON: &[&str] = &[
 pub struct Say {
     /// The message, in plain words.
     pub text: String,
-    /// Words copied from the worker's last conclusion, the person's request or a correction.
+    /// Words copied from the worker's last conclusions, the person's request or a correction,
+    /// what the person told the Router, a standing rule, or another session's conclusions.
     pub builds_on: String,
-    /// Words copied from the person's request (or a correction, or an acceptance item).
+    /// Words copied from the person's request (or a correction, an acceptance item, what the
+    /// person told the Router, a standing rule).
     pub serves: String,
     /// The person's words to the Router this message passes on, verbatim; kept with the goal.
     pub correction: Option<String>,
+    /// Where the step should stop, in plain words; told to the worker after the message.
+    pub until: Option<String>,
+    /// Raises the most steps the drive may send (the person agreed); never below the steps sent.
+    pub max_steps: Option<u32>,
 }
+
+/// How the end of a step is told to the worker, after the message.
+const UNTIL: &str = "这一步做到这里停：";
+/// How much of a refusal the record keeps.
+const REFUSED_CHARS: usize = 200;
 
 /// Letters and digits only, lowercased: quotes survive changed spacing and punctuation.
 fn normalize(text: &str) -> String {
@@ -68,7 +83,7 @@ fn normalize(text: &str) -> String {
 }
 
 /// Whether `quote` is copied from one of `sources`.
-fn found_in<'a>(quote: &str, sources: impl IntoIterator<Item = &'a str>) -> bool {
+pub(super) fn found_in<'a>(quote: &str, sources: impl IntoIterator<Item = &'a str>) -> bool {
     let quote = normalize(quote);
     if quote.is_empty() {
         return false;
@@ -135,14 +150,19 @@ impl DriveService {
             .await
     }
 
-    /// Fails unless `words` are (part of) something the person said to the Router.
-    pub(super) async fn ensure_heard(&self, words: &str) -> anyhow::Result<()> {
-        let heard: Vec<String> = self
+    /// What the person told the Router lately, oldest first.
+    pub(super) async fn heard_words(&self) -> anyhow::Result<Vec<String>> {
+        Ok(self
             .inner
             .store
             .kv_get(HEARD_KEY)
             .await?
-            .unwrap_or_default();
+            .unwrap_or_default())
+    }
+
+    /// Fails unless `words` are (part of) something the person said to the Router.
+    pub(super) async fn ensure_heard(&self, words: &str) -> anyhow::Result<()> {
+        let heard = self.heard_words().await?;
         anyhow::ensure!(
             found_in(words, heard.iter().map(String::as_str)),
             "用户最近没有对你说过这段话：correction / text 要照抄用户的原话"
@@ -150,8 +170,28 @@ impl DriveService {
         Ok(())
     }
 
-    /// Sends the Router's next message to a driven session after checking its basis.
+    /// Sends the Router's next message to a driven session after checking its basis. A message
+    /// refused while the session waits for one is noted on its record, so the Router's list shows
+    /// the session still waits until a message goes out.
     pub async fn say(&self, thread_id: &str, say: Say) -> anyhow::Result<Option<DriveRecord>> {
+        let sent = self.send(thread_id, say).await;
+        if let Err(err) = &sent {
+            let reason = truncate_chars(&format!("{err:#}"), REFUSED_CHARS);
+            let noted = self
+                .change(thread_id, |record| {
+                    if record.state != DriveState::Driving {
+                        record.refused = Some(reason);
+                    }
+                })
+                .await;
+            if let Err(note) = noted {
+                tracing::warn!("superagent drive: refusal of {thread_id} not noted: {note:#}");
+            }
+        }
+        sent
+    }
+
+    async fn send(&self, thread_id: &str, say: Say) -> anyhow::Result<Option<DriveRecord>> {
         let thread = ThreadId::from_string(thread_id)
             .map_err(|err| anyhow::anyhow!("会话 id {thread_id} 无效：{err}"))?;
         let text = spoken(&say.text)?;
@@ -190,51 +230,95 @@ impl DriveService {
                 }
                 true
             }
+            // The engine stopped for the person (drift, no progress at all): the drive goes on
+            // with the person's answer only.
+            DriveState::NeedsDecision { ref reason } => {
+                anyhow::ensure!(
+                    correction.is_some(),
+                    "这一路停下来是要用户定的事（{}）：先问用户，用户回话后再 say，correction 照抄用户的原话",
+                    truncate_chars(reason, 80)
+                );
+                false
+            }
             DriveState::Reported { .. }
             | DriveState::Paused { .. }
-            | DriveState::Deliverable { .. }
-            | DriveState::NeedsDecision { .. } => false,
+            | DriveState::Deliverable { .. } => false,
         };
+        // The person agreed to more steps: the cap rises with this message.
+        let max_steps = say
+            .max_steps
+            .filter(|n| *n > 0)
+            .map_or(record.max_steps, |n| n.max(record.steps));
         anyhow::ensure!(
-            steering || record.steps < record.max_steps,
-            "已推进 {}/{} 步：要继续先问用户，同意后用 resume 带 max_steps 放宽",
+            steering || record.steps < max_steps,
+            "已推进 {}/{} 步：要继续先问用户，同意后带 max_steps 放宽",
             record.steps,
-            record.max_steps
+            max_steps
         );
+        let text = match say
+            .until
+            .as_deref()
+            .map(str::trim)
+            .filter(|until| !until.is_empty())
+        {
+            Some(until) => spoken(&format!("{text}\n\n{UNTIL}{until}"))?,
+            None => text,
+        };
+        let sources = self.sources(&record).await?;
         let mut corrections = record.corrections.clone();
         if let Some(words) = &correction
             && !corrections.contains(words)
         {
             push_limited(&mut corrections, words.clone(), NOTES);
         }
-        let conclusion = record.report.as_ref().map(|report| report.text.as_str());
-        let mut grounds: Vec<&str> = conclusion.into_iter().collect();
-        grounds.push(&record.request);
-        grounds.extend(corrections.iter().map(String::as_str));
-        grounds.extend(record.notes.iter().map(String::as_str));
-        anyhow::ensure!(
-            found_in(&say.builds_on, grounds),
-            "builds_on 要照抄 worker 最近结论里的一段原话（或用户的原话、纠正），表明这句话接着什么说；没有找到「{}」",
-            truncate_chars(say.builds_on.trim(), 60)
-        );
-        let anchor = match record.mode {
-            DriveMode::Anchored => Anchor::read(&record.project_home).unwrap_or_default(),
-            DriveMode::Simple => Anchor::default(),
+        let (builds, serves) = {
+            let mut grounds: Vec<&str> = record.earlier.iter().map(String::as_str).collect();
+            grounds.extend(record.report.as_ref().map(|report| report.text.as_str()));
+            grounds.push(&record.request);
+            grounds.extend(corrections.iter().map(String::as_str));
+            grounds.extend(record.notes.iter().map(String::as_str));
+            let builds = sources.builds_on(&say.builds_on, &grounds).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "builds_on 要照抄一段原话，表明这句话接着什么说；没有找到「{}」。找过：这一路最近的几条结论、用户的原话和纠正、用户在会话里说的话、用户对你说过的话、长期规矩、别的路的结论。{}",
+                    truncate_chars(say.builds_on.trim(), 60),
+                    conclusion_opening(&record)
+                )
+            })?;
+            let anchor = match record.mode {
+                DriveMode::Anchored => Anchor::read(&record.project_home).unwrap_or_default(),
+                DriveMode::Simple => Anchor::default(),
+            };
+            let mut purposes: Vec<&str> =
+                vec![record.request.as_str(), anchor.deliverable.as_str()];
+            purposes.extend(corrections.iter().map(String::as_str));
+            purposes.extend(
+                anchor
+                    .acceptance
+                    .iter()
+                    .map(|(_, statement, _)| statement.as_str()),
+            );
+            purposes.extend(anchor.corrections.iter().map(|(_, text, _)| text.as_str()));
+            let serves = sources.serves(&say.serves, &purposes).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "serves 要照抄用户原话（或纠正、验收清单、用户对你说过的话、长期规矩）里的一段，表明这一步为了源头的哪一点；没有找到「{}」。这一路的原话开头是「{}」",
+                    truncate_chars(say.serves.trim(), 60),
+                    truncate_chars(record.request.trim(), 60)
+                )
+            })?;
+            (builds, serves)
         };
-        let mut purposes: Vec<&str> = vec![record.request.as_str(), anchor.deliverable.as_str()];
-        purposes.extend(corrections.iter().map(String::as_str));
-        purposes.extend(
-            anchor
-                .acceptance
-                .iter()
-                .map(|(_, statement, _)| statement.as_str()),
-        );
-        purposes.extend(anchor.corrections.iter().map(|(_, text, _)| text.as_str()));
-        anyhow::ensure!(
-            found_in(&say.serves, purposes),
-            "serves 要照抄用户原话（或纠正、验收清单）里的一段，表明这一步为了源头的哪一点；没有找到「{}」",
-            truncate_chars(say.serves.trim(), 60)
-        );
+        // Words the person told the Router that a step quotes become part of the goal.
+        for found in [&builds, &serves] {
+            if let Found::Heard(words) = found
+                && !corrections.contains(words)
+            {
+                push_limited(&mut corrections, words.clone(), NOTES);
+            }
+        }
+        let from = match builds {
+            Found::Lane(lane) => Some(lane),
+            Found::Own | Found::Heard(_) => None,
+        };
         if let Some(previous) = record
             .history
             .iter()
@@ -264,10 +348,13 @@ impl DriveService {
             builds_on: truncate_chars(say.builds_on.trim(), 300),
             serves: truncate_chars(say.serves.trim(), 300),
             steered: steering,
+            from,
         };
         let changed = self
             .change_locked(thread_id, |record| {
                 record.acted = Some(now_iso());
+                record.max_steps = max_steps;
+                record.refused = None;
                 if !steering {
                     record.steps = n;
                     record.inflight = Some(n);

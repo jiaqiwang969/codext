@@ -33,9 +33,11 @@ use sha2::Digest;
 use sha2::Sha256;
 
 mod drives;
+mod standing;
 
 pub use drives::drive_attention;
 pub use drives::drives_section;
+pub use standing::standing_section;
 
 use crate::SuperagentService;
 use crate::cards::truncate_chars;
@@ -230,6 +232,14 @@ impl ContextContributor for RouterContext {
                                     "superagent: the Router's drive list is unavailable: {err:#}"
                                 )
                             }
+                        }
+                        match drive.standing_rules().await {
+                            Ok(rules) => sections.push(standing_section(
+                                rules.iter().map(|rule| rule.line()).collect(),
+                            )),
+                            Err(err) => tracing::warn!(
+                                "superagent: the standing rules are unavailable: {err:#}"
+                            ),
                         }
                     }
                     sections.push(attention_section(waiting));

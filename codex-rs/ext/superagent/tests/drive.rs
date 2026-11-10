@@ -27,6 +27,7 @@ use codex_superagent_extension::drive::Feedback;
 use codex_superagent_extension::drive::Goal;
 use codex_superagent_extension::drive::Judge;
 use codex_superagent_extension::drive::Say;
+use codex_superagent_extension::drive::StandingScope;
 use codex_superagent_extension::host::DeliveryMode;
 use codex_superagent_extension::host::GoalStatus;
 use codex_superagent_extension::host::StepStart;
@@ -214,16 +215,24 @@ impl SuperagentHost for FakeHost {
 struct ScriptedJudge {
     audits: Mutex<VecDeque<Audit>>,
     last: Mutex<Option<Audit>>,
+    /// The next audit fails with this error.
+    broken: Mutex<Option<String>>,
 }
 
 impl ScriptedJudge {
     fn then(&self, audit: Audit) {
         FakeHost::lock(&self.audits).push_back(audit);
     }
+    fn break_next(&self, error: &str) {
+        *FakeHost::lock(&self.broken) = Some(error.to_owned());
+    }
 }
 
 impl Judge for ScriptedJudge {
     fn audit<'a>(&'a self, _project_home: &'a Path) -> BoxFut<'a, anyhow::Result<Audit>> {
+        if let Some(error) = FakeHost::lock(&self.broken).take() {
+            return Box::pin(async move { Err(anyhow::anyhow!(error)) });
+        }
         let next = FakeHost::lock(&self.audits).pop_front();
         let audit = match next {
             Some(audit) => {
@@ -461,7 +470,7 @@ fn say(text: &str, builds_on: &str, serves: &str) -> Say {
         text: text.to_owned(),
         builds_on: builds_on.to_owned(),
         serves: serves.to_owned(),
-        correction: None,
+        ..Say::default()
     }
 }
 
@@ -1603,5 +1612,277 @@ async fn a_drives_notices_go_to_the_router_that_started_it() -> anyhow::Result<(
         .await
         .map_err(|err| anyhow::anyhow!("{err}"))?;
     assert!(FakeHost::lock(&s.host.calls).contains(&format!("deliver:{ROUTER_B}:Queue")));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_refused_step_says_where_the_engine_looked_and_another_sessions_conclusion_is_a_basis()
+-> anyhow::Result<()> {
+    let s = setup().await?;
+    s.start().await?;
+    s.turn("分好了 3 个主题目录").await?;
+    tick().await;
+    s.drive
+        .start(OPENED, simple(s.work.path().to_owned()))
+        .await?;
+    s.drive.turn_started(OPENED).await?;
+    s.host
+        .finish("completed", "索引脚本放在 tools/index.py，按日期排");
+    s.drive.turn_stopped(OPENED).await?;
+    s.drive.step(OPENED).await?;
+
+    // Words found nowhere: the refusal says where the engine looked and how the conclusion
+    // opens, and the session's line says it still waits.
+    let refused = s
+        .drive
+        .say(
+            THREAD,
+            say("再写个索引。", "索引要用脚本生成", "按主题分好"),
+        )
+        .await;
+    let refusal = format!("{:#}", refused.expect_err("not found"));
+    assert!(
+        refusal.contains("找过：")
+            && refusal.contains("这一路最近的结论开头是「分好了 3 个主题目录」"),
+        "{refusal}"
+    );
+    let record = s.record().await?;
+    assert!(record.refused.is_some());
+    assert!(
+        record.line().contains("你上一句被退回"),
+        "{}",
+        record.line()
+    );
+
+    // Another session's conclusion: the step records which session it quotes.
+    let record = s
+        .drive
+        .say(
+            THREAD,
+            say(
+                "用另一路写好的索引脚本，给这里的目录也生成索引。",
+                "索引脚本放在 tools/index.py",
+                "按主题分好",
+            ),
+        )
+        .await?
+        .expect("a record");
+    let from = record.history.last().and_then(|step| step.from.clone());
+    assert_eq!(from, Some(format!("整理笔记（{OPENED}）")));
+    assert_eq!(record.refused, None);
+    assert!(!record.line().contains("被退回"), "{}", record.line());
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_persons_words_to_the_router_and_standing_rules_count_as_basis() -> anyhow::Result<()> {
+    let s = setup().await?;
+    s.start().await?;
+    s.turn("分好了 3 个主题目录").await?;
+    let told = "以后每个目录都要有一份说明文件";
+    s.drive.heard(&format!("对了，{told}。")).await?;
+    // What the person told the Router serves the step and joins the goal.
+    let record = s
+        .drive
+        .say(
+            THREAD,
+            say(
+                "给每个主题目录写一份说明文件。",
+                "分好了 3 个主题目录",
+                told,
+            ),
+        )
+        .await?
+        .expect("a record");
+    assert_eq!(record.corrections, vec![format!("对了，{told}。")]);
+    s.turn("说明文件写好了").await?;
+
+    let fork = "分支可以推到我的 fork";
+    let english = "说明文件用英文写";
+    // Only what the person said becomes a standing rule.
+    assert!(s.drive.remember(fork, StandingScope::All).await.is_err());
+    s.drive.heard(fork).await?;
+    s.drive.heard(english).await?;
+    let rule = s.drive.remember(fork, StandingScope::All).await?;
+    assert_eq!(rule.id, "r1");
+    assert_eq!(
+        s.drive.remember(fork, StandingScope::All).await?.id,
+        "r1",
+        "the same words for the same sessions are kept once"
+    );
+    let elsewhere = StandingScope::Folder {
+        path: PathBuf::from("/elsewhere"),
+    };
+    assert_eq!(s.drive.remember(english, elsewhere).await?.id, "r2");
+    // Long after, the person's words have left the Router's recent log; the rules keep them.
+    for n in 0..30 {
+        s.drive.heard(&format!("第 {n} 件别的事")).await?;
+    }
+    let refused = s
+        .drive
+        .say(THREAD, say("说明文件改用英文。", "说明文件写好了", english))
+        .await;
+    assert!(
+        refused.is_err(),
+        "a rule for another folder does not hold here"
+    );
+    s.drive
+        .say(
+            THREAD,
+            say("把这些改动推到用户的 fork 上。", "说明文件写好了", fork),
+        )
+        .await?;
+
+    assert_eq!(
+        s.drive.forget("r1").await?.map(|rule| rule.text),
+        Some(fork.to_owned())
+    );
+    assert_eq!(s.drive.forget("r1").await?, None);
+    let left: Vec<String> = s
+        .drive
+        .standing_rules()
+        .await?
+        .into_iter()
+        .map(|rule| rule.id)
+        .collect();
+    assert_eq!(left, vec!["r2".to_owned()]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_stop_for_the_persons_decision_goes_on_only_with_the_persons_words() -> anyhow::Result<()>
+{
+    let s = setup().await?;
+    s.start_anchored().await?;
+    let mut drift = audit("drift", &[], &["A1", "A2"], "1");
+    drift.findings = vec!["做的不是用户要的目录结构".to_owned()];
+    s.judge.then(drift);
+    s.turn("按年份分了目录").await?;
+    let next = say("改回按主题分目录。", "按年份分了目录", "整理笔记目录");
+    let refused = s.drive.say(THREAD, next.clone()).await;
+    assert!(format!("{:#}", refused.expect_err("the person decides")).contains("要用户定的事"));
+    // Handing back does not take the drive past the person.
+    s.drive.resume(THREAD).await?;
+    assert!(matches!(
+        s.record().await?.state,
+        DriveState::NeedsDecision { .. }
+    ));
+    let words = "按主题分，不要按年份";
+    s.drive.heard(words).await?;
+    let record = s
+        .drive
+        .say(
+            THREAD,
+            Say {
+                correction: Some(words.to_owned()),
+                ..next
+            },
+        )
+        .await?
+        .expect("a record");
+    assert_eq!(
+        (record.state, record.corrections),
+        (DriveState::Driving, vec![words.to_owned()])
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_judgment_that_cannot_run_or_records_to_fix_stay_with_the_router() -> anyhow::Result<()> {
+    let s = setup().await?;
+    s.start_anchored().await?;
+    s.judge.break_next("route-audit 没有给出 JSON");
+    s.turn("分好了主题目录").await?;
+    let record = s.record().await?;
+    assert_eq!(
+        record.state,
+        DriveState::Reported {
+            summary: "分好了主题目录".to_owned()
+        }
+    );
+    assert_eq!(
+        record.report.and_then(|report| report.audit),
+        Some("这一步没判成（判定程序出错：route-audit 没有给出 JSON），下一步结束再判".to_owned())
+    );
+
+    s.drive
+        .say(
+            THREAD,
+            say("把索引写上。", "分好了主题目录", "整理笔记目录"),
+        )
+        .await?;
+    let mut invalid = audit("invalid", &[], &["A1", "A2"], "2");
+    invalid.findings = vec!["证据 E3 没有登记".to_owned()];
+    s.judge.then(invalid);
+    s.turn("索引写好了").await?;
+    assert_eq!(
+        s.record().await?.state,
+        DriveState::Reported {
+            summary: "记录要修：证据 E3 没有登记；索引写好了".to_owned()
+        }
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_step_without_progress_changed_neither_the_records_nor_the_folder() -> anyhow::Result<()>
+{
+    let s = setup().await?;
+    s.start_anchored().await?;
+    s.judge.then(audit("anchored", &[], &["A1", "A2"], "1"));
+    s.turn("先看了一遍笔记").await?;
+    // The records stay the same, but the worker wrote into the folder: that is progress.
+    s.drive
+        .say(
+            THREAD,
+            say("按主题建子目录。", "先看了一遍笔记", "整理笔记目录"),
+        )
+        .await?;
+    std::fs::create_dir_all(s.work.path().join("notes/编程"))?;
+    std::fs::write(s.work.path().join("notes/编程/a.md"), "x")?;
+    s.turn("建好了编程目录").await?;
+    assert_eq!(s.record().await?.unchanged, 0);
+    tick().await;
+    // Two steps that changed nothing at all stop for the person.
+    for (text, conclusion) in [
+        ("接着建其余的目录。", "还在想怎么分"),
+        ("先列出要建的目录名。", "还没想好"),
+    ] {
+        let last = s.record().await?.report.expect("a report").text;
+        s.drive
+            .say(THREAD, say(text, &last, "整理笔记目录"))
+            .await?;
+        s.turn(conclusion).await?;
+    }
+    assert_eq!(
+        s.record().await?.state,
+        DriveState::NeedsDecision {
+            reason: "连续 2 步既没有回填记录，文件夹里也没有任何改动（第 4 步）".to_owned()
+        }
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn say_raises_the_cap_and_tells_the_worker_where_to_stop() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let start = DriveStart {
+        max_steps: Some(1),
+        ..simple(s.work.path().to_owned())
+    };
+    s.drive.start(THREAD, start).await?;
+    s.turn("分好了，还差索引").await?;
+    assert!(matches!(s.record().await?.state, DriveState::Paused { .. }));
+    let next = Say {
+        until: Some("索引写好、能按日期排序为止".to_owned()),
+        max_steps: Some(3),
+        ..say("接着写索引。", "还差索引", "按主题分好")
+    };
+    let record = s.drive.say(THREAD, next).await?.expect("a record");
+    assert_eq!((record.steps, record.max_steps), (2, 3));
+    assert_eq!(
+        s.host.delivered().last().map(String::as_str),
+        Some("接着写索引。\n\n这一步做到这里停：索引写好、能按日期排序为止")
+    );
     Ok(())
 }

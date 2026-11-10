@@ -1367,7 +1367,7 @@ async fn a_step_goes_out_on_an_account_with_headroom_and_never_moves_midway() ->
         text: "再把每个子目录写一份说明。".to_owned(),
         builds_on: "按主题建了五个子目录".to_owned(),
         serves: "按主题分好".to_owned(),
-        correction: None,
+        ..Say::default()
     };
     s.drive.say(SESSION, say).await?;
     assert_eq!(

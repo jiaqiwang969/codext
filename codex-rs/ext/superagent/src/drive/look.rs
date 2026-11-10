@@ -19,6 +19,7 @@ use super::REPORT_CHARS;
 use super::Report;
 use super::accounts;
 use super::drive_key;
+use super::progress;
 use super::report;
 use super::retry;
 use super::switch;
@@ -159,28 +160,48 @@ impl DriveService {
         };
         let (state, digest, unchanged) = match record.mode {
             DriveMode::Simple => (report::reported(&record, &report.text), None, 0),
-            DriveMode::Anchored => {
-                let audit = match self.inner.judge.audit(&record.project_home).await {
-                    Ok(audit) => audit,
-                    Err(err) => {
-                        let reason = format!("无法判定：{err:#}");
-                        return self
-                            .settle(&record, DriveState::NeedsDecision { reason }, Some(report))
-                            .await;
-                    }
-                };
-                report.audit = Some(audit.summary());
-                let digest = (audit.project_sha256.clone(), audit.anchor_sha256.clone());
-                let unchanged = match &record.digest {
-                    Some(previous) if *previous == digest => record.unchanged + 1,
-                    Some(_) | None => 0,
-                };
-                (
-                    report::judged(&record, &report.text, &audit, unchanged),
-                    Some(digest),
-                    unchanged,
-                )
-            }
+            DriveMode::Anchored => match self.inner.judge.audit(&record.project_home).await {
+                // The judgment did not run: not the worker's doing, the drive goes on and the
+                // next step's end is judged again.
+                Err(err) => {
+                    report.audit = Some(format!(
+                        "这一步没判成（判定程序出错：{}），下一步结束再判",
+                        truncate_chars(&format!("{err:#}"), 160)
+                    ));
+                    (
+                        report::reported(&record, &report.text),
+                        None,
+                        record.unchanged,
+                    )
+                }
+                Ok(audit) => {
+                    report.audit = Some(audit.summary());
+                    let digest = (audit.project_sha256.clone(), audit.anchor_sha256.clone());
+                    // A step made progress when its records changed or anything else in its
+                    // folder did: work that does not touch the records is still work.
+                    let same_records = record.digest.as_ref() == Some(&digest);
+                    let worked = || {
+                        let folder = record.project_home.parent().unwrap_or(&record.project_home);
+                        let since = record
+                            .history
+                            .iter()
+                            .rev()
+                            .find(|step| step.n == record.steps && !step.steered)
+                            .map_or(record.since.as_str(), |step| step.at.as_str());
+                        progress::changed_since(folder, since)
+                    };
+                    let unchanged = if same_records && !worked() {
+                        record.unchanged + 1
+                    } else {
+                        0
+                    };
+                    (
+                        report::judged(&record, &report.text, &audit, unchanged),
+                        Some(digest),
+                        unchanged,
+                    )
+                }
+            },
         };
         let state = match state {
             DriveState::Reported { .. } if record.steps >= record.max_steps => DriveState::Paused {

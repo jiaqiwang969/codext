@@ -13,6 +13,7 @@
 mod accounts;
 mod anchor;
 mod audit;
+mod basis;
 mod context;
 mod cooldown;
 mod feedback;
@@ -22,11 +23,13 @@ mod look;
 mod notices;
 mod policy;
 mod pool;
+mod progress;
 mod report;
 mod retry;
 mod router_account;
 mod router_rescue;
 mod say;
+mod standing;
 mod step_account;
 mod switch;
 mod turns;
@@ -84,6 +87,9 @@ pub use router_rescue::KIND_RESCUE;
 pub use router_rescue::error_trouble;
 pub use router_rescue::rescue_due;
 pub use say::Say;
+pub use standing::STANDING_KEY;
+pub use standing::StandingRule;
+pub use standing::StandingScope;
 
 use crate::cards::truncate_chars;
 use crate::core::now_iso;
@@ -173,6 +179,9 @@ pub struct Step {
     /// Said into the running turn of step `n` (the person corrected course), not a turn of its own.
     #[serde(default)]
     pub steered: bool,
+    /// The session whose conclusion `builds_on` quotes, `title（thread）`, when it is another one.
+    #[serde(default)]
+    pub from: Option<String>,
 }
 
 /// The worker's conclusion at the end of a turn.
@@ -237,6 +246,9 @@ pub struct DriveRecord {
     /// handed it back): a notice written before that is not delivered (`notices.rs`).
     #[serde(default)]
     pub acted: Option<String>,
+    /// Why the Router's last message to the session was refused, until one goes out.
+    #[serde(default)]
+    pub refused: Option<String>,
     /// The latest steps, oldest first.
     pub history: Vec<Step>,
     pub since: String,
@@ -258,8 +270,19 @@ impl DriveRecord {
             .as_deref()
             .map(|account| format!(" | 账号 {account}"))
             .unwrap_or_default();
+        let refused = self
+            .refused
+            .as_deref()
+            .filter(|_| self.state != DriveState::Driving)
+            .map(|reason| {
+                format!(
+                    " | 你上一句被退回（{}），这一路还在等你",
+                    truncate_chars(reason, 60)
+                )
+            })
+            .unwrap_or_default();
         format!(
-            "{} | {} | 第 {}/{} 步 | {state}{account}",
+            "{} | {} | 第 {}/{} 步 | {state}{account}{refused}",
             self.thread_id,
             truncate_chars(&self.title, 40),
             self.steps,
@@ -284,6 +307,8 @@ impl DriveRecord {
             && old.turn != turn
         {
             push_limited(&mut self.earlier, old.text, EARLIER);
+            // A refused answer was to the conclusion this one replaces.
+            self.refused = None;
         }
     }
 }
@@ -588,6 +613,7 @@ impl DriveService {
             retried: None,
             router,
             acted: Some(now.clone()),
+            refused: None,
             history: vec![Step {
                 n: 1,
                 at: now.clone(),
@@ -596,6 +622,7 @@ impl DriveService {
                 builds_on: String::new(),
                 serves: truncate_chars(request.trim(), 200),
                 steered: false,
+                from: None,
             }],
             since: now.clone(),
             updated: now,
@@ -632,21 +659,29 @@ impl DriveService {
                 reason: reason.to_owned(),
             };
             record.acted = Some(now_iso());
+            record.refused = None;
             record.clone()
         })
         .await
     }
 
-    /// Hands the session back: the Router answers the last conclusion with `say`.
+    /// Hands the session back: the Router answers the last conclusion with `say`. A stop that
+    /// waits for the person stays until the person's words go out with `say`.
     pub async fn resume(&self, thread_id: &str) -> anyhow::Result<Option<DriveRecord>> {
         self.change(thread_id, |record| {
-            if record.state != DriveState::Driving {
-                record.state = DriveState::Reported {
-                    summary: "推进已交回，等你回它下一句".to_owned(),
-                };
-                record.unchanged = 0;
+            // Handing back is not progress: the count of steps without any runs on.
+            match record.state {
+                DriveState::Driving | DriveState::NeedsDecision { .. } => {}
+                DriveState::Reported { .. }
+                | DriveState::Paused { .. }
+                | DriveState::Deliverable { .. } => {
+                    record.state = DriveState::Reported {
+                        summary: "推进已交回，等你回它下一句".to_owned(),
+                    };
+                }
             }
             record.acted = Some(now_iso());
+            record.refused = None;
             record.clone()
         })
         .await

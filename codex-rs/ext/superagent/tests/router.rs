@@ -11,6 +11,7 @@ use codex_superagent_extension::router::attention_section;
 use codex_superagent_extension::router::index_row;
 use codex_superagent_extension::router::index_section;
 use codex_superagent_extension::router::rules_section;
+use codex_superagent_extension::router::standing_section;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -205,4 +206,30 @@ fn each_problem_is_told_when_it_appears_and_when_it_is_resolved() {
             input_text("需要你处理的会话有变化：\n出错：b2 | y\n已不再等你：a1\n"),
         ))
     );
+}
+
+#[test]
+fn the_standing_rules_are_told_whole_when_they_change() {
+    let one = vec!["[r1] 全部：分支可以推到我的 fork".to_owned()];
+    let rules = standing_section(one.clone());
+    let (snapshot, first) = rules.render_diff(PreviousWorldStateSection::Absent);
+    let first = text_of(first).expect("the rules on the first step");
+    assert!(
+        first.contains("[r1] 全部：分支可以推到我的 fork"),
+        "{first}"
+    );
+    let snapshot = snapshot.expect("a snapshot");
+    let (_, again) = rules.render_diff(PreviousWorldStateSection::Known(&snapshot));
+    assert_eq!(again, None);
+
+    let mut two = one;
+    two.push("[r2] 全部：每个号最多四路".to_owned());
+    let (_, changed) =
+        standing_section(two).render_diff(PreviousWorldStateSection::Known(&snapshot));
+    let changed = text_of(changed).expect("the rules again");
+    assert!(
+        changed.contains("[r1]") && changed.contains("[r2]"),
+        "{changed}"
+    );
+    assert!(rules.matches_retained_fragment("developer", "<superagent_standing>\nx"));
 }

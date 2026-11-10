@@ -63,13 +63,14 @@ pub fn judged(record: &DriveRecord, conclusion: &str, audit: &Audit, unchanged: 
     } else if unchanged >= UNCHANGED_LIMIT {
         DriveState::NeedsDecision {
             reason: format!(
-                "连续 {unchanged} 轮 Project 和锚定记录都没有变化：worker 没有回填（第 {} 步）",
+                "连续 {unchanged} 步既没有回填记录，文件夹里也没有任何改动（第 {} 步）",
                 record.steps
             ),
         }
     } else if audit.status == "invalid" && audit.inconsistent.is_empty() {
-        DriveState::NeedsDecision {
-            reason: format!("判定无效：{}", findings()),
+        // The records do not read right: the worker fixes them, nothing for the person to decide.
+        DriveState::Reported {
+            summary: format!("记录要修：{}；{}", findings(), summary(conclusion)),
         }
     } else {
         DriveState::Reported {
@@ -95,11 +96,11 @@ pub fn notice(record: &DriveRecord, state: &DriveState) -> Option<String> {
         ),
         DriveState::NeedsDecision { reason } => (
             format!("推进 · {title} · 需要用户决定：{reason}"),
-            "向用户说明原因，问一个具体问题。",
+            "向用户说明原因，问一个具体问题；用户回话后用 superagent_drive say 接着说，correction 照抄用户原话。",
         ),
         DriveState::Paused { reason } => (
             format!("推进 · {title} · 已暂停：{reason}"),
-            "告诉用户；用户要继续时用 superagent_drive resume。",
+            "告诉用户；要接着做就直接用 superagent_drive say，不用先 resume。",
         ),
     };
     let mut lines = vec![head, format!("会话 {}", record.thread_id)];
@@ -113,7 +114,10 @@ pub fn notice(record: &DriveRecord, state: &DriveState) -> Option<String> {
     if !record.notes.is_empty() {
         lines.push(format!("用户在会话里说过：{}", record.notes.join(" / ")));
     }
-    lines.push(format!("原文：superagent_read session/{}", record.thread_id));
+    lines.push(format!(
+        "原文：superagent_read session/{}",
+        record.thread_id
+    ));
     lines.push(format!("接下来：{next}"));
     Some(lines.join("\n"))
 }
