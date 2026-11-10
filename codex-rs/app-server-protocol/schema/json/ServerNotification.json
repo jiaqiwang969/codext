@@ -4448,6 +4448,23 @@
       ],
       "type": "object"
     },
+    "ThreadAccountProfileUpdatedNotification": {
+      "description": "A thread now runs on another account-pool profile. Sent after `account/profile/switch` rebinds a loaded thread, to every connection subscribed to it except the one that asked for the switch; that connection learns it from the response.",
+      "properties": {
+        "accountProfile": {
+          "description": "The profile's directory name under `CODEX_HOME/accounts`, as `thread.extra.accountProfile` reports it.",
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accountProfile",
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadActiveFlag": {
       "enum": [
         "waitingOnApproval",
@@ -7686,6 +7703,26 @@
         "params"
       ],
       "title": "Thread/settings/updatedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "thread/accountProfile/updated"
+          ],
+          "title": "Thread/accountProfile/updatedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadAccountProfileUpdatedNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/accountProfile/updatedNotification",
       "type": "object"
     },
     {

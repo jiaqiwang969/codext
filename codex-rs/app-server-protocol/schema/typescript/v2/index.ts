@@ -491,6 +491,7 @@ export type { TextElement } from "./TextElement";
 export type { TextPosition } from "./TextPosition";
 export type { TextRange } from "./TextRange";
 export type { Thread } from "./Thread";
+export type { ThreadAccountProfileUpdatedNotification } from "./ThreadAccountProfileUpdatedNotification";
 export type { ThreadActiveFlag } from "./ThreadActiveFlag";
 export type { ThreadApproveGuardianDeniedActionParams } from "./ThreadApproveGuardianDeniedActionParams";
 export type { ThreadApproveGuardianDeniedActionResponse } from "./ThreadApproveGuardianDeniedActionResponse";

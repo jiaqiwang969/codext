@@ -2055,6 +2055,7 @@ server_notification_definitions! {
     EnvironmentDisconnected => "thread/environment/disconnected" (v2::EnvironmentConnectionNotification),
     #[experimental("thread/settings/updated")]
     ThreadSettingsUpdated => "thread/settings/updated" (v2::ThreadSettingsUpdatedNotification),
+    ThreadAccountProfileUpdated => "thread/accountProfile/updated" (v2::ThreadAccountProfileUpdatedNotification),
     ThreadTokenUsageUpdated => "thread/tokenUsage/updated" (v2::ThreadTokenUsageUpdatedNotification),
     TurnStarted => "turn/started" (v2::TurnStartedNotification),
     HookStarted => "hook/started" (v2::HookStartedNotification),

@@ -5156,6 +5156,20 @@ class TextRange(BaseModel):
     start: TextPosition
 
 
+class ThreadAccountProfileUpdatedNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    account_profile: Annotated[
+        str,
+        Field(
+            alias="accountProfile",
+            description="The profile's directory name under `CODEX_HOME/accounts`, as `thread.extra.accountProfile` reports it.",
+        ),
+    ]
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
 class ThreadActiveFlag(Enum):
     waiting_on_approval = "waitingOnApproval"
     waiting_on_user_input = "waitingOnUserInput"
@@ -9920,6 +9934,24 @@ class ThreadProjectUpdatedServerNotification(BaseModel):
     params: ThreadProjectUpdatedNotification
 
 
+class ThreadAccountProfileUpdatedServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["thread/accountProfile/updated"],
+        Field(title="Thread/accountProfile/updatedNotificationMethod"),
+    ]
+    params: ThreadAccountProfileUpdatedNotification
+
+
 class HookStartedServerNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -13785,6 +13817,7 @@ class ServerNotification(
         | ThreadEnvironmentConnectedServerNotification
         | ThreadEnvironmentDisconnectedServerNotification
         | ThreadSettingsUpdatedServerNotification
+        | ThreadAccountProfileUpdatedServerNotification
         | ThreadTokenUsageUpdatedServerNotification
         | TurnStartedServerNotification
         | HookStartedServerNotification
@@ -13874,6 +13907,7 @@ class ServerNotification(
         | ThreadEnvironmentConnectedServerNotification
         | ThreadEnvironmentDisconnectedServerNotification
         | ThreadSettingsUpdatedServerNotification
+        | ThreadAccountProfileUpdatedServerNotification
         | ThreadTokenUsageUpdatedServerNotification
         | TurnStartedServerNotification
         | HookStartedServerNotification

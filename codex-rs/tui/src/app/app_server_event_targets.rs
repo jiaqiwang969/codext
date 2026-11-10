@@ -83,6 +83,9 @@ pub(super) fn server_notification_thread_target(
         ServerNotification::ThreadSettingsUpdated(notification) => {
             Some(notification.thread_id.as_str())
         }
+        ServerNotification::ThreadAccountProfileUpdated(notification) => {
+            Some(notification.thread_id.as_str())
+        }
         ServerNotification::TurnStarted(notification) => Some(notification.thread_id.as_str()),
         ServerNotification::HookStarted(notification) => Some(notification.thread_id.as_str()),
         ServerNotification::TurnCompleted(notification) => Some(notification.thread_id.as_str()),
@@ -247,6 +250,7 @@ mod tests {
     use codex_app_server_protocol::McpServerStartupState;
     use codex_app_server_protocol::McpServerStatusUpdatedNotification;
     use codex_app_server_protocol::ServerNotification;
+    use codex_app_server_protocol::ThreadAccountProfileUpdatedNotification;
     use codex_app_server_protocol::ThreadAttachmentOperation;
     use codex_app_server_protocol::ThreadAttachmentUpdatedNotification;
     use codex_app_server_protocol::ThreadSettings;
@@ -366,6 +370,21 @@ mod tests {
                 thread_id: thread_id.to_string(),
                 thread_settings: test_thread_settings(),
             });
+
+        let target = server_notification_thread_target(&notification);
+
+        assert_eq!(target, ServerNotificationThreadTarget::Thread(thread_id));
+    }
+
+    #[test]
+    fn thread_account_profile_updated_notifications_route_to_threads() {
+        let thread_id = ThreadId::new();
+        let notification = ServerNotification::ThreadAccountProfileUpdated(
+            ThreadAccountProfileUpdatedNotification {
+                thread_id: thread_id.to_string(),
+                account_profile: "next".to_string(),
+            },
+        );
 
         let target = server_notification_thread_target(&notification);
 

@@ -392,6 +392,7 @@ impl ChatWidget {
             | ServerNotification::ThreadDeleted(_)
             | ServerNotification::ThreadUnarchived(_)
             | ServerNotification::ThreadAttachmentUpdated(_)
+            | ServerNotification::ThreadAccountProfileUpdated(_)
             | ServerNotification::RawResponseItemCompleted(_)
             | ServerNotification::RawResponseCompleted(_)
             | ServerNotification::CommandExecOutputDelta(_)
