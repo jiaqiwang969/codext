@@ -19,6 +19,8 @@ const DRIVES_UPDATE_MARKERS: (&str, &str) =
 pub fn drive_attention(record: &DriveRecord) -> Option<&'static str> {
     match record.state {
         DriveState::Driving => None,
+        // The drafter answers it first, and hands up what is the Router's.
+        DriveState::Reported { .. } if record.drafting.is_some() => None,
         DriveState::Reported { .. } => Some("交了结论，等你转告用户或回它"),
         DriveState::Deliverable { .. } => Some("可交付，等你验收"),
         DriveState::NeedsDecision { .. } => Some("推进需要你决定"),

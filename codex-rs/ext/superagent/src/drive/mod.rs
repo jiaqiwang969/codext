@@ -16,6 +16,7 @@ mod audit;
 mod basis;
 mod context;
 mod cooldown;
+mod drafter;
 mod events;
 mod feedback;
 mod lifecycle;
@@ -74,6 +75,9 @@ pub use context::DriveContext;
 pub use cooldown::COOLDOWN_KEY;
 pub use cooldown::Cooldown;
 pub use cooldown::EndedCooldown;
+pub use drafter::Drafted;
+pub use drafter::Drafting;
+pub use drafter::KIND_DRAFT;
 pub use events::DriveStatus;
 pub use feedback::Feedback;
 pub use lifecycle::DriveLifecycle;
@@ -274,6 +278,18 @@ pub struct DriveRecord {
     /// When the state last changed, RFC 3339.
     #[serde(default)]
     pub changed: Option<String>,
+    /// Whether the drafter writes the Router's answers to this session (`drafter.rs`).
+    #[serde(default)]
+    pub drafter: bool,
+    /// The session's drafting session, once opened.
+    #[serde(default)]
+    pub drafter_thread: Option<String>,
+    /// The draft in progress for the latest conclusion.
+    #[serde(default)]
+    pub drafting: Option<Drafting>,
+    /// What the drafter sent since the Router's last summary.
+    #[serde(default)]
+    pub drafted: Vec<Drafted>,
     /// The latest steps, oldest first.
     pub history: Vec<Step>,
     pub since: String,
@@ -307,13 +323,18 @@ impl DriveRecord {
                 )
             })
             .unwrap_or_default();
+        let drafting = if self.drafting.is_some() {
+            " | 起草者在写下一句"
+        } else {
+            ""
+        };
         let marks = if self.marks.is_empty() {
             String::new()
         } else {
             format!(" | 注意：{}", self.marks.join("；"))
         };
         format!(
-            "{} | {} | 第 {}/{} 步 | {state}{account}{refused}{marks}",
+            "{} | {} | 第 {}/{} 步 | {state}{account}{drafting}{refused}{marks}",
             self.thread_id,
             truncate_chars(&self.title, 40),
             self.steps,
@@ -482,6 +503,7 @@ impl DriveService {
         retry::install_retry_handler(&service, &effects).await?;
         notices::install_notice_handler(&service, &effects).await?;
         sweep::install_sweep_handler(&service, &effects).await?;
+        drafter::install_draft_handler(&service, &effects).await?;
         Ok(service)
     }
 
@@ -670,6 +692,10 @@ impl DriveService {
             wait: None,
             marks: Vec::new(),
             changed: Some(now.clone()),
+            drafter: false,
+            drafter_thread: None,
+            drafting: None,
+            drafted: Vec::new(),
             history: vec![Step {
                 n: 1,
                 at: now.clone(),

@@ -186,6 +186,8 @@ impl DriveService {
             self.look_at_waits().await?;
         }
         let records = self.records().await?;
+        self.look_at_drafts(&records).await?;
+        let records = self.records().await?;
         let crowded = self.crowded_sessions(&records).await?;
         let now = Utc::now();
         for record in &records {

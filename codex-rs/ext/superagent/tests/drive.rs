@@ -2202,3 +2202,157 @@ async fn a_router_adopts_a_drive_and_its_notices_follow() -> anyhow::Result<()> 
     assert!(FakeHost::lock(&s.host.calls).contains(&format!("deliver:{ROUTER_B}:Queue")));
     Ok(())
 }
+
+/// The drafting session's turn ends with `answer`; the engine reads it.
+async fn drafter_answers(s: &Setup, answer: &str) -> anyhow::Result<()> {
+    s.host.finish("completed", answer);
+    s.drive.turn_stopped(OPENED).await?;
+    s.drive
+        .draft(THREAD)
+        .await
+        .map_err(|err| anyhow::anyhow!("{err}"))
+}
+
+/// A drive with the drafter on whose first step reported; the conclusion went to the drafter.
+async fn drafted_setup() -> anyhow::Result<Setup> {
+    let s = setup_routed(&[ROUTER]).await?;
+    s.start().await?;
+    s.drive.set_drafter(THREAD, /*on*/ true).await?;
+    s.turn("分好了 3 个主题目录，还差索引").await?;
+    s.drive
+        .draft(THREAD)
+        .await
+        .map_err(|err| anyhow::anyhow!("{err}"))?;
+    Ok(s)
+}
+
+#[tokio::test]
+async fn the_drafter_writes_the_next_message_and_the_engine_checks_and_sends_it()
+-> anyhow::Result<()> {
+    let s = drafted_setup().await?;
+    let record = s.record().await?;
+    assert_eq!(record.drafter_thread.as_deref(), Some(OPENED));
+    assert!(
+        record.line().contains("起草者在写下一句"),
+        "{}",
+        record.line()
+    );
+    assert_eq!(
+        codex_superagent_extension::router::drive_attention(&record),
+        None
+    );
+    assert!(s.notices().await?.is_empty(), "the Router is not told yet");
+    let brief = s.host.delivered().last().cloned().unwrap_or_default();
+    assert!(
+        brief.contains("worker 刚交的结论（第 1 步）") && brief.contains("还差索引"),
+        "{brief}"
+    );
+    assert!(FakeHost::lock(&s.host.calls).contains(&format!("deliver:{OPENED}:Queue")));
+
+    drafter_answers(
+        &s,
+        r#"看过目录了。{"decision":"say","text":"接着写根目录的索引，按日期排。","builds_on":"还差索引","serves":"按主题分好","until":"索引写好为止"}"#,
+    )
+    .await?;
+    let record = s.record().await?;
+    assert_eq!(
+        (record.state.clone(), record.steps, record.drafting.clone()),
+        (DriveState::Driving, 2, None)
+    );
+    assert_eq!(
+        s.host.delivered().last().map(String::as_str),
+        Some("接着写根目录的索引，按日期排。\n\n这一步做到这里停：索引写好为止")
+    );
+    assert_eq!(
+        record
+            .drafted
+            .iter()
+            .map(|note| (note.step, note.text.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(2, "接着写根目录的索引，按日期排。")]
+    );
+    assert!(s.notices().await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn what_the_drafter_hands_up_or_the_check_refuses_goes_to_the_router() -> anyhow::Result<()> {
+    let s = drafted_setup().await?;
+    drafter_answers(
+        &s,
+        r#"{"decision":"ask","why":"要不要推到用户的 fork，得用户定"}"#,
+    )
+    .await?;
+    let notices = s.notices().await?;
+    assert!(
+        notices.iter().any(|notice| notice.contains("第 1 步结束")
+            && notice.contains("起草者认为这一步要你处理：要不要推到用户的 fork，得用户定")),
+        "{notices:?}"
+    );
+    assert_eq!(s.record().await?.drafting, None);
+
+    let s = drafted_setup().await?;
+    drafter_answers(
+        &s,
+        r#"{"decision":"say","text":"再写个索引。","builds_on":"索引要用脚本生成","serves":"按主题分好"}"#,
+    )
+    .await?;
+    let notices = s.notices().await?;
+    assert!(
+        notices
+            .iter()
+            .any(|notice| notice.contains("起草者写的下一句被退回")
+                && notice.contains("「再写个索引。」")),
+        "{notices:?}"
+    );
+    assert_eq!(s.record().await?.steps, 1);
+
+    let s = drafted_setup().await?;
+    drafter_answers(&s, "我觉得可以继续").await?;
+    assert!(
+        s.notices()
+            .await?
+            .iter()
+            .any(|notice| notice.contains("起草没成：起草者没给出能用的答复"))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_round_hands_a_slow_draft_to_the_router_and_sums_up_what_the_drafter_sent()
+-> anyhow::Result<()> {
+    let s = drafted_setup().await?;
+    s.rewrite(THREAD, |record| {
+        if let Some(drafting) = record.drafting.as_mut() {
+            drafting.since = minutes_ago(11);
+        }
+    })
+    .await?;
+    s.drive.sweep().await?;
+    assert_eq!(s.record().await?.drafting, None);
+    assert!(
+        s.notices()
+            .await?
+            .iter()
+            .any(|notice| notice.contains("起草没成：超过十分钟"))
+    );
+
+    s.rewrite(THREAD, |record| {
+        record.drafted = vec![codex_superagent_extension::drive::Drafted {
+            at: minutes_ago(61),
+            step: 2,
+            text: "接着写索引。".to_owned(),
+        }];
+    })
+    .await?;
+    s.drive.sweep().await?;
+    assert!(s.record().await?.drafted.is_empty());
+    assert!(
+        s.notices().await?.iter().any(|notice| notice
+            .starts_with("[通知] 起草者这段时间替你回了 1 句")
+            && notice.contains("第 2 步：接着写索引。")),
+        "{:?}",
+        s.notices().await?
+    );
+    Ok(())
+}

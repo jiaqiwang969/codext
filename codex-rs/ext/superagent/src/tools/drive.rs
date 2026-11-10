@@ -55,6 +55,7 @@ enum Action {
     Forget,
     Wait,
     Adopt,
+    Drafter,
 }
 
 /// What `wait` waits for.
@@ -92,6 +93,8 @@ struct DriveArgs {
     file: Option<String>,
     #[serde(default)]
     minutes: Option<u32>,
+    #[serde(default)]
+    drafter: Option<bool>,
     #[serde(default)]
     account: Option<String>,
     #[serde(default)]
@@ -144,8 +147,8 @@ impl DriveTool {
             (
                 "action".to_owned(),
                 JsonSchema::string_enum(
-                    vec![json!("start"), json!("say"), json!("interrupt"), json!("switch_account"), json!("feedback"), json!("pause"), json!("resume"), json!("stop"), json!("history"), json!("remember"), json!("forget"), json!("wait"), json!("adopt")],
-                    Some("start: take a session under drive (or open a new session in `folder`) and send it the first message `text`; say: answer the worker's last conclusion with `text`, quoting in `builds_on` and `serves` what it follows from (while the worker's turn runs, the text is said into it instead) — say goes on from a pause or a handed-back session directly, no resume first; interrupt: stop the running step because the person found it going wrong, then say the next thing; switch_account: move a session (driven or not) to another account, `account` or else the next by quota reset time — the engine also does this by itself before a step whose account runs low and when a step fails on quota or model capacity; feedback: the person's acceptance feedback on an anchored goal; pause: the person takes the session over; resume: hand it back when you have nothing to say yet; stop: release it; history: the person's words, the last conclusions and every step with its basis; remember: keep the person's words `text` as a standing rule, for every session, for the sessions under `folder`, or for `thread_id`; forget: drop the standing rule `rule`; wait: park the session until something comes — another session's next conclusion, some minutes, a file, or the person's answer (`wait_for`) — with `text` saying what; the engine hands it back with a notice when it comes, and reminds you once after `minutes` when nothing came; adopt: take over a session another Router drives (the person split the work by project), so its notices come to you from now on.".to_owned()),
+                    vec![json!("start"), json!("say"), json!("interrupt"), json!("switch_account"), json!("feedback"), json!("pause"), json!("resume"), json!("stop"), json!("history"), json!("remember"), json!("forget"), json!("wait"), json!("adopt"), json!("drafter")],
+                    Some("start: take a session under drive (or open a new session in `folder`) and send it the first message `text`; say: answer the worker's last conclusion with `text`, quoting in `builds_on` and `serves` what it follows from (while the worker's turn runs, the text is said into it instead) — say goes on from a pause or a handed-back session directly, no resume first; interrupt: stop the running step because the person found it going wrong, then say the next thing; switch_account: move a session (driven or not) to another account, `account` or else the next by quota reset time — the engine also does this by itself before a step whose account runs low and when a step fails on quota or model capacity; feedback: the person's acceptance feedback on an anchored goal; pause: the person takes the session over; resume: hand it back when you have nothing to say yet; stop: release it; history: the person's words, the last conclusions and every step with its basis; remember: keep the person's words `text` as a standing rule, for every session, for the sessions under `folder`, or for `thread_id`; forget: drop the standing rule `rule`; wait: park the session until something comes — another session's next conclusion, some minutes, a file, or the person's answer (`wait_for`) — with `text` saying what; the engine hands it back with a notice when it comes, and reminds you once after `minutes` when nothing came; adopt: take over a session another Router drives (the person split the work by project), so its notices come to you from now on; drafter: turn the drafter on (`drafter` true) or off for a session — each conclusion then goes first to a drafting session that writes your next message, which the engine checks and sends; you hear what it hands up and, now and then, a summary.".to_owned()),
                 ),
             ),
             (
@@ -170,6 +173,10 @@ impl DriveTool {
             (
                 "minutes".to_owned(),
                 JsonSchema::integer(Some("wait for minutes: how long; with the other waits: remind you once after this many minutes if nothing came.".to_owned())),
+            ),
+            (
+                "drafter".to_owned(),
+                JsonSchema::boolean(Some("start: let the drafter answer this session's conclusions from the start; drafter: on (true) or off (false).".to_owned())),
             ),
             (
                 "rule".to_owned(),
@@ -354,11 +361,14 @@ impl DriveTool {
                     account,
                     router: self.caller.clone(),
                 };
-                drive
-                    .start(&thread_id, start)
-                    .await
-                    .map(answer)
-                    .map_err(refused)
+                let record = drive.start(&thread_id, start).await.map_err(refused)?;
+                if args.drafter == Some(true) {
+                    drive
+                        .set_drafter(&thread_id, /*on*/ true)
+                        .await
+                        .map_err(refused)?;
+                }
+                Ok(answer(record))
             }
             Action::Say => {
                 let id = thread_id()?;
@@ -551,6 +561,20 @@ impl DriveTool {
                 })?;
                 drive
                     .adopt(&id, caller)
+                    .await
+                    .map_err(refused)?
+                    .map(answer)
+                    .ok_or_else(|| missing(&id))
+            }
+            Action::Drafter => {
+                let id = thread_id()?;
+                let on = args.drafter.ok_or_else(|| {
+                    FunctionCallError::RespondToModel(
+                        "需要 drafter：开（true）还是关（false）".to_owned(),
+                    )
+                })?;
+                drive
+                    .set_drafter(&id, on)
                     .await
                     .map_err(refused)?
                     .map(answer)

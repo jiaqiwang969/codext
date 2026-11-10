@@ -17,6 +17,7 @@ Superagent 是跑在 app-server daemon 里的组织引擎。Router 是它管的�
 7. 要等别的路交结论、等一段时间、等某个文件、等用户回话时，Router 用 `wait` 写明等什么。这一路显示为"等待：…"，不进等用户处理的清单；等到了引擎把它交回 Router 并通知（等的是别的路时，和那一路的结论在同一条消息里）；设了提醒时间还没等到，提醒一次。Router 对这一路做任何事，等待就结束。
 8. 用户说的话如果对所有路或今后都有效，Router 用 `remember` 照抄原话记成长期规矩（全部、一个文件夹下的各路、或一路），`forget` 删掉。长期规矩存在账本里，常驻 Router 的上下文，压缩后也不丢，并且可以当作 `say` 的依据。
 9. 一路由哪个 Router 推进：开它的那个；另一个 Router 用 `adopt` 可以接过来（见下面"按项目分 Router"）。
+10. 起草者（默认关，按路打开：`drafter`，或 `start` 带 `drafter`）。这一路交了结论，先交给它自己的起草会话（第一次用时在这一路的文件夹里开，只读、从不请求批准，用 Router 的账号；家目录有 `agents/drafter.toml` 就用它定的模型和强度）。起草者写下一句和依据，引擎按 `say` 的同样规则核对后直接发；做完等验收、要用户定的取舍、对外的动作、拿不准的，它交给 Router（附它的理由）；核对不过、没给出能用的答复、十分钟没写完，结论照常交给 Router 并说明。Router 平时只收这些，外加起草者发出去的话的小结（攒满 5 句或最早一句满一小时）。起草会话不进 Router 的会话索引。
 
 推进分两档：
 
@@ -99,6 +100,7 @@ daemon 可以随时重启。重启后引擎逐个检查推进中的会话：已�
 | `drive/say.rs`、`drive/basis.rs`、`drive/standing.rs` | `say` 的依据核对和话的检查，插话；依据可以从哪里来；长期规矩 |
 | `drive/notices.rs` | 给 Router 的通知：Router 忙时攒着，空下来并成一条，过期的不送，送给开这次推进的 Router |
 | `drive/wait.rs`、`drive/sweep.rs`、`drive/events.rs` | 停放等待；每分钟的巡检和标记；事件流和 `superagent/status` 里的 `drives` |
+| `drive/drafter.rs` | 起草者：结论先交给起草会话，它写的下一句经核对后发出，交上来的事和小结给 Router |
 | `drive/report.rs`、`drive/progress.rs` | 取结论、判定、通知卡片；文件夹里有没有新写入 |
 | `drive/accounts.rs`、`drive/cooldown.rs`、`drive/policy.rs`、`drive/load.rs`、`drive/reset_cards.rs` | 账号池、挑号、要不要换号的判断（`plan`）；账号冷却，读到额度回来就提前结束；可调的值；每个账号上有几路；没有账号能接手时用重置卡 |
 | `drive/pool.rs`、`drive/step_account.rs`、`drive/switch.rs` | 读账号的额度和账号池、换号记录；每步前的检查、指定账号开始推进；推进会话失败后的换号 |

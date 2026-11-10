@@ -228,7 +228,7 @@ impl DriveService {
         });
         // A session waiting for this conclusion goes back to the Router with it, in one message.
         self.look_at_waits().await?;
-        self.notify(&record, &told).await
+        self.hand_on(&record, &told).await
     }
 
     /// A paused session's turn ended: its conclusion becomes the one the Router answers when it

@@ -234,12 +234,18 @@ impl DriveService {
         {
             self.turn_ended(thread_id, /*aborted*/ None);
         }
-        if self
-            .record(thread_id)
-            .await?
-            .is_some_and(|record| record.watched())
-        {
-            self.schedule(thread_id).await?;
+        match self.record(thread_id).await? {
+            Some(record) if record.watched() => self.schedule(thread_id).await?,
+            Some(_) => {}
+            // A drafting session's turn ended: its session's draft reads the answer.
+            None => {
+                if let Some(session) = self.drafted_session(thread_id).await? {
+                    self.inner
+                        .effects
+                        .enqueue_now(super::KIND_DRAFT, &session, &serde_json::json!({}))
+                        .await?;
+                }
+            }
         }
         Ok(())
     }

@@ -87,6 +87,7 @@ const DRIVE_RULES: &str = "\
 - 要等别的路交结论、等一段时间、等某个文件、等用户回话：用 wait 写明等什么，等到了引擎会叫你；不要只停着靠记。
 - 引擎停下来要用户定的（偏移、连续几步什么都没改）：向用户说明，问一个具体问题；用户回话后 say，correction 照抄原话。
 - 用户的话如果对所有路或今后都有效：用 remember 照抄原话记下（可以只限一个文件夹或一路）；用户改口就 forget 旧的再记新的。
+- 用户同意让起草者代回某一路时，用 drafter 打开（start 也可以带 drafter）：那一路的结论先交给起草者，它写的下一句由引擎核对后直接发；你收到的是它交上来的事（要用户定的、对外的动作、被退回的话）和定期小结。用户要收回就关掉。
 - <superagent_drives> 里的“注意”是引擎看到的情况：没人回的就回或用 wait 写明在等什么，做太久的去看原文，碎步就把下一步交代完整。
 - 用户发现方向错了而 worker 正在做：马上 say（correction 照抄用户原话），话会插进它正在做的回合；要它整个停下用 interrupt，再 say。别的更正不打断，等它这一步做完写进下一步。
 - 账号：引擎会提前换号：你和推进的会话所用的账号额度快用完、在冷却或用不了时，引擎在两轮之间就换到额度充足的账号，不用你管。推进的一步因额度用完或模型满载失败时，引擎换号重来这一步并通知你，你只需告诉用户换了号。用户要给某个会话换号就用 switch_account（account 不填则自动选）；会话正在做时先 interrupt。用户指定新的推进用哪个账号时，start 带上 account。
@@ -186,7 +187,13 @@ impl ContextContributor for RouterContext {
             let Some(host) = service.host() else {
                 return sections;
             };
-            let limit = INDEX_ROWS + pm_threads.len();
+            // The drive's drafting sessions are its own, not the person's: the index leaves
+            // them out.
+            let drafters = match service.runtime().and_then(|runtime| runtime.drive.clone()) {
+                Some(drive) => drive.drafter_threads().await.unwrap_or_default(),
+                None => Vec::new(),
+            };
+            let limit = INDEX_ROWS + pm_threads.len() + drafters.len();
             match host
                 .list_sessions(
                     /*cursor*/ None,
@@ -199,7 +206,9 @@ impl ContextContributor for RouterContext {
                     let rows: Vec<(String, String, String)> = page
                         .sessions
                         .iter()
-                        .filter(|session| !pm_threads.contains(&session.id))
+                        .filter(|session| {
+                            !pm_threads.contains(&session.id) && !drafters.contains(&session.id)
+                        })
                         .take(INDEX_ROWS)
                         .map(|session| {
                             (
