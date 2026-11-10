@@ -244,7 +244,7 @@ impl DriveService {
         {
             return Ok(());
         }
-        let Verdict { plan, why } = self.plan_move(standing, activity).await;
+        let Verdict { plan, why } = self.plan_move(standing, activity).await?;
         match plan {
             Plan::Stay => {
                 self.watch().pending.remove(thread_id);

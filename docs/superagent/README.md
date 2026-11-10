@@ -31,6 +31,7 @@ Superagent 是跑在 app-server daemon 里的组织引擎。Router 是它管的�
 - 挑号：按 `codex-account-next list` 的顺序，重置最早的优先，跳过免费账号和还在冷却的。提前换只换到剩余不低于软阈值的账号；账号已经快用完时，才退一步接受剩余不低于硬阈值、也不低于 5% 的账号。没有能换的就不动，只记一次警告。同一个账号在一轮（推进的一步）之后只会被换走一次，不会来回换。
 - 兜底：推进的一步、或 Router 自己的一轮，因为账号额度用完（`usageLimitExceeded`）或模型满载（`serverOverloaded`，"Selected model is at capacity"）而失败时，这个账号冷却（额度用完的冷却到重置时间，满载的冷却 15 分钟），换号后把这一步重发、把这一轮的话重新交给 Router。
 - 兜底：Router 的一轮卡在重连里结束不了（同一轮 3 分钟内出现 2 次满载或额度用完）时，引擎打断这一轮，按上一条换号，再把这一轮的话交给 Router。没有能换的账号时不打断。Router 的每一轮最多因此换一次。
+- 冷却提前结束：额度用完的账号常被用户用重置卡充回。引擎之后新读到这个账号（读它自己或读整个账号池）能用、剩余不低于软阈值、而且比它用完时读到的多，就在这次读时结束它的冷却，同一次检查就能换到它。用完时读到的额度本来就不低的账号（读不出用完的是哪项额度）照旧冷却到重置时间；满载的冷却不提前结束。提前结束的冷却记在 `superagent/status` 的 `endedCooldowns` 里（最近 30 次）。
 - 手动：Router 可以用 `switch_account` 给会话换号。用户指定新的推进用哪个账号时，`start` 带上 `account`：新会话直接在这个账号上开，已有的会话在第一步之前换过去，这一步不会被提前换走。
 - 每次换号都记在 `superagent/status` 的 `accountMoves` 里（最近 30 次）。
 
@@ -38,7 +39,7 @@ Superagent 是跑在 app-server daemon 里的组织引擎。Router 是它管的�
 
 | 环境变量 | 默认 | 含义 |
 | --- | --- | --- |
-| `CODEXT_SUPERAGENT_QUOTA_SOFT_PERCENT` | 10 | 剩余额度低于它，在两轮（两步）之间换号 |
+| `CODEXT_SUPERAGENT_QUOTA_SOFT_PERCENT` | 10 | 剩余额度低于它，在两轮（两步）之间换号；额度用完在冷却的账号新读到不低于它，冷却提前结束 |
 | `CODEXT_SUPERAGENT_QUOTA_HARD_PERCENT` | 3 | 低于它（或在冷却、用不了）算快用完；不高于软阈值 |
 | `CODEXT_SUPERAGENT_QUOTA_WATCH_SECS` | 120 | 多久看一次 Router 的账号；读过的额度留用两个周期。0 关掉定时查看，一轮结束、送话前和每步前照样看（读过的留用 4 分钟） |
 | `CODEXT_SUPERAGENT_ROUTER_RESCUE_THRESHOLD` | 2 | Router 同一轮出现几次满载或额度用完就打断换号；0 关掉 |
@@ -75,7 +76,7 @@ daemon 可以随时重启。重启后引擎逐个检查推进中的会话：已�
 | `drive/mod.rs` | 推进记录和状态，开始、暂停、恢复、停止、交接、重启对账 |
 | `drive/say.rs` | `say` 的依据核对和话的检查，插话 |
 | `drive/report.rs` | 取结论、判定、通知卡片 |
-| `drive/accounts.rs`、`drive/policy.rs` | 账号池、挑号、要不要换号的判断（`plan`）、可调的值 |
+| `drive/accounts.rs`、`drive/cooldown.rs`、`drive/policy.rs` | 账号池、挑号、要不要换号的判断（`plan`）；账号冷却，读到额度回来就提前结束；可调的值 |
 | `drive/pool.rs`、`drive/step_account.rs`、`drive/switch.rs` | 读账号的额度和账号池、换号记录；每步前的检查、指定账号开始推进；推进会话失败后的换号 |
 | `drive/router_account.rs`、`drive/router_rescue.rs` | Router 提前换号（定时查看、一轮结束、送话前）和兜底（失败或卡在重连的一轮） |
 | `drive/anchor.rs`、`drive/audit.rs` | 锚定目标和 oev2 判定 |

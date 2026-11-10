@@ -66,6 +66,9 @@ pub struct Status {
     pub watchdog_heartbeat: Option<String>,
     /// The account moves the drive made (the Router's and the driven sessions'), oldest first.
     pub account_moves: Vec<crate::drive::AccountMove>,
+    /// The usage-limit cooldowns the drive ended early because a fresh read showed the quota
+    /// back, oldest first.
+    pub ended_cooldowns: Vec<crate::drive::EndedCooldown>,
     /// The exit code the watchdog acts on (`exit_code`).
     pub exit_code: i32,
 }
@@ -178,6 +181,7 @@ pub async fn status_with(
     let runtime = service.runtime();
     let mut effects = BTreeMap::new();
     let mut account_moves = Vec::new();
+    let mut ended_cooldowns = Vec::new();
     let mut tickets = Vec::new();
     let mut attention = Vec::new();
     let mut pm_groups = pm_threads
@@ -203,6 +207,7 @@ pub async fn status_with(
         }
         if let Some(drive) = &runtime.drive {
             account_moves = drive.account_moves().await?;
+            ended_cooldowns = drive.ended_cooldowns().await?;
         }
         let host = service.host();
         let open_ticket_rows = runtime.store.tickets_open().await?;
@@ -252,6 +257,7 @@ pub async fn status_with(
         hook_errors,
         watchdog_heartbeat,
         account_moves,
+        ended_cooldowns,
         exit_code: 0,
     };
     status.exit_code = exit_code(&status);

@@ -2,7 +2,8 @@
 //! the decision from the pool, the watch, the look when a Router turn ends (holding its queued
 //! input for the move), the gate before the engine hands a Router anything, the check before each
 //! step of a drive, a drive started on a named account, and the safety net under all of it: the
-//! move after a Router turn its account failed or kept retrying.
+//! move after a Router turn its account failed or kept retrying. A spent account the person
+//! refilled is free again as soon as a read shows its quota back.
 
 mod common;
 
@@ -23,18 +24,21 @@ use codex_protocol::ThreadId;
 use codex_superagent_extension::BoxFut;
 use codex_superagent_extension::Effects;
 use codex_superagent_extension::HealthBoard;
+use codex_superagent_extension::Store;
 use codex_superagent_extension::drive::AccountInfo;
 use codex_superagent_extension::drive::AccountMove;
 use codex_superagent_extension::drive::AccountPolicy;
 use codex_superagent_extension::drive::AccountSource;
 use codex_superagent_extension::drive::Activity;
 use codex_superagent_extension::drive::Audit;
+use codex_superagent_extension::drive::COOLDOWN_KEY;
 use codex_superagent_extension::drive::Cooldown;
 use codex_superagent_extension::drive::DriveMode;
 use codex_superagent_extension::drive::DriveOptions;
 use codex_superagent_extension::drive::DriveService;
 use codex_superagent_extension::drive::DriveStart;
 use codex_superagent_extension::drive::DriveState;
+use codex_superagent_extension::drive::EndedCooldown;
 use codex_superagent_extension::drive::Headroom;
 use codex_superagent_extension::drive::Judge;
 use codex_superagent_extension::drive::KIND_RESCUE;
@@ -326,12 +330,51 @@ fn moved(thread: &str, from: &str, to: &str, why: &str) -> AccountMove {
     }
 }
 
+/// The cooldowns a read ended early, without their times.
+async fn ended(drive: &DriveService) -> anyhow::Result<Vec<EndedCooldown>> {
+    Ok(drive
+        .ended_cooldowns()
+        .await?
+        .into_iter()
+        .map(|kept| EndedCooldown {
+            at: String::new(),
+            ..kept
+        })
+        .collect())
+}
+
+fn ended_early(account: &str, why: &str) -> EndedCooldown {
+    EndedCooldown {
+        at: String::new(),
+        account: account.to_owned(),
+        why: why.to_owned(),
+    }
+}
+
+/// The cooldown of an account whose quota ran out while it showed `remaining` percent left.
+fn out_of_quota(until: i64, remaining: f64) -> Cooldown {
+    Cooldown {
+        until,
+        reason: "账号额度用完".to_owned(),
+        kind: Some(Trouble::UsageLimit),
+        remaining: Some(remaining),
+    }
+}
+
+/// Writes the cooldown ledger as given: typed rows, or rows as earlier versions wrote them.
+async fn seed_cooldowns(s: &Setup, rows: &impl serde::Serialize) -> anyhow::Result<()> {
+    s.store
+        .atomic(async |tx| tx.kv_set(COOLDOWN_KEY, rows).await)
+        .await
+}
+
 struct Setup {
     _dir: TempDir,
     work: TempDir,
     host: Arc<Host>,
     pool: Arc<Pool>,
     effects: Effects,
+    store: Store,
     drive: DriveService,
 }
 
@@ -343,7 +386,7 @@ async fn setup_with(policy: AccountPolicy) -> anyhow::Result<Setup> {
     let effects =
         Effects::new(store.clone(), HealthBoard::new(), FakeClock::at(T0).clock()).await?;
     let drive = DriveService::install_with(
-        store,
+        store.clone(),
         effects.clone(),
         host.clone() as Arc<dyn SuperagentHost>,
         Arc::new(NoJudge),
@@ -361,6 +404,7 @@ async fn setup_with(policy: AccountPolicy) -> anyhow::Result<Setup> {
         host,
         pool,
         effects,
+        store,
         drive,
     })
 }
@@ -411,6 +455,8 @@ fn the_plan_leaves_a_low_or_spent_account_only_for_one_that_holds() {
         Cooldown {
             until: now + 600,
             reason: "模型满载".to_owned(),
+            kind: Some(Trouble::Capacity),
+            remaining: None,
         },
     )]);
     let cases: Vec<Case<'_>> = vec![
@@ -1002,15 +1048,13 @@ async fn a_router_turn_its_account_failed_moves_once_and_its_words_come_back() -
         "{}",
         sent[0]
     );
+    // Cooling down until its quota resets, with what it showed when it ran out.
     let reset = lock(&s.pool.accounts)[0].resets_at;
     assert_eq!(
-        s.drive
-            .cooldowns()
-            .await?
-            .get("router-acct")
-            .map(|c| c.until),
-        reset,
-        "cooling down until its quota resets"
+        s.store.kv_get::<serde_json::Value>(COOLDOWN_KEY).await?,
+        Some(json!({ "router-acct": {
+            "until": reset, "reason": "账号额度用完", "kind": "usage_limit", "remaining": 60.0,
+        }}))
     );
     assert_eq!(
         moves(&s.drive).await?,
@@ -1354,6 +1398,217 @@ async fn a_drive_started_on_a_named_account_runs_there_from_its_first_step() -> 
             "router-acct",
             "fresh",
             "推进开始时指定的账号"
+        )]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_refilled_account_ends_its_quota_cooldown_on_a_pool_read_and_is_taken_in_that_look()
+-> anyhow::Result<()> {
+    let s = setup().await?;
+    // It ran out days ago and was to cool down until its old reset; the person refilled it since.
+    let days = now() + 5 * 24 * 3600;
+    seed_cooldowns(
+        &s,
+        &BTreeMap::from([("refilled".to_owned(), out_of_quota(days, 0.0))]),
+    )
+    .await?;
+    s.host.on(ROUTER, "router-acct");
+    s.host.turns(ROUTER, vec![turn("t1", "completed", &[])]);
+    s.pool.set(vec![
+        account("router-acct", "pro", 8.0, 2),
+        account("refilled", "pro", 22.0, 3),
+        account("later", "pro", 90.0, 40),
+    ]);
+    // The Router runs low: the read of the pool that finds it an account ends the cooldown, and
+    // the refilled account, whose quota resets soonest, is taken in the same look.
+    s.drive.watch_accounts().await;
+    assert_eq!(s.host.log(), vec![format!("bind:{ROUTER}:refilled")]);
+    assert_eq!(
+        moves(&s.drive).await?,
+        vec![moved(
+            ROUTER,
+            "router-acct",
+            "refilled",
+            "Router 原账号剩 8%，提前换号"
+        )]
+    );
+    assert_eq!(s.drive.cooldowns().await?, BTreeMap::new());
+    assert_eq!(
+        ended(&s.drive).await?,
+        vec![ended_early("refilled", "额度恢复（剩 22%），提前结束冷却")]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_refilled_account_ends_its_quota_cooldown_on_its_own_read_and_the_step_stays_on_it()
+-> anyhow::Result<()> {
+    let s = setup().await?;
+    let days = now() + 5 * 24 * 3600;
+    seed_cooldowns(
+        &s,
+        &BTreeMap::from([("session-acct".to_owned(), out_of_quota(days, 0.0))]),
+    )
+    .await?;
+    s.host.on(SESSION, "session-acct");
+    s.pool.set(vec![
+        account("session-acct", "pro", 50.0, 2),
+        account("other", "pro", 70.0, 1),
+    ]);
+    // The check before step 1 reads the session's account on its own: its quota is back, so its
+    // cooldown ends and the step goes out there, the pool never read.
+    s.drive.start(SESSION, simple(s.work.path(), None)).await?;
+    assert_eq!(
+        (s.host.log(), s.pool.full_reads(), s.pool.own_reads()),
+        (
+            vec![format!("step:{SESSION}")],
+            0,
+            vec!["session-acct".to_owned()]
+        )
+    );
+    assert_eq!(s.drive.cooldowns().await?, BTreeMap::new());
+    assert_eq!(
+        ended(&s.drive).await?,
+        vec![ended_early(
+            "session-acct",
+            "额度恢复（剩 50%），提前结束冷却"
+        )]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_quota_cooldown_stays_while_the_reads_do_not_show_the_quota_back() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let until = now() + 3 * 24 * 3600;
+    let cooling = BTreeMap::from([
+        ("empty".to_owned(), out_of_quota(until, 0.0)),
+        ("below-soft".to_owned(), out_of_quota(until, 0.0)),
+        ("unusable".to_owned(), out_of_quota(until, 0.0)),
+        // Its read showed this much when a turn ran out of quota on it: what ran out does not
+        // show in its reads.
+        ("unseen-limit".to_owned(), out_of_quota(until, 60.0)),
+    ]);
+    seed_cooldowns(&s, &cooling).await?;
+    s.host.on(ROUTER, "router-acct");
+    s.host.turns(ROUTER, vec![turn("t1", "completed", &[])]);
+    s.pool.set(vec![
+        account("router-acct", "pro", 8.0, 2),
+        account("empty", "pro", 0.0, 1),
+        account("below-soft", "pro", 8.0, 1),
+        AccountInfo {
+            usable: false,
+            ..account("unusable", "pro", 100.0, 1)
+        },
+        account("unseen-limit", "pro", 60.0, 1),
+        account("next", "pro", 70.0, 30),
+    ]);
+    s.drive.watch_accounts().await;
+    // Every cooldown stands; the Router moves to the one account free of them.
+    assert_eq!(s.host.log(), vec![format!("bind:{ROUTER}:next")]);
+    assert_eq!(s.drive.cooldowns().await?, cooling);
+    assert_eq!(ended(&s.drive).await?, Vec::new());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_capacity_cooldown_runs_its_time_whatever_the_quota_reads() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let cooling = BTreeMap::from([(
+        "busy".to_owned(),
+        Cooldown {
+            until: now() + 600,
+            reason: "模型满载（Selected model is at capacity）".to_owned(),
+            kind: Some(Trouble::Capacity),
+            remaining: Some(40.0),
+        },
+    )]);
+    seed_cooldowns(&s, &cooling).await?;
+    s.host.on(ROUTER, "router-acct");
+    s.host.turns(ROUTER, vec![turn("t1", "completed", &[])]);
+    s.pool.set(vec![
+        account("router-acct", "pro", 8.0, 2),
+        account("busy", "pro", 95.0, 1),
+        account("next", "pro", 70.0, 30),
+    ]);
+    s.drive.watch_accounts().await;
+    assert_eq!(s.host.log(), vec![format!("bind:{ROUTER}:next")]);
+    assert_eq!(s.drive.cooldowns().await?, cooling);
+    assert_eq!(ended(&s.drive).await?, Vec::new());
+    Ok(())
+}
+
+#[tokio::test]
+async fn cooldown_rows_of_earlier_versions_are_known_by_their_reason() -> anyhow::Result<()> {
+    let s = setup().await?;
+    let later = now() + 3 * 24 * 3600;
+    let soon = now() + 600;
+    let capacity = "模型满载（Selected model is at capacity）";
+    // Rows as earlier versions wrote them: only `until` and `reason`.
+    seed_cooldowns(
+        &s,
+        &json!({
+            "quota-gone": { "until": later, "reason": "账号额度用完" },
+            "busy": { "until": soon, "reason": capacity },
+            "unknown": { "until": later, "reason": "人工停用" },
+            "over": { "until": now() - 60, "reason": "账号额度用完" },
+        }),
+    )
+    .await?;
+    let legacy = |until: i64, reason: &str| Cooldown {
+        until,
+        reason: reason.to_owned(),
+        kind: None,
+        remaining: None,
+    };
+    let cooling = s.drive.cooldowns().await?;
+    assert_eq!(
+        cooling,
+        BTreeMap::from([
+            ("busy".to_owned(), legacy(soon, capacity)),
+            ("quota-gone".to_owned(), legacy(later, "账号额度用完")),
+            ("unknown".to_owned(), legacy(later, "人工停用")),
+        ])
+    );
+    assert_eq!(
+        cooling
+            .iter()
+            .map(|(name, cooldown)| (name.as_str(), cooldown.trouble()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("busy", Some(Trouble::Capacity)),
+            ("quota-gone", Some(Trouble::UsageLimit)),
+            ("unknown", None),
+        ]
+    );
+
+    // A read that shows quota on all of them ends only the usage-limit one, which the Router,
+    // running low, takes at once.
+    s.host.on(ROUTER, "router-acct");
+    s.host.turns(ROUTER, vec![turn("t1", "completed", &[])]);
+    s.pool.set(vec![
+        account("router-acct", "pro", 8.0, 2),
+        account("quota-gone", "pro", 50.0, 3),
+        account("busy", "pro", 90.0, 1),
+        account("unknown", "pro", 90.0, 1),
+        account("next", "pro", 70.0, 30),
+    ]);
+    s.drive.watch_accounts().await;
+    assert_eq!(s.host.log(), vec![format!("bind:{ROUTER}:quota-gone")]);
+    assert_eq!(
+        s.store.kv_get::<serde_json::Value>(COOLDOWN_KEY).await?,
+        Some(json!({
+            "busy": { "until": soon, "reason": capacity, "kind": null, "remaining": null },
+            "unknown": { "until": later, "reason": "人工停用", "kind": null, "remaining": null },
+        }))
+    );
+    assert_eq!(
+        ended(&s.drive).await?,
+        vec![ended_early(
+            "quota-gone",
+            "额度恢复（剩 50%），提前结束冷却"
         )]
     );
     Ok(())

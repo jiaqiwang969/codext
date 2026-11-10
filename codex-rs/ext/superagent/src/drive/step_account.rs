@@ -104,7 +104,7 @@ impl DriveService {
                 self.unstuck(thread_id);
                 return Ok(());
             }
-            let Verdict { plan, why } = self.plan_move(standing, Activity::Idle).await;
+            let Verdict { plan, why } = self.plan_move(standing, Activity::Idle).await?;
             match plan {
                 Plan::Move { to, .. } => {
                     if !self.claim(STEP_MOVED_KEY, &key).await? {

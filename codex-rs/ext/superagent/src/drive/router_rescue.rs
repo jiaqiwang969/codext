@@ -297,11 +297,10 @@ impl DriveService {
                 return Err(err);
             }
         };
-        let now = now();
         if let Some(name) = &current {
-            let until = self.cooldown_until(&pool, name, trouble, now);
-            self.cool_down(name, until, trouble.describe()).await?;
+            self.cool_down(&pool, name, trouble).await?;
         }
+        let now = now();
         let cooling = self.cooldowns().await?;
         let thresholds = self.inner.policy.thresholds;
         let Some(next) =

@@ -1,9 +1,9 @@
 //! Account switching for driven sessions and the Router. When a step's turn fails because its
 //! account ran out of quota (`usageLimitExceeded`) or the model is at capacity on it
-//! (`serverOverloaded`, "Selected model is at capacity"), that account cools down and the step goes
-//! again on another account, chosen the way `codex-account-next list` orders the pool: the account
-//! whose quota resets soonest first, since quota left at a reset is lost. Free accounts, accounts
-//! with too little quota left and accounts still cooling down are skipped.
+//! (`serverOverloaded`, "Selected model is at capacity"), that account cools down (`cooldown.rs`)
+//! and the step goes again on another account, chosen the way `codex-account-next list` orders the
+//! pool: the account whose quota resets soonest first, since quota left at a reset is lost. Free
+//! accounts, accounts with too little quota left and accounts still cooling down are skipped.
 //!
 //! Before that happens, `plan` decides from the pool alone whether a thread should leave its
 //! account between turns: below the soft threshold of quota left it moves when that costs nothing,
@@ -18,11 +18,10 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 
+use super::cooldown::Cooldown;
 use crate::BoxFut;
 use crate::host::TurnBrief;
 
-/// The ledger key of the accounts cooling down.
-pub const COOLDOWN_KEY: &str = "drive-account-cooldowns";
 /// The least quota (percent) an account needs to take a step.
 pub const MIN_REMAINING: f64 = 5.0;
 /// Below this quota (percent) a thread leaves its account between turns.
@@ -37,8 +36,9 @@ const HELPER_TIMEOUT: Duration = Duration::from_secs(150);
 /// How long one account's own read may take, through the daemon.
 const ACCOUNT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Why a step's account could not carry it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Why a step's account could not carry it. A cooldown keeps it as its `kind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Trouble {
     /// The account's quota is used up.
     UsageLimit,
@@ -118,13 +118,6 @@ impl AccountInfo {
             .unwrap_or_else(|| "重置时间未知".to_owned());
         format!("{}（剩 {:.0}%，{reset}）", self.name, self.remaining)
     }
-}
-
-/// An account cooling down until `until` (Unix seconds).
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Cooldown {
-    pub until: i64,
-    pub reason: String,
 }
 
 /// Where the account pool and its quota come from.

@@ -3,11 +3,12 @@
 //! A check reads only the account a thread runs on, on its own and through the daemon (cheap);
 //! only when that account should be left does it read the whole pool, which runs the account
 //! status helper over every account and takes seconds. Both reads are kept for the policy's
-//! maximum age, so the checks between turns and before steps mostly read nothing. A move is
-//! claimed in the ledger first, so a thread moves at most once per step (a driven session) or per
-//! turn away from any one account (the Router), whoever looks.
+//! maximum age, so the checks between turns and before steps mostly read nothing. A fresh read
+//! ends the usage-limit cooldown of each account it shows with its quota back (`cooldown.rs`)
+//! before the check that made it looks at the cooldowns. A move is claimed in the ledger first, so
+//! a thread moves at most once per step (a driven session) or per turn away from any one account
+//! (the Router), whoever looks.
 
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::MutexGuard;
@@ -23,7 +24,6 @@ use super::accounts;
 use super::accounts::AccountInfo;
 use super::accounts::AccountSource;
 use super::accounts::Activity;
-use super::accounts::Cooldown;
 use super::accounts::Headroom;
 use super::accounts::Plan;
 use super::accounts::now;
@@ -91,7 +91,6 @@ pub(super) struct Standing {
     current: String,
     /// The account's own read; `None` when it failed.
     own: Option<AccountInfo>,
-    cooling: BTreeMap<String, Cooldown>,
     headroom: Option<Headroom>,
 }
 
@@ -122,26 +121,29 @@ impl DriveService {
 
     async fn read_pool(&self, source: &dyn AccountSource) -> anyhow::Result<Vec<AccountInfo>> {
         let read = source.accounts().await;
-        let mut watch = self.watch();
-        watch.tried = Some(Instant::now());
-        match read {
-            Ok(pool) => {
-                if watch.failing {
-                    tracing::info!("superagent drive: the account pool reads again");
+        {
+            let mut watch = self.watch();
+            watch.tried = Some(Instant::now());
+            match &read {
+                Ok(pool) => {
+                    if watch.failing {
+                        tracing::info!("superagent drive: the account pool reads again");
+                    }
+                    watch.failing = false;
+                    watch.pool = pool.clone();
+                    watch.pool_at = watch.tried;
                 }
-                watch.failing = false;
-                watch.pool = pool.clone();
-                watch.pool_at = watch.tried;
-                Ok(pool)
-            }
-            Err(err) => {
-                if !watch.failing {
-                    tracing::warn!("superagent drive: cannot read the account pool: {err:#}");
+                Err(err) => {
+                    if !watch.failing {
+                        tracing::warn!("superagent drive: cannot read the account pool: {err:#}");
+                    }
+                    watch.failing = true;
                 }
-                watch.failing = true;
-                Err(err)
             }
         }
+        let pool = read?;
+        self.end_refilled_cooldowns(&pool).await;
+        Ok(pool)
     }
 
     /// Reads the whole pool now, for a move after a failure or one the Router asked for.
@@ -212,30 +214,38 @@ impl DriveService {
             return Some(account);
         }
         let read = source.account(name).await;
-        let mut watch = self.watch();
-        match read {
-            Ok(account) => {
-                if watch.unread.remove(name) {
-                    tracing::info!("superagent drive: the account {name} reads again");
+        let account = {
+            let mut watch = self.watch();
+            match read {
+                Ok(account) => {
+                    if watch.unread.remove(name) {
+                        tracing::info!("superagent drive: the account {name} reads again");
+                    }
+                    watch
+                        .seen
+                        .insert(name.to_owned(), (account.clone(), Instant::now()));
+                    Some(account)
                 }
-                watch
-                    .seen
-                    .insert(name.to_owned(), (account.clone(), Instant::now()));
-                Some(account)
-            }
-            Err(err) => {
-                if watch.unread.insert(name.to_owned()) {
-                    tracing::warn!("superagent drive: cannot read the account {name}: {err:#}");
+                Err(err) => {
+                    if watch.unread.insert(name.to_owned()) {
+                        tracing::warn!("superagent drive: cannot read the account {name}: {err:#}");
+                    }
+                    None
                 }
-                None
             }
+        };
+        if let Some(account) = &account {
+            self.end_refilled_cooldowns(std::slice::from_ref(account))
+                .await;
         }
+        account
     }
 
-    /// How the account `current` stands: read on its own (cheap), against its cooldown.
+    /// How the account `current` stands: read on its own (cheap), against its cooldown. The read
+    /// comes first, since a fresh one may end that cooldown.
     pub(super) async fn standing(&self, current: &str, look: Look) -> anyhow::Result<Standing> {
-        let cooling = self.cooldowns().await?;
         let own = self.account_info(current, look).await;
+        let cooling = self.cooldowns().await?;
         let thresholds = self.inner.policy.thresholds;
         let headroom = own.as_ref().and_then(|account| {
             accounts::headroom(
@@ -249,7 +259,6 @@ impl DriveService {
         Ok(Standing {
             current: current.to_owned(),
             own,
-            cooling,
             headroom,
         })
     }
@@ -257,14 +266,14 @@ impl DriveService {
     /// Where a thread whose account is not healthy moves: the whole pool decides (read again
     /// when older than the policy allows), each account as most recently read, so an account
     /// just found low on its own is not taken for the healthy one the older pool shows. When the
-    /// thread's own read failed, the pool's entry for its account decides whether it moves.
-    pub(super) async fn plan_move(&self, standing: Standing, activity: Activity) -> Verdict {
-        let Standing {
-            current,
-            own,
-            cooling,
-            ..
-        } = standing;
+    /// thread's own read failed, the pool's entry for its account decides whether it moves. The
+    /// cooldowns count as they stand after the pool's read, which may have ended some.
+    pub(super) async fn plan_move(
+        &self,
+        standing: Standing,
+        activity: Activity,
+    ) -> anyhow::Result<Verdict> {
+        let Standing { current, own, .. } = standing;
         let mut pool = self.recent_pool().await;
         let newer: Vec<AccountInfo> = {
             let watch = self.watch();
@@ -290,12 +299,13 @@ impl DriveService {
                 None => pool.push(read),
             }
         }
+        let cooling = self.cooldowns().await?;
         let now = now();
         let thresholds = self.inner.policy.thresholds;
-        Verdict {
+        Ok(Verdict {
             plan: accounts::plan(&pool, &cooling, now, &current, thresholds, activity),
             why: accounts::shortfall(&pool, &cooling, now, &current),
-        }
+        })
     }
 
     /// Records `key` in the ledger list `list`; false when it was there already.

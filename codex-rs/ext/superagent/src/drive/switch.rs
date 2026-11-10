@@ -1,9 +1,7 @@
 //! Moving a driven session to another account (`accounts.rs`): by itself when a step's account
-//! could not carry it (out of quota, model at capacity), or when the Router asks. The move before
-//! a step whose account runs low is in `pool.rs`; the Router's own moves are in
-//! `router_account.rs` and `router_rescue.rs`.
-
-use std::collections::BTreeMap;
+//! could not carry it (out of quota, model at capacity; the account cools down, `cooldown.rs`), or
+//! when the Router asks. The move before a step whose account runs low is in `step_account.rs`;
+//! the Router's own moves are in `router_account.rs` and `router_rescue.rs`.
 
 use codex_protocol::ThreadId;
 use serde_json::json;
@@ -14,8 +12,6 @@ use super::DriveState;
 use super::KEY_PREFIX;
 use super::NOTICE;
 use super::accounts;
-use super::accounts::AccountInfo;
-use super::accounts::Cooldown;
 use super::accounts::Trouble;
 use super::accounts::now;
 use super::step_account::STEP_MOVED_KEY;
@@ -53,64 +49,6 @@ fn step_text(record: &DriveRecord) -> Option<String> {
 }
 
 impl DriveService {
-    /// The accounts cooling down now.
-    pub async fn cooldowns(&self) -> anyhow::Result<BTreeMap<String, Cooldown>> {
-        let all: BTreeMap<String, Cooldown> = self
-            .inner
-            .store
-            .kv_get(accounts::COOLDOWN_KEY)
-            .await?
-            .unwrap_or_default();
-        let now = now();
-        Ok(all
-            .into_iter()
-            .filter(|(_, cooldown)| cooldown.until > now)
-            .collect())
-    }
-
-    /// Until when `account` cools down after `trouble`: until its quota resets (or an hour when
-    /// that is unknown), or a while for a model at capacity.
-    pub(super) fn cooldown_until(
-        &self,
-        pool: &[AccountInfo],
-        account: &str,
-        trouble: Trouble,
-        now: i64,
-    ) -> i64 {
-        match trouble {
-            Trouble::UsageLimit => pool
-                .iter()
-                .find(|info| info.name == account)
-                .and_then(|info| info.resets_at)
-                .filter(|at| *at > now)
-                .unwrap_or(now + accounts::QUOTA_COOLDOWN.as_secs() as i64),
-            Trouble::Capacity => now + self.inner.capacity_cooldown.as_secs() as i64,
-        }
-    }
-
-    pub(super) async fn cool_down(
-        &self,
-        account: &str,
-        until: i64,
-        reason: &str,
-    ) -> anyhow::Result<()> {
-        let account = account.to_owned();
-        let reason = reason.to_owned();
-        let now = now();
-        self.inner
-            .store
-            .atomic(async |tx| {
-                let mut all: BTreeMap<String, Cooldown> = tx
-                    .kv_get(accounts::COOLDOWN_KEY)
-                    .await?
-                    .unwrap_or_default();
-                all.retain(|_, cooldown| cooldown.until > now);
-                all.insert(account, Cooldown { until, reason });
-                tx.kv_set(accounts::COOLDOWN_KEY, &all).await
-            })
-            .await
-    }
-
     /// A notice to the Router in its own words.
     async fn tell(&self, record: &DriveRecord, summary: String) -> anyhow::Result<()> {
         let thread_id = &record.thread_id;
@@ -168,8 +106,7 @@ impl DriveService {
             }
         };
         if let Some(name) = &current {
-            let until = self.cooldown_until(&pool, name, trouble, now);
-            self.cool_down(name, until, trouble.describe()).await?;
+            self.cool_down(&pool, name, trouble).await?;
         }
         let cooling = self.cooldowns().await?;
         let thresholds = self.inner.policy.thresholds;
