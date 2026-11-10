@@ -8,8 +8,8 @@
 
 | 文件 | 做什么 | 改动 | 提交 |
 | --- | --- | --- | --- |
-| `app-server/src/superagent_host.rs`（新） | 实现引擎的 `SuperagentHost`：开会话、发消息、插话、打断，读会话的回合（含错误类型），查会话当前账号，换账号（`bind_profile`），开始排队的输入（`start_queued`：Router 一轮结束要换号时，引擎让它排队的话先等，换好后由引擎开始）。推进的步骤用完全访问（`DangerFullAccess`、`Never`），`turn_trigger = "drive"`。给 Router 和 worker 定工具策略 | +722/-21 | c2fd5a6e7c 及之后 8 个 superagent 提交，3aa97711fa |
-| `app-server/src/request_processors/superagent.rs`（新） | 引擎自己的伪连接 `SUPERAGENT_CONNECTION`；Router 不加载会话就能读会话列表和回合 | +161/-2 | c2fd5a6e7c、23b6ca8d7c、722ba7c5df |
+| `app-server/src/superagent_host.rs`（新） | 实现引擎的 `SuperagentHost`：开会话、发消息、插话、打断，读会话的回合（含错误类型），查会话当前账号（未加载的会话答它加载时会用的账号：保存的绑定，没有就用创建它的账号，不加载它），换账号（`bind_profile`，未加载的会话只改绑定），开始排队的输入（`start_queued`：Router 一轮结束要换号时，引擎让它排队的话先等，换好后由引擎开始）。推进的步骤用完全访问（`DangerFullAccess`、`Never`），`turn_trigger = "drive"`。给 Router 和 worker 定工具策略 | +738/-23 | c2fd5a6e7c 及之后 8 个 superagent 提交，3aa97711fa、d997bcbe16 |
+| `app-server/src/request_processors/superagent.rs`（新） | 引擎自己的伪连接 `SUPERAGENT_CONNECTION`；Router 不加载会话就能读会话列表和回合，以及未加载会话加载时会用的账号（`thread_account_profile_internal`，只读元数据） | +176/-2 | c2fd5a6e7c、23b6ca8d7c、722ba7c5df、d997bcbe16 |
 | `app-server/src/superagent_status.rs`（新） | 处理 `superagent/status` | +26 | c2fd5a6e7c |
 | `app-server/src/message_processor.rs` | 功能打开时建引擎服务并交给各处理器；在托管 daemon 里运行；停机时先停调度，再写快照（`drain_superagent`） | +73/-22 | c2fd5a6e7c、e5bae0ebfc |
 | `app-server/src/lib.rs` | 声明两个模块；停机前调用 `drain_superagent` | +9/-6 | c2fd5a6e7c、e5bae0ebfc |
@@ -21,7 +21,7 @@
 | `app-server/src/bespoke_event_handling.rs` | 错误和警告记进引擎的事件记录（`incidents::note`） | +8 | c2fd5a6e7c |
 | `app-server/src/request_processors.rs` | 声明 `superagent` 子模块 | +1 | c2fd5a6e7c |
 | `app-server/Cargo.toml` | 依赖引擎 crate | +1 | c2fd5a6e7c |
-| `app-server/README.md` | 宿主接口说明（Organization coordinator 一节），含 Router 换号时排队的话先等、状态里的 `accountMoves` | +69/-15 | c2fd5a6e7c、c8ff38095b、3aa97711fa |
+| `app-server/README.md` | 宿主接口说明（Organization coordinator 一节），含 Router 换号时排队的话先等、状态里的 `accountMoves`、未加载会话的账号 | +74/-16 | c2fd5a6e7c、c8ff38095b、3aa97711fa、d997bcbe16 |
 
 ## 协议
 
