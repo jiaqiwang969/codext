@@ -2,9 +2,13 @@
 """Sets up and talks to the Superagent Router of one CODEX_HOME (default ~/.codex).
 
 Usage:
-  python3 -I router.py create      start the Router thread in ~ and register it in pm-threads
-  python3 -I router.py pin         pin it first in the command center (/agents)
-  python3 -I router.py ask "TEXT"  one Router turn; prints its answer
+  python3 -I router.py create [PROJECT [DIR]]  start a Router thread and register it in pm-threads:
+                                               the main one in ~, or one for PROJECT working in DIR
+  python3 -I router.py pin [PROJECT]           pin that Router first in the command center (/agents)
+  python3 -I router.py ask "TEXT" [PROJECT]    one turn of that Router; prints its answer
+
+A project Router takes the drives it starts (and the ones it adopts with superagent_drive adopt);
+their notices go to it, not to the main Router.
 
 It talks to that home's app-server daemon socket and uses the daemon's default account.
 Standard library only.
@@ -126,37 +130,61 @@ def connect():
 
 
 def registered():
+    """The registered Routers as (thread, project or None), in file order."""
     if not os.path.exists(PM_THREADS):
         return []
+    routers = []
     with open(PM_THREADS) as f:
-        return [line.split()[0] for line in f if line.strip() and not line.startswith("#")]
+        for line in f:
+            if not line.strip() or line.startswith("#"):
+                continue
+            fields = line.split()
+            project = next((field.split("=", 1)[1] for field in fields[1:]
+                            if field.startswith("project=")), None)
+            routers.append((fields[0], project))
+    return routers
 
 
-def router():
-    threads = registered()
-    if not threads:
+def router(project=None):
+    """The main Router (the first registered), or the one registered for `project`."""
+    routers = registered()
+    if not routers:
         sys.exit(f"no Router registered in {PM_THREADS}; run: router.py create")
-    return threads[0]
+    if project is None:
+        return routers[0][0]
+    for thread, name in routers:
+        if name == project:
+            return thread
+    sys.exit(f"no Router registered for {project}; run: router.py create {project} DIR")
 
 
 def text(value):
     return [{"type": "text", "text": value, "textElements": []}]
 
 
-def create():
-    if registered():
-        sys.exit(f"a Router is registered already: {registered()[0]}")
+def create(project=None, folder=None):
+    routers = registered()
+    if project is None and routers:
+        sys.exit(f"a Router is registered already: {routers[0][0]}")
+    if project is not None and not routers:
+        sys.exit("create the main Router first: router.py create")
+    if project is not None and any(name == project for _, name in routers):
+        sys.exit(f"a Router is registered for {project} already")
+    cwd = os.path.abspath(os.path.expanduser(folder)) if folder else HOME
+    if not os.path.isdir(cwd):
+        sys.exit(f"{cwd} is not a folder")
     conn = connect()
     thread = conn.request("thread/start", {
-        "cwd": HOME, "sandbox": "read-only", "approvalPolicy": "never",
+        "cwd": cwd, "sandbox": "read-only", "approvalPolicy": "never",
         "config": {"model_reasoning_effort": "max"},
     }, timeout=120)["thread"]
-    conn.request("thread/name/set", {"threadId": thread["id"], "name": "Router"}, timeout=60)
+    name = "Router" if project is None else f"Router · {project}"
+    conn.request("thread/name/set", {"threadId": thread["id"], "name": name}, timeout=60)
     os.makedirs(os.path.dirname(PM_THREADS), exist_ok=True)
     with open(PM_THREADS, "a") as f:
-        f.write(f"# Router, created {time.strftime('%Y-%m-%d %H:%M')} by router.py\n")
-        f.write(thread["id"] + "\n")
-    print(json.dumps({"router": thread["id"]}))
+        f.write(f"# {name}, created {time.strftime('%Y-%m-%d %H:%M')} by router.py\n")
+        f.write(thread["id"] + ("" if project is None else f" project={project}") + "\n")
+    print(json.dumps({"router": thread["id"], "project": project, "cwd": cwd}, ensure_ascii=False))
 
 
 def pinned_threads(conn):
@@ -164,8 +192,8 @@ def pinned_threads(conn):
                                         "archived": False}, timeout=60).get("data", [])
 
 
-def pin():
-    thread = router()
+def pin(project=None):
+    thread = router(project)
     conn = connect()
     first = next((t["id"] for t in pinned_threads(conn) if t["id"] != thread), None)
     conn.request("thread/section/move", {"threadId": thread, "sectionId": PINNED,
@@ -173,8 +201,8 @@ def pin():
     print(json.dumps({"router": thread, "pinned_in_order": [t["id"] for t in pinned_threads(conn)]}))
 
 
-def ask(words):
-    thread = router()
+def ask(words, project=None):
+    thread = router(project)
     conn = connect()
     # A thread the daemon unloaded is resumed first; a loaded one answers with its state.
     conn.request("thread/resume", {"threadId": thread}, timeout=120)
@@ -195,7 +223,12 @@ def ask(words):
 
 
 if __name__ == "__main__":
-    commands = {"create": create, "pin": pin, "ask": lambda: ask(sys.argv[2])}
-    if len(sys.argv) < 2 or sys.argv[1] not in commands or (sys.argv[1] == "ask" and len(sys.argv) < 3):
+    args = sys.argv[2:]
+    commands = {
+        "create": lambda: create(*args[:2]) if len(args) <= 2 else sys.exit(__doc__),
+        "pin": lambda: pin(*args[:1]) if len(args) <= 1 else sys.exit(__doc__),
+        "ask": lambda: ask(*args[:2]) if 1 <= len(args) <= 2 else sys.exit(__doc__),
+    }
+    if len(sys.argv) < 2 or sys.argv[1] not in commands:
         sys.exit(__doc__)
     commands[sys.argv[1]]()

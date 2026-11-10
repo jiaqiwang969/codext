@@ -54,6 +54,7 @@ enum Action {
     Remember,
     Forget,
     Wait,
+    Adopt,
 }
 
 /// What `wait` waits for.
@@ -143,8 +144,8 @@ impl DriveTool {
             (
                 "action".to_owned(),
                 JsonSchema::string_enum(
-                    vec![json!("start"), json!("say"), json!("interrupt"), json!("switch_account"), json!("feedback"), json!("pause"), json!("resume"), json!("stop"), json!("history"), json!("remember"), json!("forget"), json!("wait")],
-                    Some("start: take a session under drive (or open a new session in `folder`) and send it the first message `text`; say: answer the worker's last conclusion with `text`, quoting in `builds_on` and `serves` what it follows from (while the worker's turn runs, the text is said into it instead) — say goes on from a pause or a handed-back session directly, no resume first; interrupt: stop the running step because the person found it going wrong, then say the next thing; switch_account: move a session (driven or not) to another account, `account` or else the next by quota reset time — the engine also does this by itself before a step whose account runs low and when a step fails on quota or model capacity; feedback: the person's acceptance feedback on an anchored goal; pause: the person takes the session over; resume: hand it back when you have nothing to say yet; stop: release it; history: the person's words, the last conclusions and every step with its basis; remember: keep the person's words `text` as a standing rule, for every session, for the sessions under `folder`, or for `thread_id`; forget: drop the standing rule `rule`; wait: park the session until something comes — another session's next conclusion, some minutes, a file, or the person's answer (`wait_for`) — with `text` saying what; the engine hands it back with a notice when it comes, and reminds you once after `minutes` when nothing came.".to_owned()),
+                    vec![json!("start"), json!("say"), json!("interrupt"), json!("switch_account"), json!("feedback"), json!("pause"), json!("resume"), json!("stop"), json!("history"), json!("remember"), json!("forget"), json!("wait"), json!("adopt")],
+                    Some("start: take a session under drive (or open a new session in `folder`) and send it the first message `text`; say: answer the worker's last conclusion with `text`, quoting in `builds_on` and `serves` what it follows from (while the worker's turn runs, the text is said into it instead) — say goes on from a pause or a handed-back session directly, no resume first; interrupt: stop the running step because the person found it going wrong, then say the next thing; switch_account: move a session (driven or not) to another account, `account` or else the next by quota reset time — the engine also does this by itself before a step whose account runs low and when a step fails on quota or model capacity; feedback: the person's acceptance feedback on an anchored goal; pause: the person takes the session over; resume: hand it back when you have nothing to say yet; stop: release it; history: the person's words, the last conclusions and every step with its basis; remember: keep the person's words `text` as a standing rule, for every session, for the sessions under `folder`, or for `thread_id`; forget: drop the standing rule `rule`; wait: park the session until something comes — another session's next conclusion, some minutes, a file, or the person's answer (`wait_for`) — with `text` saying what; the engine hands it back with a notice when it comes, and reminds you once after `minutes` when nothing came; adopt: take over a session another Router drives (the person split the work by project), so its notices come to you from now on.".to_owned()),
                 ),
             ),
             (
@@ -538,6 +539,18 @@ impl DriveTool {
                 };
                 drive
                     .wait(&id, args.text.as_deref().unwrap_or_default(), on, remind)
+                    .await
+                    .map_err(refused)?
+                    .map(answer)
+                    .ok_or_else(|| missing(&id))
+            }
+            Action::Adopt => {
+                let id = thread_id()?;
+                let caller = self.caller.as_deref().ok_or_else(|| {
+                    FunctionCallError::RespondToModel("只有 Router 能接手推进".to_owned())
+                })?;
+                drive
+                    .adopt(&id, caller)
                     .await
                     .map_err(refused)?
                     .map(answer)

@@ -94,6 +94,25 @@ impl DriveService {
             .or_else(|| routers.into_iter().next())
     }
 
+    /// `router` takes the drive over from the Router that drove it: the drive's notices and its
+    /// line in the drives list go to `router` from now on. `None` when there is no such drive.
+    pub async fn adopt(
+        &self,
+        thread_id: &str,
+        router: &str,
+    ) -> anyhow::Result<Option<DriveRecord>> {
+        anyhow::ensure!(
+            (self.inner.routers)().iter().any(|id| id == router),
+            "{router} 不是登记的 Router"
+        );
+        self.change(thread_id, |record| {
+            record.router = Some(router.to_owned());
+            record.acted = Some(now_iso());
+            record.clone()
+        })
+        .await
+    }
+
     /// Every driven session whose notices go to `router`, in key order.
     pub async fn records_of(&self, router: &str) -> anyhow::Result<Vec<DriveRecord>> {
         Ok(self

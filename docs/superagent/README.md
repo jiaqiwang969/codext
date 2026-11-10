@@ -16,6 +16,7 @@ Superagent 是跑在 app-server daemon 里的组织引擎。Router 是它管的�
 6. 用户纠正时：worker 还在做，就把话插进当前回合（steer）；做错了，就打断（`interrupt`）。Router 对已经有回合在跑的会话说新一步时，话会插进那一轮，不会白等一轮新回合。
 7. 要等别的路交结论、等一段时间、等某个文件、等用户回话时，Router 用 `wait` 写明等什么。这一路显示为"等待：…"，不进等用户处理的清单；等到了引擎把它交回 Router 并通知（等的是别的路时，和那一路的结论在同一条消息里）；设了提醒时间还没等到，提醒一次。Router 对这一路做任何事，等待就结束。
 8. 用户说的话如果对所有路或今后都有效，Router 用 `remember` 照抄原话记成长期规矩（全部、一个文件夹下的各路、或一路），`forget` 删掉。长期规矩存在账本里，常驻 Router 的上下文，压缩后也不丢，并且可以当作 `say` 的依据。
+9. 一路由哪个 Router 推进：开它的那个；另一个 Router 用 `adopt` 可以接过来（见下面"按项目分 Router"）。
 
 推进分两档：
 
@@ -79,6 +80,8 @@ Superagent 是跑在 app-server daemon 里的组织引擎。Router 是它管的�
 4. 打开：`codex-account-next <账号>`（或直接 `codext`），输入 `/agents`，第一行就是 Router。
 5. 自动换号要用 `~/.local/bin/codex-account-status`，它由 `scripts/install-codex-account-tools.py` 安装。
 6. 可选：`~/.codex/agents/` 里的 worker、helper、drafter 定义；skills `hdae-development`、`hdae-engineering`。这两个 skill 是 Router 想问题的思路，不是要说出口的话术。
+
+**按项目分 Router。** 一个 Router 串行接所有路，十路以上就接近上限。大项目可以有自己的 Router：`python3 -I scripts/superagent/router.py create 251 ~/251-有限元融合` 建一个在该文件夹里的 Router，登记为 `project=251`；`pin 251`、`ask "…" 251` 指向它。它开的推进（`start`）归它：通知只送给它，<superagent_drives> 只列它的。已经由总 Router 推进的会话，在项目 Router 里用 `superagent_drive adopt` 接过来，之后通知都归它。长期规矩、用户对各 Router 说过的话是共用的；限一个文件夹的长期规矩只对那个文件夹下的各路有效。
 
 daemon 可以随时重启。重启后引擎逐个检查推进中的会话：已经交出去、但没看到开始的那一步不会自动重发，而是暂停并通知 Router。
 

@@ -2174,3 +2174,31 @@ async fn every_change_of_a_drive_is_one_line_of_its_events() -> anyhow::Result<(
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn a_router_adopts_a_drive_and_its_notices_follow() -> anyhow::Result<()> {
+    let s = setup_routed(&[ROUTER, ROUTER_B]).await?;
+    let start = DriveStart {
+        router: Some(ROUTER.to_owned()),
+        ..simple(s.work.path().to_owned())
+    };
+    s.drive.start(THREAD, start).await?;
+    assert!(
+        s.drive
+            .adopt(THREAD, "019a0000-0000-7000-8000-00000000dfff")
+            .await
+            .is_err(),
+        "only a registered Router adopts"
+    );
+    s.drive.adopt(THREAD, ROUTER_B).await?;
+    tick().await;
+    s.turn("分好了 3 个主题目录").await?;
+    assert!(s.drive.records_of(ROUTER).await?.is_empty());
+    assert_eq!(s.drive.records_of(ROUTER_B).await?.len(), 1);
+    s.drive
+        .deliver_notices(ROUTER_B)
+        .await
+        .map_err(|err| anyhow::anyhow!("{err}"))?;
+    assert!(FakeHost::lock(&s.host.calls).contains(&format!("deliver:{ROUTER_B}:Queue")));
+    Ok(())
+}
