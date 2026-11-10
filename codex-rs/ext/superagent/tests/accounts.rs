@@ -8,6 +8,7 @@ mod common;
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -44,6 +45,7 @@ use codex_superagent_extension::drive::Say;
 use codex_superagent_extension::drive::Thresholds;
 use codex_superagent_extension::drive::Trouble;
 use codex_superagent_extension::drive::choose;
+use codex_superagent_extension::drive::parse_account;
 use codex_superagent_extension::drive::pick;
 use codex_superagent_extension::drive::plan;
 use codex_superagent_extension::drive::rescue_due;
@@ -74,11 +76,14 @@ fn lock<T>(cell: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 /// A host that keeps each thread's account and latest turns, and logs what the engine asks of
 /// it in order. Like the real host, it refuses to move a thread whose turn runs and does nothing
-/// for an account the thread already has.
+/// for an account the thread already has; for a thread that is not loaded it answers the account
+/// the thread will load with, and binding one keeps it unloaded.
 #[derive(Default)]
 struct Host {
     log: Mutex<Vec<String>>,
     profiles: Mutex<HashMap<String, String>>,
+    /// The threads that are not loaded.
+    cold: Mutex<HashSet<String>>,
     /// Each thread's latest turns, newest first.
     turns: Mutex<HashMap<String, Vec<TurnBrief>>>,
     delivered: Mutex<Vec<String>>,
@@ -100,6 +105,12 @@ impl Host {
     }
     fn delivered(&self) -> Vec<String> {
         lock(&self.delivered).clone()
+    }
+    fn unload(&self, thread: &str) {
+        lock(&self.cold).insert(thread.to_owned());
+    }
+    fn loaded(&self, thread: &str) -> bool {
+        !lock(&self.cold).contains(thread)
     }
 }
 
@@ -136,9 +147,13 @@ impl SuperagentHost for Host {
     }
     fn resume_thread(
         &self,
-        _thread: ThreadId,
+        thread: ThreadId,
         _role: Option<String>,
     ) -> BoxFut<'_, anyhow::Result<()>> {
+        let thread = thread.to_string();
+        if lock(&self.cold).remove(&thread) {
+            lock(&self.log).push(format!("load:{thread}"));
+        }
         Box::pin(async { Ok(()) })
     }
     fn deliver(
@@ -211,27 +226,40 @@ impl SuperagentHost for Host {
     }
 }
 
-/// The pool the engine reads, counting the reads.
+/// The pool the engine reads: the whole of it (counted), or one account on its own (logged).
 #[derive(Default)]
 struct Pool {
     accounts: Mutex<Vec<AccountInfo>>,
-    reads: AtomicUsize,
+    full: AtomicUsize,
+    own: Mutex<Vec<String>>,
 }
 
 impl Pool {
     fn set(&self, accounts: Vec<AccountInfo>) {
         *lock(&self.accounts) = accounts;
     }
-    fn reads(&self) -> usize {
-        self.reads.load(Ordering::SeqCst)
+    fn full_reads(&self) -> usize {
+        self.full.load(Ordering::SeqCst)
+    }
+    fn own_reads(&self) -> Vec<String> {
+        lock(&self.own).clone()
     }
 }
 
 impl AccountSource for Pool {
     fn accounts(&self) -> BoxFut<'_, anyhow::Result<Vec<AccountInfo>>> {
-        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.full.fetch_add(1, Ordering::SeqCst);
         let accounts = lock(&self.accounts).clone();
         Box::pin(async move { Ok(accounts) })
+    }
+    fn account<'a>(&'a self, name: &'a str) -> BoxFut<'a, anyhow::Result<AccountInfo>> {
+        lock(&self.own).push(name.to_owned());
+        let found = lock(&self.accounts)
+            .iter()
+            .find(|account| account.name == name)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("no account {name}"));
+        Box::pin(async move { found })
     }
 }
 
@@ -582,8 +610,8 @@ fn the_knobs_come_from_the_environment_and_fall_back_to_the_defaults() {
 }
 
 #[tokio::test]
-async fn the_watch_moves_an_idle_router_off_a_low_account_once_per_account_and_turn()
--> anyhow::Result<()> {
+async fn the_watch_reads_a_routers_own_account_and_the_pool_only_to_move_it() -> anyhow::Result<()>
+{
     let s = setup().await?;
     s.drive.start_account_watch().await?;
     assert_eq!(
@@ -593,6 +621,19 @@ async fn the_watch_moves_an_idle_router_off_a_low_account_once_per_account_and_t
     s.host.on(ROUTER, "router-acct");
     s.host
         .turns(ROUTER, vec![turn("t1", "completed", &["看看进展"])]);
+    s.pool.set(vec![
+        account("router-acct", "pro", 60.0, 2),
+        account("next", "pro", 60.0, 5),
+        account("later", "pro", 90.0, 40),
+    ]);
+    // A healthy account: its own read and nothing more.
+    s.drive.watch_accounts().await;
+    assert_eq!(
+        (s.pool.full_reads(), s.host.log()),
+        (0, Vec::<String>::new())
+    );
+
+    // It runs low: the pool is read once, and the idle Router moves at once.
     s.pool.set(vec![
         account("router-acct", "pro", 8.0, 2),
         account("next", "pro", 60.0, 5),
@@ -609,15 +650,69 @@ async fn the_watch_moves_an_idle_router_off_a_low_account_once_per_account_and_t
             "Router 原账号剩 8%，提前换号"
         )]
     );
-    // The next look finds it on an account with headroom.
+    // The next look reads the new account only.
     s.drive.watch_accounts().await;
-    assert_eq!(s.host.log().len(), 1);
 
-    // Still idle, the new account runs low too (other sessions share it): one more move.
+    // Still idle, the new account runs low too (other sessions share it): the pool as read a
+    // moment ago, with each account as read since, finds the next one.
+    s.pool.set(vec![
+        account("router-acct", "pro", 8.0, 2),
+        account("next", "pro", 4.0, 5),
+        account("later", "pro", 90.0, 40),
+    ]);
+    s.drive.watch_accounts().await;
+    // That one runs low as well, and none known has quota above the soft threshold: it stays,
+    // and never goes back to an account found low since the pool was read.
+    s.pool.set(vec![
+        account("router-acct", "pro", 8.0, 2),
+        account("next", "pro", 4.0, 5),
+        account("later", "pro", 5.0, 40),
+    ]);
+    s.drive.watch_accounts().await;
+    assert_eq!(
+        s.host.log(),
+        vec![
+            format!("bind:{ROUTER}:next"),
+            format!("bind:{ROUTER}:later")
+        ]
+    );
+    assert_eq!(
+        (s.pool.full_reads(), s.pool.own_reads()),
+        (
+            1,
+            ["router-acct", "router-acct", "next", "next", "later"]
+                .map(str::to_owned)
+                .to_vec()
+        )
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_router_never_leaves_an_account_twice_after_one_turn() -> anyhow::Result<()> {
+    // Every look reads the pool again.
+    let s = setup_with(AccountPolicy {
+        watch_every: Duration::from_nanos(1),
+        ..AccountPolicy::default()
+    })
+    .await?;
+    s.host.on(ROUTER, "router-acct");
+    s.host.turns(ROUTER, vec![turn("t1", "completed", &[])]);
+    s.pool.set(vec![
+        account("router-acct", "pro", 8.0, 2),
+        account("next", "pro", 60.0, 5),
+    ]);
+    s.drive.watch_accounts().await;
+    // The quota of the first account resets while the second runs low: it goes back once.
     s.pool.set(vec![
         account("router-acct", "pro", 95.0, 2),
         account("next", "pro", 4.0, 5),
-        account("later", "pro", 90.0, 40),
+    ]);
+    s.drive.watch_accounts().await;
+    // Low again before the Router's next turn: it stays rather than bounce.
+    s.pool.set(vec![
+        account("router-acct", "pro", 8.0, 2),
+        account("next", "pro", 95.0, 5),
     ]);
     s.drive.watch_accounts().await;
     assert_eq!(
@@ -627,15 +722,148 @@ async fn the_watch_moves_an_idle_router_off_a_low_account_once_per_account_and_t
             format!("bind:{ROUTER}:router-acct")
         ]
     );
-    // Back on the first account, which runs low again before the Router's next turn: it never
-    // leaves an account twice after one turn, so it does not bounce.
+    // After another turn it may leave it again.
+    s.host.turns(ROUTER, vec![turn("t2", "completed", &[])]);
+    s.drive.watch_accounts().await;
+    assert_eq!(s.host.log().len(), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn healthy_accounts_are_read_on_their_own_and_the_pool_is_never_read() -> anyhow::Result<()> {
+    let s = setup().await?;
+    s.host.on(ROUTER, "router-acct");
+    s.host.on(SESSION, "session-acct");
+    s.host.turns(ROUTER, vec![turn("t1", "completed", &[])]);
+    s.pool.set(vec![
+        account("router-acct", "pro", 60.0, 2),
+        account("session-acct", "pro", 70.0, 3),
+        account("other", "pro", 90.0, 4),
+    ]);
+    // The watch reads the Router's account.
+    s.drive.watch_accounts().await;
+    // A delivery right after uses the account as the watch read it.
+    let gate = Arc::new(OnceLock::new());
+    let _ = gate.set(s.drive.delivery_gate());
+    let engine_host = LedgerHost::with_gate(
+        s.host.clone() as Arc<dyn SuperagentHost>,
+        Arc::new(DeliveryLedger::default()),
+        gate,
+    );
+    engine_host
+        .deliver(
+            ThreadId::from_string(ROUTER)?,
+            "[通知] 推进 · 整理笔记 · 交了结论".to_owned(),
+            DeliveryMode::Queue,
+        )
+        .await?;
+    // So does the end of a Router turn.
+    s.drive.router_turn_started(ROUTER, "t2");
+    s.host.turns(ROUTER, vec![turn("t2", "completed", &[])]);
+    s.drive.router_turn_ended(ROUTER).await?;
+    assert!(!s.drive.holds_queue(ROUTER));
+    s.drive.router_turn_boundary(ROUTER, Some("t2")).await?;
+    // A step reads its session's account.
+    s.drive.start(SESSION, simple(s.work.path(), None)).await?;
+    assert_eq!(
+        (s.pool.full_reads(), s.pool.own_reads(), s.host.log()),
+        (
+            0,
+            vec!["router-acct".to_owned(), "session-acct".to_owned()],
+            vec![format!("deliver:{ROUTER}:Queue"), format!("step:{SESSION}")]
+        )
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_unloaded_router_on_a_low_account_moves_by_its_binding_without_loading()
+-> anyhow::Result<()> {
+    let s = setup().await?;
+    // After a restart the Router is not loaded; the host answers the account it will load with.
+    s.host.on(ROUTER, "router-acct");
+    s.host.unload(ROUTER);
+    s.host
+        .turns(ROUTER, vec![turn("t1", "interrupted", &["看看进展"])]);
     s.pool.set(vec![
         account("router-acct", "pro", 8.0, 2),
-        account("next", "pro", 95.0, 5),
+        account("next", "pro", 60.0, 5),
     ]);
     s.drive.watch_accounts().await;
-    assert_eq!(s.host.log().len(), 2);
+    assert_eq!(s.host.log(), vec![format!("bind:{ROUTER}:next")]);
+    assert_eq!(
+        (s.host.loaded(ROUTER), s.host.account(ROUTER)),
+        (false, Some("next".to_owned())),
+        "the binding moved, the Router stays unloaded"
+    );
+    assert_eq!(
+        moves(&s.drive).await?,
+        vec![moved(
+            ROUTER,
+            "router-acct",
+            "next",
+            "Router 原账号剩 8%，提前换号"
+        )]
+    );
     Ok(())
+}
+
+#[test]
+fn one_accounts_report_from_the_daemon_reads_as_its_quota() {
+    let report = json!({
+        "limits": {
+            "ordinaryUsageAllowed": true,
+            "rateLimits": { "limitId": "codex", "planType": "pro",
+                "primary": { "usedPercent": 30, "windowDurationMins": 300, "resetsAt": 1793900000 } },
+            "rateLimitsByLimitId": {
+                "codex": { "limitId": "codex", "planType": "pro",
+                    "primary": { "usedPercent": 30, "windowDurationMins": 300, "resetsAt": 1793900000 },
+                    "secondary": { "usedPercent": 55, "windowDurationMins": 10080, "resetsAt": 1794400000 } },
+                "bengalfox": { "limitId": "bengalfox",
+                    "primary": { "usedPercent": 99, "resetsAt": 1793000000 } },
+            },
+        },
+        "usage": {},
+        "usage_error": null,
+    });
+    let denied = json!({ "limits": {
+        "ordinaryUsageAllowed": false,
+        "rateLimits": { "planType": "plus",
+            "primary": { "usedPercent": 100, "resetsAt": 1793950000 },
+            "individualLimit": { "limit": "1", "used": "1", "remainingPercent": 0, "resetsAt": 1793960000 } },
+        "rateLimitsByLimitId": null,
+    }});
+    let unread = json!({ "limits": {} });
+    assert_eq!(
+        vec![
+            parse_account("kalliesallerwu", &report),
+            parse_account("JannLinegarA0k", &denied),
+            parse_account("broken", &unread),
+        ],
+        vec![
+            AccountInfo {
+                name: "kalliesallerwu".to_owned(),
+                plan: "pro".to_owned(),
+                usable: true,
+                remaining: 45.0,
+                resets_at: Some(1793900000),
+            },
+            AccountInfo {
+                name: "JannLinegarA0k".to_owned(),
+                plan: "plus".to_owned(),
+                usable: false,
+                remaining: 0.0,
+                resets_at: Some(1793950000),
+            },
+            AccountInfo {
+                name: "broken".to_owned(),
+                plan: String::new(),
+                usable: false,
+                remaining: 0.0,
+                resets_at: None,
+            },
+        ]
+    );
 }
 
 #[tokio::test]
@@ -1070,7 +1298,11 @@ async fn a_step_goes_out_on_an_account_with_headroom_and_never_moves_midway() ->
             format!("step:{SESSION}")
         ]
     );
-    assert_eq!(s.pool.reads(), 1, "a running session is not looked at");
+    assert_eq!(
+        (s.pool.full_reads(), s.pool.own_reads()),
+        (1, vec!["low-acct".to_owned()]),
+        "a running session is not looked at"
+    );
     Ok(())
 }
 

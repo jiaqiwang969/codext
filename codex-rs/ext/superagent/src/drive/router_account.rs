@@ -1,13 +1,14 @@
 //! Keeping the Router on an account with quota left before it runs out. This is the main path;
 //! the moves after a turn its account failed or kept stuck (`router_rescue.rs`) are the net.
 //!
-//! - The watch reads the pool every couple of minutes and checks each Router's account. An idle
-//!   Router whose account is low (below the soft threshold) or spent (below the hard threshold,
-//!   cooling down, not usable) moves to the best account at once. A Router in a turn is never
-//!   stopped for quota: it moves when the turn ends.
+//! - Every couple of minutes the watch reads the account each Router runs on, on its own (cheap).
+//!   Only when it is low (below the soft threshold) or spent (below the hard threshold, cooling
+//!   down, not usable) is the whole pool read: an idle Router then moves to the best account at
+//!   once; a Router in a turn is never stopped for quota and moves when the turn ends. A Router
+//!   that is not loaded is read and moved by the account it will load with, without loading it.
 //! - When a Router turn ends, and before the engine hands a Router anything, the same check runs
-//!   on the pool the watch read, so the next turn starts on an account with headroom. The end of
-//!   a turn that has to move holds the Router's queued input (`arbiter.rs`) until the move is
+//!   on what the watch read, so the next turn starts on an account with headroom. The end of a
+//!   turn that has to move holds the Router's queued input (`arbiter.rs`) until the move is
 //!   done: the queue would start the next turn on the old account the moment this one ends.
 //! - A Router moves at most once per turn away from any one account, so it never bounces.
 
@@ -21,11 +22,13 @@ use serde_json::json;
 
 use super::DriveService;
 use super::accounts;
-use super::accounts::AccountInfo;
 use super::accounts::Activity;
+use super::accounts::Headroom;
 use super::accounts::Plan;
 use super::accounts::Trouble;
 use super::accounts::now;
+use super::pool::Look;
+use super::pool::Verdict;
 use super::router_rescue::ROUTER_MOVED_KEY;
 use crate::effects::EffectError;
 use crate::effects::Effects;
@@ -141,17 +144,16 @@ impl DriveService {
         }
     }
 
-    /// The quick look while a turn ends: whether the pool as last read says the Router must
-    /// move before its next turn.
+    /// The quick look while a turn ends, reading nothing: whether the Router's account, as last
+    /// read, should be left before its next turn.
     async fn move_due(&self, thread_id: &str) -> bool {
-        let pool = self.cached_pool();
-        if pool.is_empty() {
-            return false;
-        }
         let Ok(thread) = ThreadId::from_string(thread_id) else {
             return false;
         };
         let Ok(Some(current)) = self.inner.host.thread_profile(thread).await else {
+            return false;
+        };
+        let Some(known) = self.cached_account(&current) else {
             return false;
         };
         let Ok(cooling) = self.cooldowns().await else {
@@ -159,8 +161,8 @@ impl DriveService {
         };
         let thresholds = self.inner.policy.thresholds;
         matches!(
-            accounts::plan(&pool, &cooling, now(), &current, thresholds, Activity::Idle),
-            Plan::Move { .. }
+            accounts::headroom(&[known], &cooling, now(), &current, thresholds),
+            Some(Headroom::Low | Headroom::Spent)
         )
     }
 
@@ -180,8 +182,7 @@ impl DriveService {
         }
         let moved = async {
             self.router_turn_failed_at(thread_id, turn).await?;
-            let pool = self.recent_pool().await;
-            self.check_router(thread_id, &pool).await
+            self.check_router(thread_id, Look::Recent).await
         }
         .await;
         self.release_queue(thread).await;
@@ -206,17 +207,25 @@ impl DriveService {
         Ok(false)
     }
 
-    /// The Router's account against the pool: an idle Router on a low or spent account moves to
-    /// the best account now, a Router in a turn moves when the turn ends, a Router no account can
-    /// take over stays (warned once). A turn its account failed is left to the safety net.
-    async fn check_router(&self, thread_id: &str, pool: &[AccountInfo]) -> anyhow::Result<()> {
-        if pool.is_empty() {
+    /// The Router's account: read on its own, and only when it should be left, the pool. An idle
+    /// Router on a low or spent account moves to the best account now, a Router in a turn moves
+    /// when the turn ends, a Router no account can take over stays (warned once). A turn its
+    /// account failed is left to the safety net. A Router that is not loaded is judged by the
+    /// account it will load with and moved by binding it, without loading it (`host.rs`).
+    async fn check_router(&self, thread_id: &str, look: Look) -> anyhow::Result<()> {
+        if self.inner.accounts.is_none() {
             return Ok(());
         }
         let thread = ThreadId::from_string(thread_id)?;
         let Some(current) = self.inner.host.thread_profile(thread).await? else {
             return Ok(());
         };
+        let standing = self.standing(&current, look).await?;
+        if standing.healthy() {
+            self.watch().pending.remove(thread_id);
+            self.unstuck(thread_id);
+            return Ok(());
+        }
         let latest = self
             .inner
             .host
@@ -235,10 +244,8 @@ impl DriveService {
         {
             return Ok(());
         }
-        let cooling = self.cooldowns().await?;
-        let now = now();
-        let thresholds = self.inner.policy.thresholds;
-        match accounts::plan(pool, &cooling, now, &current, thresholds, activity) {
+        let Verdict { plan, why } = self.plan_move(standing, activity).await;
+        match plan {
             Plan::Stay => {
                 self.watch().pending.remove(thread_id);
                 self.unstuck(thread_id);
@@ -272,7 +279,6 @@ impl DriveService {
                 }
                 self.watch().pending.remove(thread_id);
                 self.unstuck(thread_id);
-                let why = accounts::shortfall(pool, &cooling, now, &current);
                 self.note_move(
                     thread_id,
                     Some(&current),
@@ -285,14 +291,11 @@ impl DriveService {
         Ok(())
     }
 
-    /// One look of the watch: reads the pool and checks every Router's account.
+    /// One look of the watch: reads each Router's own account now, and the pool only for a
+    /// Router that should move.
     pub async fn watch_accounts(&self) {
-        let Ok(pool) = self.live_pool().await else {
-            // logged once by the read
-            return;
-        };
         for router in (self.inner.routers)() {
-            if let Err(err) = self.check_router(&router, &pool).await {
+            if let Err(err) = self.check_router(&router, Look::Now).await {
                 tracing::warn!("superagent drive: the account of the Router {router}: {err:#}");
             }
         }
@@ -323,8 +326,7 @@ impl DriveService {
             tracing::warn!("superagent drive: the Router {thread_id} did not load: {err:#}");
             return;
         }
-        let pool = self.recent_pool().await;
-        if let Err(err) = self.check_router(&thread_id, &pool).await {
+        if let Err(err) = self.check_router(&thread_id, Look::Recent).await {
             tracing::warn!("superagent drive: the account of the Router {thread_id}: {err:#}");
         }
     }

@@ -34,6 +34,8 @@ pub const CAPACITY_COOLDOWN: Duration = Duration::from_secs(15 * 60);
 /// How long an out-of-quota account cools down when its reset time is unknown.
 pub const QUOTA_COOLDOWN: Duration = Duration::from_secs(60 * 60);
 const HELPER_TIMEOUT: Duration = Duration::from_secs(150);
+/// How long one account's own read may take, through the daemon.
+const ACCOUNT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Why a step's account could not carry it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,6 +131,19 @@ pub struct Cooldown {
 pub trait AccountSource: Send + Sync {
     /// Every account of the pool with its live quota.
     fn accounts(&self) -> BoxFut<'_, anyhow::Result<Vec<AccountInfo>>>;
+
+    /// One account's live quota, read on its own: far cheaper than the whole pool, so the
+    /// checks read only the account a thread runs on and the pool only when it should move.
+    /// The default reads the whole pool and picks the account.
+    fn account<'a>(&'a self, name: &'a str) -> BoxFut<'a, anyhow::Result<AccountInfo>> {
+        Box::pin(async move {
+            self.accounts()
+                .await?
+                .into_iter()
+                .find(|account| account.name == name)
+                .ok_or_else(|| anyhow::anyhow!("账号池里没有 {name}"))
+        })
+    }
 }
 
 /// The next account for a step: usable, paid, with quota left and not cooling down, the one
@@ -379,7 +394,115 @@ pub fn parse_pool(report: &Value) -> Vec<AccountInfo> {
         .collect()
 }
 
+/// One account as the daemon reports it (`codex app-server daemon account-status <name>`), its
+/// quota read the way `codex-account-status` reads it: the least quota left and the soonest reset
+/// over its windows. It is usable when the read has a window and the daemon does not deny it
+/// ordinary use.
+pub fn parse_account(name: &str, report: &Value) -> AccountInfo {
+    let limits = report.get("limits").unwrap_or(&Value::Null);
+    let mut buckets: Vec<(String, &Value)> = limits
+        .get("rateLimitsByLimitId")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .map(|(id, bucket)| (id.clone(), bucket))
+        .collect();
+    if buckets.is_empty()
+        && let Some(bucket) = limits.get("rateLimits").filter(|bucket| bucket.is_object())
+    {
+        buckets.push((String::new(), bucket));
+    }
+    let mut plan = None;
+    let mut remaining: Option<f64> = None;
+    let mut resets_at: Option<i64> = None;
+    let mut window = |left: f64, reset: Option<i64>| {
+        let left = left.clamp(0.0, 100.0);
+        remaining = Some(remaining.map_or(left, |least| least.min(left)));
+        if let Some(reset) = reset {
+            resets_at = Some(resets_at.map_or(reset, |soonest| soonest.min(reset)));
+        }
+    };
+    for (key, bucket) in buckets {
+        let id = bucket
+            .get("limitId")
+            .and_then(Value::as_str)
+            .unwrap_or(&key);
+        // Not an account quota; `codex-account-status` leaves it out too.
+        if id.eq_ignore_ascii_case("bengalfox") {
+            continue;
+        }
+        if plan.is_none() {
+            plan = bucket
+                .get("planType")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+        }
+        for kind in ["primary", "secondary"] {
+            let Some(limit) = bucket.get(kind).filter(|limit| limit.is_object()) else {
+                continue;
+            };
+            if let Some(used) = limit.get("usedPercent").and_then(Value::as_f64) {
+                window(100.0 - used, limit.get("resetsAt").and_then(Value::as_i64));
+            }
+        }
+        if let Some(individual) = bucket
+            .get("individualLimit")
+            .filter(|limit| limit.is_object())
+            && let Some(left) = individual.get("remainingPercent").and_then(Value::as_f64)
+        {
+            window(left, individual.get("resetsAt").and_then(Value::as_i64));
+        }
+    }
+    let allowed = limits.get("ordinaryUsageAllowed").and_then(Value::as_bool) != Some(false);
+    AccountInfo {
+        name: name.to_owned(),
+        plan: plan.unwrap_or_default(),
+        usable: remaining.is_some() && allowed,
+        remaining: remaining.unwrap_or(0.0),
+        resets_at,
+    }
+}
+
 impl AccountSource for StatusHelper {
+    /// Through the daemon's own credential managers, as `codex-account-status` reads each
+    /// account, so a read never refreshes credentials beside the daemon.
+    fn account<'a>(&'a self, name: &'a str) -> BoxFut<'a, anyhow::Result<AccountInfo>> {
+        Box::pin(async move {
+            let timeout_ms = ACCOUNT_TIMEOUT
+                .saturating_sub(Duration::from_secs(5))
+                .as_millis();
+            let mut command = tokio::process::Command::new(&self.codex);
+            command
+                .args(["app-server", "daemon", "account-status", name])
+                .arg("--timeout-ms")
+                .arg(timeout_ms.to_string())
+                .env("CODEX_HOME", &self.home)
+                .env("CODEX_SQLITE_HOME", &self.home)
+                .env("RUST_LOG", "error")
+                .kill_on_drop(true);
+            // The daemon chooses the credentials; none may come from this process.
+            for inherited in [
+                "CODEX_AUTH_PROFILE",
+                "CODEX_ACCOUNT_PROFILE",
+                "CODEX_ACCESS_TOKEN",
+                "CODEX_API_KEY",
+                "OPENAI_API_KEY",
+            ] {
+                command.env_remove(inherited);
+            }
+            let output = tokio::time::timeout(ACCOUNT_TIMEOUT, command.output())
+                .await
+                .map_err(|_| anyhow::anyhow!("读账号 {name} 的额度超时"))??;
+            anyhow::ensure!(
+                output.status.success(),
+                "读账号 {name} 的额度失败：{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+            let report: Value = serde_json::from_slice(&output.stdout)?;
+            Ok(parse_account(name, &report))
+        })
+    }
+
     fn accounts(&self) -> BoxFut<'_, anyhow::Result<Vec<AccountInfo>>> {
         Box::pin(async move {
             let run = tokio::process::Command::new(&self.bin)

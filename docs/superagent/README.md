@@ -24,9 +24,10 @@ Superagent 是跑在 app-server daemon 里的组织引擎。Router 是它管的�
 
 **换号。** 引擎在账号用完之前就换（引擎查账号不花模型额度），失败后再换只是兜底。
 
-- 提前换 Router 的号：引擎每 2 分钟用 `codex-account-status` 读一次账号池，看 Router 用的账号。剩余额度低于软阈值（10%），或者低于硬阈值（3%）、在冷却、用不了，Router 空闲时马上换；Router 正在回答时不打断，等这一轮结束再换。
-- 一轮结束时、引擎给 Router 送通知或任何话之前，也按最近读到的账号池看一次，所以下一轮总在有余量的账号上开始。这一轮结束要换号时，Router 排队的话先等一等（最多一分钟），换好由引擎接着开始。
-- 提前换推进会话的号：每一步交出去之前看一次会话的账号，规则相同；需要换就先换再交这一步，推进记录里的账号跟着变。一步做到一半不换。
+- 提前换 Router 的号：引擎每 2 分钟只读一次 Router 正在用的那个账号的额度（经 daemon 读，一个账号很快）。剩余额度低于软阈值（10%），或者低于硬阈值（3%）、在冷却、用不了，才去读整个账号池（`codex-account-status`，十来个账号要好几秒），挑号换过去：Router 空闲时马上换；Router 正在回答时不打断，等这一轮结束再换。账号健康时整个账号池一次也不读。
+- 读来的额度留用一段时间（两个查看周期，默认 4 分钟）：一轮结束时、引擎给 Router 送通知或任何话之前，都按读过的看一次，大多不用再读，所以下一轮总在有余量的账号上开始。这一轮结束要换号时，Router 排队的话先等一等（最多一分钟），换好由引擎接着开始。
+- daemon 重启后 Router 还没加载时，引擎读它加载时会用的账号（保存的账号绑定，没有就用创建它的账号），要换就直接改绑定，不加载它；用户打开 Router 说第一句话时，已经在新账号上。
+- 提前换推进会话的号：每一步交出去之前只读一次会话自己的账号（四分钟内读过就不再读），规则相同；需要换才读整个账号池，先换再交这一步，推进记录里的账号跟着变。一步做到一半不换。
 - 挑号：按 `codex-account-next list` 的顺序，重置最早的优先，跳过免费账号和还在冷却的。提前换只换到剩余不低于软阈值的账号；账号已经快用完时，才退一步接受剩余不低于硬阈值、也不低于 5% 的账号。没有能换的就不动，只记一次警告。同一个账号在一轮（推进的一步）之后只会被换走一次，不会来回换。
 - 兜底：推进的一步、或 Router 自己的一轮，因为账号额度用完（`usageLimitExceeded`）或模型满载（`serverOverloaded`，"Selected model is at capacity"）而失败时，这个账号冷却（额度用完的冷却到重置时间，满载的冷却 15 分钟），换号后把这一步重发、把这一轮的话重新交给 Router。
 - 兜底：Router 的一轮卡在重连里结束不了（同一轮 3 分钟内出现 2 次满载或额度用完）时，引擎打断这一轮，按上一条换号，再把这一轮的话交给 Router。没有能换的账号时不打断。Router 的每一轮最多因此换一次。
@@ -39,7 +40,7 @@ Superagent 是跑在 app-server daemon 里的组织引擎。Router 是它管的�
 | --- | --- | --- |
 | `CODEXT_SUPERAGENT_QUOTA_SOFT_PERCENT` | 10 | 剩余额度低于它，在两轮（两步）之间换号 |
 | `CODEXT_SUPERAGENT_QUOTA_HARD_PERCENT` | 3 | 低于它（或在冷却、用不了）算快用完；不高于软阈值 |
-| `CODEXT_SUPERAGENT_QUOTA_WATCH_SECS` | 120 | 多久读一次账号池；0 关掉定时查看，一轮结束、送话前和每步前照样看（账号池最多 4 分钟读一次） |
+| `CODEXT_SUPERAGENT_QUOTA_WATCH_SECS` | 120 | 多久看一次 Router 的账号；读过的额度留用两个周期。0 关掉定时查看，一轮结束、送话前和每步前照样看（读过的留用 4 分钟） |
 | `CODEXT_SUPERAGENT_ROUTER_RESCUE_THRESHOLD` | 2 | Router 同一轮出现几次满载或额度用完就打断换号；0 关掉 |
 | `CODEXT_SUPERAGENT_ROUTER_RESCUE_WINDOW_SECS` | 180 | 上面这几次要落在多少秒之内 |
 
@@ -75,7 +76,7 @@ daemon 可以随时重启。重启后引擎逐个检查推进中的会话：已�
 | `drive/say.rs` | `say` 的依据核对和话的检查，插话 |
 | `drive/report.rs` | 取结论、判定、通知卡片 |
 | `drive/accounts.rs`、`drive/policy.rs` | 账号池、挑号、要不要换号的判断（`plan`）、可调的值 |
-| `drive/pool.rs`、`drive/switch.rs` | 读账号池、换号记录、每步前的检查、推进会话失败后的换号 |
+| `drive/pool.rs`、`drive/step_account.rs`、`drive/switch.rs` | 读账号的额度和账号池、换号记录；每步前的检查、指定账号开始推进；推进会话失败后的换号 |
 | `drive/router_account.rs`、`drive/router_rescue.rs` | Router 提前换号（定时查看、一轮结束、送话前）和兜底（失败或卡在重连的一轮） |
 | `drive/anchor.rs`、`drive/audit.rs` | 锚定目标和 oev2 判定 |
 | `drive/context.rs` | 给被推进会话的常驻规则（`<superagent_driven>`） |

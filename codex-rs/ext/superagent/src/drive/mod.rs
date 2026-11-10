@@ -22,6 +22,7 @@ mod report;
 mod router_account;
 mod router_rescue;
 mod say;
+mod step_account;
 mod switch;
 
 use std::path::Path;
@@ -45,6 +46,7 @@ pub use accounts::Trouble;
 pub use accounts::choose;
 pub use accounts::choose_above;
 pub use accounts::headroom;
+pub use accounts::parse_account;
 pub use accounts::parse_pool;
 pub use accounts::pick;
 pub use accounts::plan;

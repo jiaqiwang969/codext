@@ -1,20 +1,20 @@
-//! The account pool as the drive reads it, the moves it made, and the account check before each
-//! step of a driven session.
+//! What the drive knows of the accounts, and the moves it made.
 //!
-//! Reading the pool runs the account status helper, which takes seconds: the watch
-//! (`router_account.rs`) reads it every couple of minutes, and the checks between turns and before
-//! steps use what it read, reading again only when that is older than the policy allows. A move
-//! is claimed in the ledger first, so a thread moves at most once per step (a driven session) or
-//! per turn away from any one account (the Router), whoever looks.
+//! A check reads only the account a thread runs on, on its own and through the daemon (cheap);
+//! only when that account should be left does it read the whole pool, which runs the account
+//! status helper over every account and takes seconds. Both reads are kept for the policy's
+//! maximum age, so the checks between turns and before steps mostly read nothing. A move is
+//! claimed in the ledger first, so a thread moves at most once per step (a driven session) or per
+//! turn away from any one account (the Router), whoever looks.
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::path::Path;
 use std::sync::MutexGuard;
 use std::sync::PoisonError;
+use std::time::Duration;
 use std::time::Instant;
 
-use codex_protocol::ThreadId;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -23,6 +23,7 @@ use super::accounts;
 use super::accounts::AccountInfo;
 use super::accounts::AccountSource;
 use super::accounts::Activity;
+use super::accounts::Cooldown;
 use super::accounts::Headroom;
 use super::accounts::Plan;
 use super::accounts::now;
@@ -31,21 +32,25 @@ use crate::core::now_iso;
 /// The ledger key of the account moves the engine made, newest last.
 const MOVES_KEY: &str = "drive-account-moves";
 const MOVES: usize = 30;
-/// The ledger key of the drive steps whose account the engine already moved.
-pub(super) const STEP_MOVED_KEY: &str = "drive-step-moved";
 /// How many claims a ledger list keeps.
 const CLAIMS: usize = 50;
 
 /// What the account checks keep in memory between calls.
 #[derive(Default)]
 pub(super) struct Watch {
-    /// The pool as last read.
+    /// The pool as last read in full.
     pub(super) pool: Vec<AccountInfo>,
+    /// When the pool was last read in full.
+    pub(super) pool_at: Option<Instant>,
     /// When the pool was last read or tried: a failed read counts, so a broken helper is not
-    /// asked before every step.
+    /// asked before every check.
     pub(super) tried: Option<Instant>,
-    /// The last read failed and its warning is out.
+    /// The last full read failed and its warning is out.
     pub(super) failing: bool,
+    /// Each account as last read on its own, and when.
+    pub(super) seen: HashMap<String, (AccountInfo, Instant)>,
+    /// Accounts whose own read fails, their warning out.
+    pub(super) unread: HashSet<String>,
     /// The turn each Router runs now, from its start hook.
     pub(super) turns: HashMap<String, String>,
     /// The turn of each Router its account failed (quota used up, model at capacity).
@@ -72,9 +77,35 @@ pub struct AccountMove {
     pub why: String,
 }
 
-/// The claim of step `n` of the drive started at `since` on a session.
-pub(super) fn step_key(thread_id: &str, since: &str, n: u32) -> String {
-    format!("{thread_id}@{since}#{n}")
+/// How fresh the quota of the account a thread runs on must be for a check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Look {
+    /// Read it now: the watch.
+    Now,
+    /// As read within the policy's maximum age: a check between turns or before a step.
+    Recent,
+}
+
+/// The account a thread runs on, as read on its own, against its cooldown.
+pub(super) struct Standing {
+    current: String,
+    /// The account's own read; `None` when it failed.
+    own: Option<AccountInfo>,
+    cooling: BTreeMap<String, Cooldown>,
+    headroom: Option<Headroom>,
+}
+
+impl Standing {
+    /// Enough quota left, not cooling down and usable: nothing more to read.
+    pub(super) fn healthy(&self) -> bool {
+        self.headroom == Some(Headroom::Enough)
+    }
+}
+
+/// Whether and where a thread moves, and why, in the person's words.
+pub(super) struct Verdict {
+    pub(super) plan: Plan,
+    pub(super) why: String,
 }
 
 impl DriveService {
@@ -83,6 +114,10 @@ impl DriveService {
             .watch
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn max_age(&self) -> Duration {
+        self.inner.policy.pool_max_age()
     }
 
     async fn read_pool(&self, source: &dyn AccountSource) -> anyhow::Result<Vec<AccountInfo>> {
@@ -96,6 +131,7 @@ impl DriveService {
                 }
                 watch.failing = false;
                 watch.pool = pool.clone();
+                watch.pool_at = watch.tried;
                 Ok(pool)
             }
             Err(err) => {
@@ -108,7 +144,7 @@ impl DriveService {
         }
     }
 
-    /// Reads the pool now, for a move after a failure or one the Router asked for.
+    /// Reads the whole pool now, for a move after a failure or one the Router asked for.
     pub(super) async fn live_pool(&self) -> anyhow::Result<Vec<AccountInfo>> {
         let source = self
             .inner
@@ -119,15 +155,15 @@ impl DriveService {
         self.read_pool(source.as_ref()).await
     }
 
-    /// The pool as last read; read again first when that is older than the policy allows. A
-    /// failed read keeps the last pool (empty when there was none).
+    /// The whole pool as last read; read again first when that is older than the policy allows.
+    /// A failed read keeps the last pool (empty when there was none).
     pub(super) async fn recent_pool(&self) -> Vec<AccountInfo> {
         let Some(source) = self.inner.accounts.clone() else {
             return Vec::new();
         };
         // The semaphore is never closed; without a permit the read just does not wait.
         let _reading = self.inner.refresh.acquire().await.ok();
-        let max_age = self.inner.policy.pool_max_age();
+        let max_age = self.max_age();
         let stale = self
             .watch()
             .tried
@@ -139,9 +175,127 @@ impl DriveService {
         self.watch().pool.clone()
     }
 
-    /// The pool as last read, without reading it: for the quick look while a turn ends.
-    pub(super) fn cached_pool(&self) -> Vec<AccountInfo> {
-        self.watch().pool.clone()
+    /// The newest that is known of an account, read on its own or with the pool, when it is
+    /// not older than `max_age`.
+    fn known_account(&self, name: &str, max_age: Option<Duration>) -> Option<AccountInfo> {
+        let watch = self.watch();
+        let own = watch.seen.get(name).cloned();
+        let pooled = watch.pool_at.and_then(|at| {
+            watch
+                .pool
+                .iter()
+                .find(|account| account.name == name)
+                .map(|account| (account.clone(), at))
+        });
+        let newest = match (own, pooled) {
+            (Some(own), Some(pooled)) => Some(if own.1 >= pooled.1 { own } else { pooled }),
+            (own, pooled) => own.or(pooled),
+        };
+        newest
+            .filter(|(_, at)| max_age.is_none_or(|max_age| at.elapsed() < max_age))
+            .map(|(account, _)| account)
+    }
+
+    /// What is known of an account without reading anything: for the quick look while a turn
+    /// ends.
+    pub(super) fn cached_account(&self, name: &str) -> Option<AccountInfo> {
+        self.known_account(name, /*max_age*/ None)
+    }
+
+    /// One account's quota: as read within the policy's age for `Look::Recent`, else read on its
+    /// own now. A failed read is warned once and answers `None`.
+    async fn account_info(&self, name: &str, look: Look) -> Option<AccountInfo> {
+        let source = self.inner.accounts.clone()?;
+        if look == Look::Recent
+            && let Some(account) = self.known_account(name, Some(self.max_age()))
+        {
+            return Some(account);
+        }
+        let read = source.account(name).await;
+        let mut watch = self.watch();
+        match read {
+            Ok(account) => {
+                if watch.unread.remove(name) {
+                    tracing::info!("superagent drive: the account {name} reads again");
+                }
+                watch
+                    .seen
+                    .insert(name.to_owned(), (account.clone(), Instant::now()));
+                Some(account)
+            }
+            Err(err) => {
+                if watch.unread.insert(name.to_owned()) {
+                    tracing::warn!("superagent drive: cannot read the account {name}: {err:#}");
+                }
+                None
+            }
+        }
+    }
+
+    /// How the account `current` stands: read on its own (cheap), against its cooldown.
+    pub(super) async fn standing(&self, current: &str, look: Look) -> anyhow::Result<Standing> {
+        let cooling = self.cooldowns().await?;
+        let own = self.account_info(current, look).await;
+        let thresholds = self.inner.policy.thresholds;
+        let headroom = own.as_ref().and_then(|account| {
+            accounts::headroom(
+                std::slice::from_ref(account),
+                &cooling,
+                now(),
+                current,
+                thresholds,
+            )
+        });
+        Ok(Standing {
+            current: current.to_owned(),
+            own,
+            cooling,
+            headroom,
+        })
+    }
+
+    /// Where a thread whose account is not healthy moves: the whole pool decides (read again
+    /// when older than the policy allows), each account as most recently read, so an account
+    /// just found low on its own is not taken for the healthy one the older pool shows. When the
+    /// thread's own read failed, the pool's entry for its account decides whether it moves.
+    pub(super) async fn plan_move(&self, standing: Standing, activity: Activity) -> Verdict {
+        let Standing {
+            current,
+            own,
+            cooling,
+            ..
+        } = standing;
+        let mut pool = self.recent_pool().await;
+        let newer: Vec<AccountInfo> = {
+            let watch = self.watch();
+            watch
+                .seen
+                .values()
+                .filter(|(_, at)| watch.pool_at.is_none_or(|pool_at| *at > pool_at))
+                .map(|(account, _)| account.clone())
+                .chain(own)
+                .collect()
+        };
+        for read in newer {
+            match pool.iter_mut().find(|account| account.name == read.name) {
+                // A read on its own may not say the plan; the pool's does.
+                Some(pooled) => {
+                    let plan = if read.plan.is_empty() {
+                        std::mem::take(&mut pooled.plan)
+                    } else {
+                        read.plan.clone()
+                    };
+                    *pooled = AccountInfo { plan, ..read };
+                }
+                None => pool.push(read),
+            }
+        }
+        let now = now();
+        let thresholds = self.inner.policy.thresholds;
+        Verdict {
+            plan: accounts::plan(&pool, &cooling, now, &current, thresholds, activity),
+            why: accounts::shortfall(&pool, &cooling, now, &current),
+        }
     }
 
     /// Records `key` in the ledger list `list`; false when it was there already.
@@ -231,122 +385,5 @@ impl DriveService {
 
     pub(super) fn unstuck(&self, thread_id: &str) {
         self.watch().stuck.remove(thread_id);
-    }
-
-    /// The pool's name of the account the Router named (in any case). Without the account status
-    /// helper, or when the pool cannot be read, the name stands as given.
-    pub(super) async fn resolve_account(&self, wanted: &str) -> anyhow::Result<String> {
-        let wanted = wanted.trim();
-        anyhow::ensure!(!wanted.is_empty(), "账号名是空的");
-        let pool = self.recent_pool().await;
-        if pool.is_empty() {
-            return Ok(wanted.to_owned());
-        }
-        pool.iter()
-            .find(|account| account.name.eq_ignore_ascii_case(wanted))
-            .map(|account| account.name.clone())
-            .ok_or_else(|| anyhow::anyhow!("账号池里没有 {wanted}"))
-    }
-
-    /// Opens a new session in `folder` (created when missing) under the account the Router named.
-    pub async fn open_session_on(&self, folder: &Path, account: &str) -> anyhow::Result<String> {
-        let account = self.resolve_account(account).await?;
-        self.open_session_under(folder, Some(account)).await
-    }
-
-    /// The Router starts a drive on a named account: the session moves there before step 1, and
-    /// the check before that step leaves it there. Answers the account's name.
-    pub(super) async fn bind_start_account(
-        &self,
-        thread_id: &str,
-        thread: ThreadId,
-        wanted: &str,
-        since: &str,
-    ) -> anyhow::Result<String> {
-        let name = self.resolve_account(wanted).await?;
-        let from = self.inner.host.thread_profile(thread).await.unwrap_or(None);
-        self.inner
-            .host
-            .bind_profile(thread, name.clone())
-            .await
-            .map_err(|err| anyhow::anyhow!("会话换到 {name} 失败：{err:#}"))?;
-        self.claim(STEP_MOVED_KEY, &step_key(thread_id, since, 1))
-            .await?;
-        if from.as_deref() != Some(name.as_str()) {
-            self.note_move(thread_id, from.as_deref(), &name, "推进开始时指定的账号")
-                .await;
-        }
-        Ok(name)
-    }
-
-    /// Before step `n` goes to a driven session: when its account runs low (below the soft
-    /// threshold, cooling down or not usable), the session moves to the best account first, and
-    /// the drive records the account as `switch_account` does. A session whose turn runs (the
-    /// person typed into it) is left alone: a step never moves midway. A failed check is logged
-    /// and the step goes out all the same.
-    pub(super) async fn check_step_account(&self, thread_id: &str, thread: ThreadId, n: u32) {
-        if self.inner.accounts.is_none() {
-            return;
-        }
-        let checked = async {
-            let Some(record) = self.record(thread_id).await? else {
-                return anyhow::Ok(());
-            };
-            let key = step_key(thread_id, &record.since, n);
-            if self.claimed(STEP_MOVED_KEY, &key).await? {
-                return Ok(());
-            }
-            // A cold session reports its account once loaded; the step loads it anyway.
-            self.inner.host.resume_thread(thread, None).await?;
-            let Some(current) = self.inner.host.thread_profile(thread).await? else {
-                return Ok(());
-            };
-            let running = self
-                .inner
-                .host
-                .session_turns(thread, 1)
-                .await?
-                .first()
-                .is_some_and(|turn| turn.status == "inProgress");
-            if running {
-                return Ok(());
-            }
-            let pool = self.recent_pool().await;
-            let cooling = self.cooldowns().await?;
-            let now = now();
-            let thresholds = self.inner.policy.thresholds;
-            match accounts::plan(&pool, &cooling, now, &current, thresholds, Activity::Idle) {
-                Plan::Move { to, .. } => {
-                    if !self.claim(STEP_MOVED_KEY, &key).await? {
-                        return Ok(());
-                    }
-                    if let Err(err) = self.inner.host.bind_profile(thread, to.name.clone()).await {
-                        self.release_claim(STEP_MOVED_KEY, &key).await?;
-                        return Err(err);
-                    }
-                    self.unstuck(thread_id);
-                    let name = to.name.clone();
-                    self.change(thread_id, |record| record.account = Some(name))
-                        .await?;
-                    let why = accounts::shortfall(&pool, &cooling, now, &current);
-                    self.note_move(
-                        thread_id,
-                        Some(&current),
-                        &to.name,
-                        &format!("第 {n} 步前原账号{why}"),
-                    )
-                    .await;
-                }
-                Plan::NoneFree(headroom) => self.stuck(thread_id, &current, headroom),
-                Plan::Stay | Plan::AtTurnEnd { .. } => self.unstuck(thread_id),
-            }
-            Ok(())
-        }
-        .await;
-        if let Err(err) = checked {
-            tracing::warn!(
-                "superagent drive: the account check before step {n} of {thread_id} failed: {err:#}"
-            );
-        }
     }
 }

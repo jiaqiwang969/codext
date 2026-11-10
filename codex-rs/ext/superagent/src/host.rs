@@ -97,7 +97,8 @@ pub struct TurnBrief {
 pub trait SuperagentHost: Send + Sync {
     /// Creates a root thread exactly as an external client would.
     fn start_thread(&self, spec: ThreadSpec) -> BoxFut<'_, anyhow::Result<ThreadId>>;
-    /// Binds an account profile to a thread; refused while the thread or its children work.
+    /// Binds an account profile to a thread; refused while the thread or its children work. A
+    /// thread that is not loaded keeps the binding for when it loads, and stays unloaded.
     fn bind_profile(&self, thread: ThreadId, profile: String) -> BoxFut<'_, anyhow::Result<()>>;
     /// Changes the model and reasoning effort a loaded thread uses from its next turn on;
     /// `None` for both means back to the role file `role` names (design §6.8).
@@ -148,7 +149,9 @@ pub trait SuperagentHost: Send + Sync {
         let _ = (cursor, limit);
         Box::pin(async { Ok(SessionPage::default()) })
     }
-    /// The account profile a thread runs under, when the host knows it.
+    /// The account profile a thread runs under, when the host knows it; for a thread that is not
+    /// loaded, the one it will load with (its saved binding, else its creator's account), read
+    /// without loading it.
     fn thread_profile(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<Option<String>>> {
         let _ = thread;
         Box::pin(async { Ok(None) })

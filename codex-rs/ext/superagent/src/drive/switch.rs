@@ -18,8 +18,8 @@ use super::accounts::AccountInfo;
 use super::accounts::Cooldown;
 use super::accounts::Trouble;
 use super::accounts::now;
-use super::pool::STEP_MOVED_KEY;
-use super::pool::step_key;
+use super::step_account::STEP_MOVED_KEY;
+use super::step_account::step_key;
 use crate::core::now_iso;
 
 /// How the pause while an account is being switched ends; only such a pause is resumed by it.
