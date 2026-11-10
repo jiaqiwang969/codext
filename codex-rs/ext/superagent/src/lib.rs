@@ -207,7 +207,10 @@ impl SuperagentService {
     /// than once; later calls return the same runtime.
     pub async fn start(&self) -> anyhow::Result<Arc<Runtime>> {
         let _lifecycle = self.lifecycle.lock().await;
-        anyhow::ensure!(!self.stopping.load(Ordering::SeqCst), "superagent is stopping");
+        anyhow::ensure!(
+            !self.stopping.load(Ordering::SeqCst),
+            "superagent is stopping"
+        );
         if let Some(runtime) = self.runtime.get() {
             return Ok(Arc::clone(runtime));
         }
@@ -353,11 +356,9 @@ impl SuperagentService {
                                 "CODEXT_SUPERAGENT_CAPACITY_CONTINUE_SECS",
                             )
                             .unwrap_or(config.capacity_continue_delay),
-                            capacity_continue_max: env(
-                                "CODEXT_SUPERAGENT_CAPACITY_CONTINUE_MAX",
-                            )
-                            .and_then(|v| v.parse::<u32>().ok())
-                            .unwrap_or(config.capacity_continue_max),
+                            capacity_continue_max: env("CODEXT_SUPERAGENT_CAPACITY_CONTINUE_MAX")
+                                .and_then(|v| v.parse::<u32>().ok())
+                                .unwrap_or(config.capacity_continue_max),
                             ..config
                         };
                         let config = ExecutorConfig {
@@ -404,6 +405,7 @@ impl SuperagentService {
                                     std::env::var(name).ok()
                                 }),
                                 routers: Arc::new(move || routers.list()),
+                                retry_after: drive::RETRY_AFTER,
                             },
                         )
                         .await?;

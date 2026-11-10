@@ -137,7 +137,12 @@ impl DriveService {
 
     /// Fails unless `words` are (part of) something the person said to the Router.
     pub(super) async fn ensure_heard(&self, words: &str) -> anyhow::Result<()> {
-        let heard: Vec<String> = self.inner.store.kv_get(HEARD_KEY).await?.unwrap_or_default();
+        let heard: Vec<String> = self
+            .inner
+            .store
+            .kv_get(HEARD_KEY)
+            .await?
+            .unwrap_or_default();
         anyhow::ensure!(
             found_in(words, heard.iter().map(String::as_str)),
             "用户最近没有对你说过这段话：correction / text 要照抄用户的原话"
@@ -177,12 +182,12 @@ impl DriveService {
                     "第 {} 步刚交出、还没开始，稍等再说",
                     record.steps
                 );
-                let latest = self.inner.host.session_turns(thread, 1).await?;
-                anyhow::ensure!(
-                    latest.first().is_some_and(|turn| turn.status == "inProgress"),
-                    "第 {} 步刚结束，正在读它的结论，稍等再说",
-                    record.steps
-                );
+                if !self.session_running(thread).await? {
+                    // Its end is being read; should that look have gone missing, this one
+                    // reads it.
+                    self.schedule(thread_id).await?;
+                    anyhow::bail!("第 {} 步刚结束，正在读它的结论，稍等再说", record.steps);
+                }
                 true
             }
             DriveState::Reported { .. }
@@ -218,7 +223,12 @@ impl DriveService {
         };
         let mut purposes: Vec<&str> = vec![record.request.as_str(), anchor.deliverable.as_str()];
         purposes.extend(corrections.iter().map(String::as_str));
-        purposes.extend(anchor.acceptance.iter().map(|(_, statement, _)| statement.as_str()));
+        purposes.extend(
+            anchor
+                .acceptance
+                .iter()
+                .map(|(_, statement, _)| statement.as_str()),
+        );
         purposes.extend(anchor.corrections.iter().map(|(_, text, _)| text.as_str()));
         anyhow::ensure!(
             found_in(&say.serves, purposes),
@@ -237,7 +247,11 @@ impl DriveService {
                 previous.n
             );
         }
-        let n = if steering { record.steps } else { record.steps + 1 };
+        let n = if steering {
+            record.steps
+        } else {
+            record.steps + 1
+        };
         let step = Step {
             n,
             at: now_iso(),

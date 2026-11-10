@@ -1,6 +1,7 @@
 //! Feeds the turns of driven sessions to the drive loop: a start clears the step in flight, an
-//! end schedules the judgment, an interruption by the person pauses the drive. A Router's turns
-//! feed its account checks instead (`router_account.rs`, `router_rescue.rs`).
+//! end schedules the judgment, an interruption by the person pauses the drive, and an error is
+//! kept for the look after the turn (`turns.rs`). A Router's turns feed its account checks
+//! instead (`router_account.rs`, `router_rescue.rs`).
 
 use std::sync::Arc;
 
@@ -43,7 +44,7 @@ impl TurnLifecycleContributor for DriveLifecycle {
             if router {
                 drive.router_turn_started(&thread_id, &turn_id);
             }
-            if let Err(err) = drive.turn_started(&thread_id).await {
+            if let Err(err) = drive.turn_began(&thread_id, Some(&turn_id)).await {
                 tracing::warn!("superagent drive: turn start of {thread_id}: {err:#}");
             }
         })
@@ -86,7 +87,9 @@ impl TurnLifecycleContributor for DriveLifecycle {
                     // a replacing turn or a budget stop ends in its own judgment
                     TurnAbortReason::Replaced
                     | TurnAbortReason::ReviewEnded
-                    | TurnAbortReason::BudgetLimited => drive.turn_stopped(&thread_id).await,
+                    | TurnAbortReason::BudgetLimited => {
+                        drive.turn_aborted(&thread_id, reason).await
+                    }
                 }
             };
             if let Err(err) = result {
@@ -100,13 +103,19 @@ impl TurnLifecycleContributor for DriveLifecycle {
         let thread_id = input.thread_store.level_id().to_owned();
         let router = (self.is_router)(&thread_id);
         let turn_id = input.turn_id.to_owned();
-        let trouble = error_trouble(&input.error, &input.error_details.to_string());
+        let message = input.error_details.to_string();
+        let trouble = error_trouble(&input.error, &message);
+        let error = input.error;
         Box::pin(async move {
-            if router
-                && let Some(drive) = drive
-                && let Some(trouble) = trouble
-            {
-                drive.router_turn_troubled(&thread_id, &turn_id, trouble);
+            let Some(drive) = drive else {
+                return;
+            };
+            if router {
+                if let Some(trouble) = trouble {
+                    drive.router_turn_troubled(&thread_id, &turn_id, trouble);
+                }
+            } else {
+                drive.turn_failed(&thread_id, &turn_id, &error, &message);
             }
         })
     }

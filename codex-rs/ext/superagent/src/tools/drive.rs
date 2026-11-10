@@ -297,6 +297,7 @@ impl DriveTool {
                     goal,
                     first: args.text.clone().unwrap_or_default(),
                     account,
+                    router: self.caller.clone(),
                 };
                 drive
                     .start(&thread_id, start)
@@ -352,10 +353,7 @@ impl DriveTool {
             Action::Resume => {
                 let id = thread_id()?;
                 if let Some(max_steps) = args.max_steps {
-                    drive
-                        .set_max_steps(&id, max_steps)
-                        .await
-                        .map_err(refused)?;
+                    drive.set_max_steps(&id, max_steps).await.map_err(refused)?;
                 }
                 drive
                     .resume(&id)

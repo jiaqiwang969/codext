@@ -17,15 +17,19 @@ mod context;
 mod cooldown;
 mod feedback;
 mod lifecycle;
+mod look;
 mod policy;
 mod pool;
 mod report;
+mod retry;
 mod router_account;
 mod router_rescue;
 mod say;
 mod step_account;
 mod switch;
+mod turns;
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -63,10 +67,14 @@ pub use cooldown::Cooldown;
 pub use cooldown::EndedCooldown;
 pub use feedback::Feedback;
 pub use lifecycle::DriveLifecycle;
+pub use look::DONE_WHILE_PAUSED;
 pub use policy::AccountPolicy;
 pub use policy::DriveOptions;
 pub use policy::Routers;
 pub use pool::AccountMove;
+pub use retry::KIND_RETRY;
+pub use retry::RETRY_AFTER;
+pub use retry::RETRYING;
 pub use router_account::KIND_ROUTER;
 pub use router_account::KIND_WATCH;
 pub use router_rescue::KIND_RESCUE;
@@ -79,6 +87,7 @@ use crate::core::now_iso;
 use crate::effects::EffectError;
 use crate::effects::Effects;
 use crate::effects::HandlerOptions;
+use crate::host::StepStart;
 use crate::host::SuperagentHost;
 use crate::host::ThreadSpec;
 use crate::store::Store;
@@ -96,6 +105,8 @@ pub const STALL: std::time::Duration = std::time::Duration::from_secs(120);
 pub const UNCHANGED_LIMIT: u32 = 2;
 const HISTORY: usize = 20;
 const NOTES: usize = 10;
+/// How many earlier conclusions a record keeps besides the latest.
+const EARLIER: usize = 4;
 /// The most of a worker's conclusion the record keeps.
 const REPORT_CHARS: usize = 4_000;
 
@@ -196,6 +207,9 @@ pub struct DriveRecord {
     /// The worker's last conclusion.
     #[serde(default)]
     pub report: Option<Report>,
+    /// The conclusions before it, oldest first, at most `EARLIER`.
+    #[serde(default)]
+    pub earlier: Vec<String>,
     /// The account the drive last moved the session to.
     #[serde(default)]
     pub account: Option<String>,
@@ -210,6 +224,14 @@ pub struct DriveRecord {
     /// The last step whose turn did start.
     #[serde(default)]
     pub started: Option<u32>,
+    /// The step that went again by itself after its turn broke off on the network; it goes
+    /// again only once (`retry.rs`).
+    #[serde(default)]
+    pub retried: Option<u32>,
+    /// The Router that started the drive; its notices go there. `None` in records of earlier
+    /// versions: the first registered Router gets them.
+    #[serde(default)]
+    pub router: Option<String>,
     /// The latest steps, oldest first.
     pub history: Vec<Step>,
     pub since: String,
@@ -240,13 +262,24 @@ impl DriveRecord {
         )
     }
 
-    /// Whether the session's turns are judged when they end (a step is out, or the worker
-    /// reported and the person may still type into the session).
+    /// Whether the session's turns are looked at when they end: a step is out; the worker
+    /// reported and the person may still type into the session; or the drive paused, and the
+    /// conclusion of the step that was running then is kept.
     fn watched(&self) -> bool {
         matches!(
             self.state,
-            DriveState::Driving | DriveState::Reported { .. }
+            DriveState::Driving | DriveState::Reported { .. } | DriveState::Paused { .. }
         )
+    }
+
+    /// Makes `report` the latest conclusion; the one it replaces joins the earlier ones.
+    fn take_report(&mut self, report: Report) {
+        let turn = report.turn.clone();
+        if let Some(old) = self.report.replace(report)
+            && old.turn != turn
+        {
+            push_limited(&mut self.earlier, old.text, EARLIER);
+        }
     }
 }
 
@@ -269,6 +302,8 @@ pub struct DriveStart {
     /// The account the session runs its steps under, as the Router named it; without one the
     /// session keeps its account (a new session takes the Router's).
     pub account: Option<String>,
+    /// The Router that starts the drive; its notices go there.
+    pub router: Option<String>,
 }
 
 /// The drive side of the engine.
@@ -296,6 +331,10 @@ struct Inner {
     watch: std::sync::Mutex<pool::Watch>,
     /// One read of the pool at a time, so checks that come together share it.
     refresh: tokio::sync::Semaphore,
+    /// What the turn hooks said about each driven session's latest turn (`turns.rs`).
+    seen: std::sync::Mutex<HashMap<String, turns::TurnSeen>>,
+    /// How long a step that broke off on the network waits before it goes again (`retry.rs`).
+    retry_after: std::time::Duration,
 }
 
 impl DriveService {
@@ -314,6 +353,7 @@ impl DriveService {
             stall,
             policy: AccountPolicy::default(),
             routers: Arc::new(Vec::new),
+            retry_after: retry::RETRY_AFTER,
         };
         Self::install_with(store, effects, host, judge, options).await
     }
@@ -331,6 +371,7 @@ impl DriveService {
             stall,
             policy,
             routers,
+            retry_after,
         } = options;
         let service = Self {
             inner: Arc::new(Inner {
@@ -346,6 +387,8 @@ impl DriveService {
                 routers,
                 watch: std::sync::Mutex::new(pool::Watch::default()),
                 refresh: tokio::sync::Semaphore::new(1),
+                seen: std::sync::Mutex::new(HashMap::new()),
+                retry_after,
             }),
         };
         let runner = service.clone();
@@ -367,6 +410,7 @@ impl DriveService {
             )
             .await?;
         router_account::install_router_handlers(&service, &effects).await?;
+        retry::install_retry_handler(&service, &effects).await?;
         Ok(service)
     }
 
@@ -485,6 +529,7 @@ impl DriveService {
             goal,
             first,
             account,
+            router,
         } = start;
         anyhow::ensure!(!request.trim().is_empty(), "需要用户的原话（request）");
         let first = say::spoken(&first)?;
@@ -524,12 +569,15 @@ impl DriveService {
             request: request.trim().to_owned(),
             corrections: Vec::new(),
             report: None,
+            earlier: Vec::new(),
             account,
             unchanged: 0,
             digest: None,
             notes: Vec::new(),
             inflight: Some(1),
             started: None,
+            retried: None,
+            router,
             history: vec![Step {
                 n: 1,
                 at: now.clone(),
@@ -665,29 +713,6 @@ impl DriveService {
         Ok(withdrawn)
     }
 
-    /// A turn started on the session: the step in flight reached it.
-    pub async fn turn_started(&self, thread_id: &str) -> anyhow::Result<()> {
-        self.change(thread_id, |record| {
-            if let Some(step) = record.inflight.take() {
-                record.started = Some(step);
-            }
-        })
-        .await
-        .map(drop)
-    }
-
-    /// A turn ended: its conclusion is read next.
-    pub async fn turn_stopped(&self, thread_id: &str) -> anyhow::Result<()> {
-        if self
-            .record(thread_id)
-            .await?
-            .is_some_and(|record| record.watched())
-        {
-            self.schedule(thread_id).await?;
-        }
-        Ok(())
-    }
-
     /// The Router stops the running step (the person found it going wrong): the turn is
     /// interrupted and the drive pauses until the Router hands it back and says the next thing.
     pub async fn interrupt(&self, thread_id: &str) -> anyhow::Result<Option<DriveRecord>> {
@@ -709,19 +734,6 @@ impl DriveService {
         Ok(record)
     }
 
-    /// The person interrupted a driven turn: that is taking the session over.
-    pub async fn turn_interrupted(&self, thread_id: &str) -> anyhow::Result<()> {
-        self.change(thread_id, |record| {
-            if record.state == DriveState::Driving {
-                record.state = DriveState::Paused {
-                    reason: "你中断了这一步，推进已暂停；在 Router 里说交回即可继续".to_owned(),
-                };
-            }
-        })
-        .await
-        .map(drop)
-    }
-
     /// What the person typed into a driven session; the Router sees it with the next conclusion.
     pub async fn person_input(&self, thread_id: &str, text: &str) -> anyhow::Result<()> {
         let text = text.trim().to_owned();
@@ -730,7 +742,11 @@ impl DriveService {
         }
         self.change(thread_id, |record| {
             // the drive's own step arrives as the session's input too
-            if record.history.last().is_some_and(|step| step.text.trim() == text) {
+            if record
+                .history
+                .last()
+                .is_some_and(|step| step.text.trim() == text)
+            {
                 return;
             }
             push_limited(&mut record.notes, text, NOTES);
@@ -767,182 +783,6 @@ impl DriveService {
         Ok(())
     }
 
-    /// Looks at the session after a turn: a step that never started is withdrawn; a finished
-    /// turn's conclusion is recorded and handed to the Router, after the audit for an anchored
-    /// goal, which may stop the drive (deliverable, drift, no progress).
-    pub async fn step(&self, thread_id: &str) -> anyhow::Result<()> {
-        let lock = self.inner.lock.lock().await;
-        let Some(record) = self
-            .inner
-            .store
-            .kv_get::<DriveRecord>(&drive_key(thread_id))
-            .await?
-        else {
-            return Ok(());
-        };
-        if !record.watched() {
-            return Ok(());
-        }
-        let thread = ThreadId::from_string(thread_id)?;
-        if record.state == DriveState::Driving
-            && let Some(step) = record.inflight
-        {
-            return self.check_stall(&record, thread, step).await;
-        }
-        let latest = self.inner.host.session_turns(thread, 1).await?;
-        let Some(turn) = latest.first() else {
-            return Ok(());
-        };
-        if turn.status == "inProgress" {
-            // its end looks again
-            return Ok(());
-        }
-        match &record.state {
-            DriveState::Driving => {
-                if record.started != Some(record.steps) {
-                    return Ok(());
-                }
-                if turn.status != "completed" {
-                    // The account could not carry the step: move the session and send it again.
-                    if let Some(trouble) = accounts::trouble(turn)
-                        && self.inner.accounts.is_some()
-                    {
-                        let state = DriveState::Paused {
-                            reason: format!(
-                                "第 {} 步{}，{}",
-                                record.steps,
-                                trouble.describe(),
-                                switch::SWITCHING
-                            ),
-                        };
-                        self.change_locked(thread_id, |record| record.state = state)
-                            .await?;
-                        drop(lock);
-                        return self.retry_elsewhere(record, thread, trouble).await;
-                    }
-                    let reason = match &turn.error {
-                        Some(error) => format!(
-                            "第 {} 步没有正常结束（{}：{}）",
-                            record.steps,
-                            turn.status,
-                            truncate_chars(error, 200)
-                        ),
-                        None => format!("第 {} 步没有正常结束（{}）", record.steps, turn.status),
-                    };
-                    return self.settle(&record, DriveState::Paused { reason }, None).await;
-                }
-            }
-            // The person typed into the session after the conclusion: a newer one replaces it.
-            DriveState::Reported { .. } => {
-                if turn.status != "completed"
-                    || record.report.as_ref().is_some_and(|report| report.turn == turn.id)
-                {
-                    return Ok(());
-                }
-            }
-            DriveState::Paused { .. }
-            | DriveState::Deliverable { .. }
-            | DriveState::NeedsDecision { .. } => return Ok(()),
-        }
-        let conclusion = report::conclusion(turn);
-        let mut report = Report {
-            turn: turn.id.clone(),
-            at: now_iso(),
-            text: truncate_chars(&conclusion, REPORT_CHARS),
-            audit: None,
-        };
-        let (state, digest, unchanged) = match record.mode {
-            DriveMode::Simple => (report::reported(&record, &report.text), None, 0),
-            DriveMode::Anchored => {
-                let audit = match self.inner.judge.audit(&record.project_home).await {
-                    Ok(audit) => audit,
-                    Err(err) => {
-                        let reason = format!("无法判定：{err:#}");
-                        return self
-                            .settle(&record, DriveState::NeedsDecision { reason }, Some(report))
-                            .await;
-                    }
-                };
-                report.audit = Some(audit.summary());
-                let digest = (audit.project_sha256.clone(), audit.anchor_sha256.clone());
-                let unchanged = match &record.digest {
-                    Some(previous) if *previous == digest => record.unchanged + 1,
-                    Some(_) | None => 0,
-                };
-                (
-                    report::judged(&record, &report.text, &audit, unchanged),
-                    Some(digest),
-                    unchanged,
-                )
-            }
-        };
-        let state = match state {
-            DriveState::Reported { .. } if record.steps >= record.max_steps => DriveState::Paused {
-                reason: format!("已推进 {} 步，达到上限；放宽要问用户", record.steps),
-            },
-            state => state,
-        };
-        let told = state.clone();
-        let kept = report.clone();
-        self.change_locked(thread_id, |record| {
-            record.state = state;
-            record.report = Some(report);
-            if let Some(digest) = digest {
-                record.digest = Some(digest);
-                record.unchanged = unchanged;
-            }
-        })
-        .await?;
-        let record = DriveRecord {
-            report: Some(kept),
-            ..record
-        };
-        self.notify(&record, &told).await
-    }
-
-    /// A step handed over and not started: wait, unless it has waited too long; then it is
-    /// withdrawn and the drive pauses.
-    async fn check_stall(
-        &self,
-        record: &DriveRecord,
-        thread: ThreadId,
-        step: u32,
-    ) -> anyhow::Result<()> {
-        let handed = record
-            .history
-            .last()
-            .and_then(|last| chrono::DateTime::parse_from_rfc3339(&last.at).ok())
-            .map(|at| at.with_timezone(&chrono::Utc));
-        let stalled = handed.is_some_and(|at| {
-            chrono::Utc::now()
-                .signed_duration_since(at)
-                .to_std()
-                .unwrap_or_default()
-                >= self.inner.stall
-        });
-        if !stalled {
-            return Ok(());
-        }
-        let latest = self.inner.host.session_turns(thread, 1).await?;
-        if latest
-            .first()
-            .is_some_and(|turn| turn.status == "inProgress")
-        {
-            return Ok(());
-        }
-        self.withdraw_steps(record).await?;
-        let paused = DriveState::Paused {
-            reason: format!("第 {step} 步交出后一直没有开始，已撤回"),
-        };
-        let state = paused.clone();
-        self.change_locked(&record.thread_id, |record| {
-            withdraw_step(record, step);
-            record.state = state;
-        })
-        .await?;
-        self.notify(record, &paused).await
-    }
-
     /// Starts step `n`'s turn on the idle session, outside the lock: the turn's start and input
     /// hooks change the record too. A failed hand-over pauses the drive and tells the Router.
     async fn hand_over(
@@ -963,51 +803,46 @@ impl DriveService {
             .effects
             .enqueue_after(KIND_STEP, thread_id, &json!({}), self.inner.stall)
             .await?;
-        if let Err(err) = delivered {
-            let paused = DriveState::Paused {
-                reason: format!("第 {n} 步没能交出：{err:#}"),
-            };
-            let state = paused.clone();
-            let changed = self
-                .change(thread_id, |record| {
-                    let ours = record.inflight == Some(n);
-                    if ours {
+        match delivered {
+            Ok(StepStart::Started { .. }) => {}
+            // A turn ran already (the person's, or a step still running when the drive paused):
+            // the step's words joined it, no turn of its own starts, and that turn's end answers
+            // the step.
+            Ok(StepStart::Steered { turn }) => {
+                self.change(thread_id, |record| {
+                    if record.inflight == Some(n) {
                         record.inflight = None;
-                        record.state = state;
+                        record.started = Some(n);
                     }
-                    ours.then(|| record.clone())
                 })
                 .await?;
-            if let Some(Some(record)) = changed {
-                self.notify(&record, &paused).await?;
-            } else {
-                tracing::warn!("superagent drive: step {n} of {title} was not handed over");
+                if let Some(turn) = turn {
+                    self.adopt_turn(thread_id, &turn);
+                }
+            }
+            Err(err) => {
+                let paused = DriveState::Paused {
+                    reason: format!("第 {n} 步没能交出：{err:#}"),
+                };
+                let state = paused.clone();
+                let changed = self
+                    .change(thread_id, |record| {
+                        let ours = record.inflight == Some(n);
+                        if ours {
+                            record.inflight = None;
+                            record.state = state;
+                        }
+                        ours.then(|| record.clone())
+                    })
+                    .await?;
+                if let Some(Some(record)) = changed {
+                    self.notify(&record, &paused).await?;
+                } else {
+                    tracing::warn!("superagent drive: step {n} of {title} was not handed over");
+                }
             }
         }
         Ok(())
-    }
-
-    /// Ends a look with a state and tells the Router, keeping the lock the caller holds.
-    async fn settle(
-        &self,
-        record: &DriveRecord,
-        state: DriveState,
-        report: Option<Report>,
-    ) -> anyhow::Result<()> {
-        let told = state.clone();
-        let kept = report.clone();
-        self.change_locked(&record.thread_id, |record| {
-            record.state = state;
-            if let Some(report) = report {
-                record.report = Some(report);
-            }
-        })
-        .await?;
-        let record = DriveRecord {
-            report: kept.or_else(|| record.report.clone()),
-            ..record.clone()
-        };
-        self.notify(&record, &told).await
     }
 
     /// Tells the Router when the worker reported or the drive stopped by itself, as a notice its

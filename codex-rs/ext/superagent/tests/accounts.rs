@@ -57,6 +57,7 @@ use codex_superagent_extension::host::DeliveryLedger;
 use codex_superagent_extension::host::DeliveryMode;
 use codex_superagent_extension::host::GoalStatus;
 use codex_superagent_extension::host::LedgerHost;
+use codex_superagent_extension::host::StepStart;
 use codex_superagent_extension::host::SuperagentHost;
 use codex_superagent_extension::host::ThreadSpec;
 use codex_superagent_extension::host::TurnBrief;
@@ -170,10 +171,10 @@ impl SuperagentHost for Host {
         lock(&self.delivered).push(text);
         Box::pin(async { Ok(()) })
     }
-    fn start_step(&self, thread: ThreadId, text: String) -> BoxFut<'_, anyhow::Result<()>> {
+    fn start_step(&self, thread: ThreadId, text: String) -> BoxFut<'_, anyhow::Result<StepStart>> {
         lock(&self.log).push(format!("step:{thread}"));
         lock(&self.delivered).push(text);
-        Box::pin(async { Ok(()) })
+        Box::pin(async { Ok(StepStart::Started { turn: None }) })
     }
     fn session_turns(
         &self,
@@ -395,6 +396,7 @@ async fn setup_with(policy: AccountPolicy) -> anyhow::Result<Setup> {
             stall: Duration::from_secs(3600),
             policy,
             routers: Arc::new(|| vec![ROUTER.to_owned()]),
+            retry_after: Duration::ZERO,
         },
     )
     .await?;
@@ -423,6 +425,7 @@ fn simple(folder: &Path, account: Option<&str>) -> DriveStart {
         goal: None,
         first: "把笔记按主题分进子目录，做完告诉我怎么检查。".to_owned(),
         account: account.map(str::to_owned),
+        router: None,
     }
 }
 
@@ -1064,6 +1067,36 @@ async fn a_router_turn_its_account_failed_moves_once_and_its_words_come_back() -
     s.drive.router_turn_boundary(ROUTER, Some("t5")).await?;
     s.drive.router_turn_failed(ROUTER).await?;
     assert_eq!(s.host.log().len(), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_router_turn_shown_interrupted_without_its_error_still_moves_the_router()
+-> anyhow::Result<()> {
+    let s = setup().await?;
+    s.host.on(ROUTER, "router-acct");
+    s.pool.set(vec![
+        account("router-acct", "pro", 60.0, 2),
+        account("next", "pro", 80.0, 5),
+    ]);
+    let words = "第 15 路交了结论，接着安排";
+    s.drive.router_turn_started(ROUTER, "t7");
+    s.drive
+        .router_turn_troubled(ROUTER, "t7", Trouble::UsageLimit);
+    s.drive.router_turn_ended(ROUTER).await?;
+    // The history shows the turn interrupted and without its error: the error hook said it.
+    s.host
+        .turns(ROUTER, vec![turn("t7", "interrupted", &[words])]);
+    s.drive.router_turn_boundary(ROUTER, Some("t7")).await?;
+    assert_eq!(
+        s.host.log(),
+        vec![
+            format!("bind:{ROUTER}:next"),
+            format!("deliver:{ROUTER}:Steer"),
+            format!("start_queued:{ROUTER}")
+        ]
+    );
+    assert!(s.host.delivered()[0].ends_with(words));
     Ok(())
 }
 

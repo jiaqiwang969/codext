@@ -71,9 +71,22 @@ impl DriveService {
             "superagent drive: turn {turn_id} of the Router {thread_id} failed on its account ({})",
             trouble.describe()
         );
-        self.watch()
+        let mut watch = self.watch();
+        watch
             .troubled
             .insert(thread_id.to_owned(), turn_id.to_owned());
+        watch
+            .failed
+            .insert(thread_id.to_owned(), (turn_id.to_owned(), trouble));
+    }
+
+    /// The trouble the error hook reported for the Router's turn `turn`, if it did.
+    pub(super) fn reported_trouble(&self, thread_id: &str, turn: &str) -> Option<Trouble> {
+        self.watch()
+            .failed
+            .get(thread_id)
+            .filter(|(failed, _)| failed == turn)
+            .map(|(_, trouble)| *trouble)
     }
 
     /// A Router turn ended (its stop hook, before the queue may start the next one): when its

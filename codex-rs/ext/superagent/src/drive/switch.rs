@@ -32,7 +32,7 @@ fn local_time(at: i64) -> String {
 }
 
 /// What step `n` told the session: its message, then what was said into its turn.
-fn step_text(record: &DriveRecord) -> Option<String> {
+pub(super) fn step_text(record: &DriveRecord) -> Option<String> {
     let n = record.steps;
     let mut parts = record.history.iter().filter(|step| step.n == n);
     let first = parts.find(|step| !step.steered)?;
@@ -122,8 +122,17 @@ impl DriveService {
             let reason = format!("第 {n} 步{}；没有可换的账号，{soonest}", trouble.describe());
             return self.stop_switching(&record, reason).await;
         };
-        if let Err(err) = self.inner.host.bind_profile(thread, next.name.clone()).await {
-            let reason = format!("第 {n} 步{}；换到 {} 失败：{err:#}", trouble.describe(), next.name);
+        if let Err(err) = self
+            .inner
+            .host
+            .bind_profile(thread, next.name.clone())
+            .await
+        {
+            let reason = format!(
+                "第 {n} 步{}；换到 {} 失败：{err:#}",
+                trouble.describe(),
+                next.name
+            );
             return self.stop_switching(&record, reason).await;
         }
         // The step goes again on the account it just moved to: the check before it leaves it.
@@ -194,13 +203,7 @@ impl DriveService {
     ) -> anyhow::Result<(Option<DriveRecord>, String)> {
         let thread = ThreadId::from_string(thread_id)
             .map_err(|err| anyhow::anyhow!("会话 id {thread_id} 无效：{err}"))?;
-        let running = self
-            .inner
-            .host
-            .session_turns(thread, 1)
-            .await?
-            .first()
-            .is_some_and(|turn| turn.status == "inProgress");
+        let running = self.session_running(thread).await?;
         anyhow::ensure!(!running, "这个会话正在做一轮：先 interrupt，再换号");
         anyhow::ensure!(
             self.inner.accounts.is_some(),
@@ -208,7 +211,11 @@ impl DriveService {
         );
         let pool = self.live_pool().await?;
         let current = self.inner.host.thread_profile(thread).await.unwrap_or(None);
-        let next = match wanted.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
+        let next = match wanted
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
             Some(name) => pool
                 .iter()
                 .find(|account| account.name.eq_ignore_ascii_case(name))

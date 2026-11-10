@@ -32,6 +32,15 @@ pub enum DeliveryMode {
     Steer,
 }
 
+/// How a drive step reached its session (`SuperagentHost::start_step`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StepStart {
+    /// A new turn started with it; its id when the host knows it.
+    Started { turn: Option<String> },
+    /// A turn was running already: the text was said into that turn.
+    Steered { turn: Option<String> },
+}
+
 /// A thread's Goal, as the executor reads it: only the budget states matter to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GoalStatus {
@@ -134,10 +143,14 @@ pub trait SuperagentHost: Send + Sync {
     ) -> BoxFut<'_, anyhow::Result<()>>;
     /// Starts a drive step on an idle session: a new turn with the drive's own settings (full
     /// access and no approvals, as the person decided, so the worker can open applications and
-    /// browsers) and the `drive` trigger, whatever the session ran with before. A host without
-    /// per-turn settings steers it.
-    fn start_step(&self, thread: ThreadId, text: String) -> BoxFut<'_, anyhow::Result<()>> {
-        self.deliver(thread, text, DeliveryMode::Steer)
+    /// browsers) and the `drive` trigger, whatever the session ran with before. When a turn
+    /// runs already, the text is said into it, and the answer says so. A host without per-turn
+    /// settings steers it and answers a start.
+    fn start_step(&self, thread: ThreadId, text: String) -> BoxFut<'_, anyhow::Result<StepStart>> {
+        Box::pin(async move {
+            self.deliver(thread, text, DeliveryMode::Steer).await?;
+            Ok(StepStart::Started { turn: None })
+        })
     }
     /// One page of the host's root sessions, newest first, read from stored metadata without
     /// loading any thread. A host without a session store has none.
@@ -238,6 +251,7 @@ mod ledger {
     use super::DeliveryMode;
     use super::GoalStatus;
     use super::SessionPage;
+    use super::StepStart;
     use super::SuperagentHost;
     use super::ThreadSpec;
     use super::TurnBrief;
@@ -354,7 +368,11 @@ mod ledger {
             })
         }
 
-        fn start_step(&self, thread: ThreadId, text: String) -> BoxFut<'_, anyhow::Result<()>> {
+        fn start_step(
+            &self,
+            thread: ThreadId,
+            text: String,
+        ) -> BoxFut<'_, anyhow::Result<StepStart>> {
             self.ledger.note(&text);
             self.inner.start_step(thread, text)
         }
@@ -392,7 +410,6 @@ mod ledger {
         }
 
         fn start_queued(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<bool>> {
-
             self.inner.start_queued(thread)
         }
 

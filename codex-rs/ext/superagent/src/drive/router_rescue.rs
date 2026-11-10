@@ -114,7 +114,11 @@ impl DriveService {
         if failed.status == "inProgress" {
             return Ok(());
         }
-        let Some(trouble) = accounts::trouble(&failed) else {
+        // The history may show the turn interrupted and without its error for a while; the
+        // error hook said what it was.
+        let Some(trouble) =
+            accounts::trouble(&failed).or_else(|| self.reported_trouble(thread_id, &failed.id))
+        else {
             return Ok(());
         };
         if !self.claim(ROUTER_MOVED_KEY, &failed.id).await? {

@@ -89,14 +89,7 @@ impl DriveService {
             let Some(current) = self.inner.host.thread_profile(thread).await? else {
                 return Ok(());
             };
-            let running = self
-                .inner
-                .host
-                .session_turns(thread, 1)
-                .await?
-                .first()
-                .is_some_and(|turn| turn.status == "inProgress");
-            if running {
+            if self.session_running(thread).await? {
                 return Ok(());
             }
             let standing = self.standing(&current, Look::Recent).await?;

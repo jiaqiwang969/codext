@@ -39,6 +39,8 @@ pub struct DriveOptions {
     pub policy: AccountPolicy,
     /// The Router threads whose accounts the drive watches.
     pub routers: Routers,
+    /// How long a step whose turn broke off on the network waits before it goes again.
+    pub retry_after: Duration,
 }
 
 /// How the engine keeps the Router and the driven sessions on accounts with quota left.

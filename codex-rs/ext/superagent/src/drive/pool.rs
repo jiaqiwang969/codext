@@ -55,6 +55,9 @@ pub(super) struct Watch {
     pub(super) turns: HashMap<String, String>,
     /// The turn of each Router its account failed (quota used up, model at capacity).
     pub(super) troubled: HashMap<String, String>,
+    /// The last turn of each Router whose error hook reported trouble with its account, and the
+    /// trouble: the history may show such a turn interrupted and without its error for a while.
+    pub(super) failed: HashMap<String, (String, super::accounts::Trouble)>,
     /// Routers whose queued input waits, until then, for the move at the end of their turn.
     pub(super) held: HashMap<String, Instant>,
     /// Routers to move once their running turn ends, and where to.

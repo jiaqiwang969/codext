@@ -18,17 +18,18 @@ use codex_superagent_extension::HealthBoard;
 use codex_superagent_extension::drive::AccountInfo;
 use codex_superagent_extension::drive::AccountSource;
 use codex_superagent_extension::drive::Audit;
+use codex_superagent_extension::drive::DriveMode;
 use codex_superagent_extension::drive::DriveRecord;
 use codex_superagent_extension::drive::DriveService;
 use codex_superagent_extension::drive::DriveStart;
 use codex_superagent_extension::drive::DriveState;
 use codex_superagent_extension::drive::Feedback;
 use codex_superagent_extension::drive::Goal;
-use codex_superagent_extension::drive::DriveMode;
 use codex_superagent_extension::drive::Judge;
 use codex_superagent_extension::drive::Say;
 use codex_superagent_extension::host::DeliveryMode;
 use codex_superagent_extension::host::GoalStatus;
+use codex_superagent_extension::host::StepStart;
 use codex_superagent_extension::host::SuperagentHost;
 use codex_superagent_extension::host::ThreadSpec;
 use codex_superagent_extension::host::TurnBrief;
@@ -76,6 +77,13 @@ impl FakeHost {
             error_kind: Some(kind.to_owned()),
             ..TurnBrief::default()
         });
+    }
+    /// The latest turn (the one that ran) ends with the worker's last words.
+    fn end_latest(&self, status: &str, conclusion: &str) {
+        if let Some(turn) = Self::lock(&self.latest).as_mut() {
+            turn.status = status.to_owned();
+            turn.assistant = vec![conclusion.to_owned()];
+        }
     }
     /// A new turn of the session ended (or runs) with the worker's last words.
     fn finish(&self, status: &str, conclusion: &str) {
@@ -131,15 +139,23 @@ impl SuperagentHost for FakeHost {
             Ok(())
         })
     }
-    fn start_step(&self, thread: ThreadId, text: String) -> BoxFut<'_, anyhow::Result<()>> {
+    fn start_step(&self, thread: ThreadId, text: String) -> BoxFut<'_, anyhow::Result<StepStart>> {
         Self::lock(&self.calls).push(format!("step:{thread}"));
         Self::lock(&self.delivered).push(text);
         let drive = Self::lock(&self.on_deliver).clone();
+        // Like the real host: a turn that runs already takes the step's words.
+        let running = Self::lock(&self.latest)
+            .as_ref()
+            .filter(|turn| turn.status == "inProgress")
+            .map(|turn| turn.id.clone());
         Box::pin(async move {
+            if let Some(turn) = running {
+                return Ok(StepStart::Steered { turn: Some(turn) });
+            }
             if let Some(drive) = drive {
                 drive.turn_started(&thread.to_string()).await?;
             }
-            Ok(())
+            Ok(StepStart::Started { turn: None })
         })
     }
     fn session_turns(
@@ -306,6 +322,7 @@ fn simple(folder: PathBuf) -> DriveStart {
         goal: None,
         first: FIRST.to_owned(),
         account: None,
+        router: None,
     }
 }
 
@@ -351,7 +368,16 @@ async fn setup_with(stall: std::time::Duration) -> anyhow::Result<Setup> {
         stall,
     )
     .await?;
-    Ok(Setup { _dir: dir, work, home, host, judge, accounts, effects, drive })
+    Ok(Setup {
+        _dir: dir,
+        work,
+        home,
+        host,
+        judge,
+        accounts,
+        effects,
+        drive,
+    })
 }
 
 async fn setup() -> anyhow::Result<Setup> {
@@ -361,10 +387,14 @@ async fn setup() -> anyhow::Result<Setup> {
 impl Setup {
     /// A simple drive in the work folder.
     async fn start(&self) -> anyhow::Result<DriveRecord> {
-        self.drive.start(THREAD, simple(self.work.path().to_owned())).await
+        self.drive
+            .start(THREAD, simple(self.work.path().to_owned()))
+            .await
     }
     async fn start_anchored(&self) -> anyhow::Result<DriveRecord> {
-        self.drive.start(THREAD, anchored(self.home.clone(), None)).await
+        self.drive
+            .start(THREAD, anchored(self.home.clone(), None))
+            .await
     }
     async fn record(&self) -> anyhow::Result<DriveRecord> {
         Ok(self.drive.record(THREAD).await?.expect("a drive record"))
@@ -412,7 +442,12 @@ async fn start_sends_the_routers_first_message_and_records_it_in_flight() -> any
     let record = s.start().await?;
     assert_eq!(s.host.delivered(), vec![FIRST.to_owned()]);
     assert_eq!(
-        (record.mode, record.steps, record.inflight, record.request.as_str()),
+        (
+            record.mode,
+            record.steps,
+            record.inflight,
+            record.request.as_str()
+        ),
         (DriveMode::Simple, 1, Some(1), REQUEST)
     );
     assert_eq!(record.history[0].text, FIRST);
@@ -425,7 +460,8 @@ async fn a_finished_turn_hands_its_conclusion_to_the_router_and_sends_nothing() 
 {
     let s = setup().await?;
     s.start().await?;
-    s.turn("分好了 3 个主题目录；浏览器在沙箱里打不开，没法真实试看").await?;
+    s.turn("分好了 3 个主题目录；浏览器在沙箱里打不开，没法真实试看")
+        .await?;
     let record = s.record().await?;
     assert_eq!(
         record.state,
@@ -439,8 +475,16 @@ async fn a_finished_turn_hands_its_conclusion_to_the_router_and_sends_nothing() 
     let notices = s.notices().await?;
     assert_eq!(notices.len(), 1);
     assert!(notices[0].contains("第 1 步结束"), "{}", notices[0]);
-    assert!(notices[0].contains("浏览器在沙箱里打不开"), "{}", notices[0]);
-    assert!(notices[0].contains("superagent_drive say"), "{}", notices[0]);
+    assert!(
+        notices[0].contains("浏览器在沙箱里打不开"),
+        "{}",
+        notices[0]
+    );
+    assert!(
+        notices[0].contains("superagent_drive say"),
+        "{}",
+        notices[0]
+    );
     Ok(())
 }
 
@@ -457,11 +501,17 @@ async fn say_goes_out_only_on_a_basis_found_in_the_records() -> anyhow::Result<(
     let cases = [
         (say(next, "全部做完了", "按主题分好"), "builds_on"),
         (say(next, "浏览器在沙箱里打不开", "做一个网站"), "serves"),
-        (say("验收项 A1 还没闭合", "浏览器在沙箱里打不开", "按主题分好"), "方法名或编号"),
+        (
+            say("验收项 A1 还没闭合", "浏览器在沙箱里打不开", "按主题分好"),
+            "方法名或编号",
+        ),
     ];
     for (bad, why) in cases {
         let refused = s.drive.say(THREAD, bad).await;
-        assert!(format!("{:#}", refused.expect_err(why)).contains(why), "{why}");
+        assert!(
+            format!("{:#}", refused.expect_err(why)).contains(why),
+            "{why}"
+        );
     }
     assert_eq!(s.host.delivered().len(), 1);
 
@@ -480,7 +530,10 @@ async fn say_goes_out_only_on_a_basis_found_in_the_records() -> anyhow::Result<(
 
     // The same words again, without anything new, do not go.
     s.turn("还是打不开浏览器").await?;
-    let again = s.drive.say(THREAD, say(next, "还是打不开浏览器", "按主题分好")).await;
+    let again = s
+        .drive
+        .say(THREAD, say(next, "还是打不开浏览器", "按主题分好"))
+        .await;
     assert!(format!("{:#}", again.expect_err("repeat")).contains("和第 2 步说的一样"));
     Ok(())
 }
@@ -521,7 +574,10 @@ async fn what_the_person_types_into_the_session_is_kept_but_not_the_drives_own_s
     s.drive.turn_stopped(THREAD).await?;
     s.drive.step(THREAD).await?;
     let report = s.record().await?.report.expect("a report");
-    assert_eq!((report.turn.as_str(), report.text.as_str()), ("turn-2", "按你说的改成英文了"));
+    assert_eq!(
+        (report.turn.as_str(), report.text.as_str()),
+        ("turn-2", "按你说的改成英文了")
+    );
     Ok(())
 }
 
@@ -539,7 +595,14 @@ async fn an_anchored_turn_is_judged_and_the_audit_may_stop_the_drive() -> anyhow
     );
     // The basis may quote an acceptance item of the anchor.
     s.drive
-        .say(THREAD, say("接着写根目录的索引，按日期排。", "索引还没写", "根目录有索引文件"))
+        .say(
+            THREAD,
+            say(
+                "接着写根目录的索引，按日期排。",
+                "索引还没写",
+                "根目录有索引文件",
+            ),
+        )
         .await?;
 
     s.judge.then(audit("anchored", &["A1", "A2"], &[], "2"));
@@ -551,11 +614,19 @@ async fn an_anchored_turn_is_judged_and_the_audit_may_stop_the_drive() -> anyhow
         }
     );
     let notices = s.notices().await?;
-    assert!(notices.last().expect("a notice").contains("可交付，等用户验收"));
+    assert!(
+        notices
+            .last()
+            .expect("a notice")
+            .contains("可交付，等用户验收")
+    );
 
     s.drive.resume(THREAD).await?;
     s.drive
-        .say(THREAD, say("把索引里的日期格式统一一下。", "索引写好了", "索引要按日期"))
+        .say(
+            THREAD,
+            say("把索引里的日期格式统一一下。", "索引写好了", "索引要按日期"),
+        )
         .await?;
     let mut drift = audit("drift", &[], &["A2"], "3");
     drift.findings = vec!["code=no_progress_streak stage=S02".to_owned()];
@@ -603,7 +674,11 @@ async fn an_interruption_or_a_failed_turn_pauses_the_drive() -> anyhow::Result<(
     s.drive.turn_started(THREAD).await?;
     s.drive.turn_interrupted(THREAD).await?;
     assert!(matches!(s.record().await?.state, DriveState::Paused { .. }));
-    assert_eq!(s.notices().await?.len(), 0, "the person's own pause is not told back");
+    assert_eq!(
+        s.notices().await?.len(),
+        0,
+        "the person's own pause is not told back"
+    );
 
     s.drive.stop(THREAD).await?;
     s.start().await?;
@@ -678,7 +753,10 @@ async fn handing_over_a_step_may_start_its_turn_at_once() -> anyhow::Result<()> 
     *FakeHost::lock(&s.host.on_deliver) = Some(s.drive.clone());
     tokio::time::timeout(std::time::Duration::from_secs(5), s.start()).await??;
     let record = s.record().await?;
-    assert_eq!((record.steps, record.inflight, record.started), (1, None, Some(1)));
+    assert_eq!(
+        (record.steps, record.inflight, record.started),
+        (1, None, Some(1))
+    );
     Ok(())
 }
 
@@ -686,7 +764,10 @@ async fn handing_over_a_step_may_start_its_turn_at_once() -> anyhow::Result<()> 
 async fn a_new_session_opens_in_its_folder_under_the_routers_account() -> anyhow::Result<()> {
     let s = setup().await?;
     let folder = s.work.path().join("01-snake");
-    let relative = s.drive.open_session(Path::new("01-snake"), Some(ROUTER)).await;
+    let relative = s
+        .drive
+        .open_session(Path::new("01-snake"), Some(ROUTER))
+        .await;
     assert!(relative.is_err());
     let thread = s.drive.open_session(&folder, Some(ROUTER)).await?;
     assert_eq!(thread, OPENED);
@@ -708,7 +789,11 @@ fn without_a_commit_the_plain_anchor_and_the_latest_project_record_are_read() ->
     std::fs::write(home.join("project.json"), "{}")?;
     let plain = codex_superagent_extension::drive::workspace(home)?;
     assert_eq!(
-        (plain.project.as_str(), plain.anchor.as_str(), plain.committed),
+        (
+            plain.project.as_str(),
+            plain.anchor.as_str(),
+            plain.committed
+        ),
         ("project.json", "route-anchor.json", false)
     );
     for name in ["project-r2.json", "project-r10.json"] {
@@ -736,7 +821,10 @@ fn an_audit_report_reads_as_its_delivery_scope() -> anyhow::Result<()> {
     });
     let audit = Audit::parse(&report)?;
     assert!(audit.deliverable());
-    assert_eq!(audit.summary(), "anchored；已核实 A1、A2、A3；未闭合 无；不一致 无");
+    assert_eq!(
+        audit.summary(),
+        "anchored；已核实 A1、A2、A3；未闭合 无；不一致 无"
+    );
     let failure = json!({
         "schema": "oev2.command-failure/1",
         "error": { "code": "invalid_contract", "reason": "input_or_output_contract_unavailable" },
@@ -753,25 +841,46 @@ async fn a_confirmed_goal_anchors_a_project_that_has_none() -> anyhow::Result<()
     let goal = Goal {
         request: "把图纸按零件号整理好".to_owned(),
         deliverable: "按零件号分好目录的图纸".to_owned(),
-        acceptance: vec!["A1：每张图纸在其零件号目录下".to_owned(), "目录名就是零件号".to_owned()],
+        acceptance: vec![
+            "A1：每张图纸在其零件号目录下".to_owned(),
+            "目录名就是零件号".to_owned(),
+        ],
     };
     let partial = Goal {
         acceptance: Vec::new(),
         ..goal.clone()
     };
-    assert!(s.drive.start(THREAD, anchored(home.clone(), Some(partial))).await.is_err());
+    assert!(
+        s.drive
+            .start(THREAD, anchored(home.clone(), Some(partial)))
+            .await
+            .is_err()
+    );
     assert!(!home.join("route-anchor.json").exists());
 
-    s.drive.start(THREAD, anchored(home.clone(), Some(goal.clone()))).await?;
-    assert_eq!(std::fs::read_to_string(home.join("request-root.txt"))?, "把图纸按零件号整理好");
+    s.drive
+        .start(THREAD, anchored(home.clone(), Some(goal.clone())))
+        .await?;
+    assert_eq!(
+        std::fs::read_to_string(home.join("request-root.txt"))?,
+        "把图纸按零件号整理好"
+    );
     let anchor = codex_superagent_extension::drive::Anchor::read(&home)?;
     assert_eq!(
         (anchor.deliverable.as_str(), anchor.acceptance.clone()),
         (
             "按零件号分好目录的图纸",
             vec![
-                ("A1".to_owned(), "每张图纸在其零件号目录下".to_owned(), "open".to_owned()),
-                ("A2".to_owned(), "目录名就是零件号".to_owned(), "open".to_owned()),
+                (
+                    "A1".to_owned(),
+                    "每张图纸在其零件号目录下".to_owned(),
+                    "open".to_owned()
+                ),
+                (
+                    "A2".to_owned(),
+                    "目录名就是零件号".to_owned(),
+                    "open".to_owned()
+                ),
             ]
         )
     );
@@ -781,7 +890,9 @@ async fn a_confirmed_goal_anchors_a_project_that_has_none() -> anyhow::Result<()
         deliverable: "别的交付物".to_owned(),
         ..goal
     };
-    s.drive.start(THREAD, anchored(home.clone(), Some(other))).await?;
+    s.drive
+        .start(THREAD, anchored(home.clone(), Some(other)))
+        .await?;
     let again = codex_superagent_extension::drive::Anchor::read(&home)?;
     assert_eq!(again.deliverable, "按零件号分好目录的图纸");
     Ok(())
@@ -797,7 +908,9 @@ async fn the_persons_feedback_reopens_items_and_waits_for_the_router() -> anyhow
         deliverable: "可试玩的贪吃蛇".to_owned(),
         acceptance: vec!["方向键控制".to_owned(), "吃到食物变长加分".to_owned()],
     };
-    s.drive.start(THREAD, anchored(home.clone(), Some(goal))).await?;
+    s.drive
+        .start(THREAD, anchored(home.clone(), Some(goal)))
+        .await?;
     let path = home.join("route-anchor.json");
     let mut anchor: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
     anchor["acceptance"][1]["status"] = json!("closed");
@@ -806,7 +919,10 @@ async fn the_persons_feedback_reopens_items_and_waits_for_the_router() -> anyhow
     std::fs::write(&path, anchor.to_string())?;
     s.judge.then(audit("drift", &[], &["A1"], "1"));
     s.turn("方向键做好了，请你在浏览器里试玩").await?;
-    assert!(matches!(s.record().await?.state, DriveState::NeedsDecision { .. }));
+    assert!(matches!(
+        s.record().await?.state,
+        DriveState::NeedsDecision { .. }
+    ));
 
     let words = "方向键能用，但是吃不到东西，也没有积分";
     let feedback = Feedback {
@@ -820,15 +936,29 @@ async fn the_persons_feedback_reopens_items_and_waits_for_the_router() -> anyhow
     s.drive.feedback(THREAD, feedback).await?;
     let anchor: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
     assert_eq!(
-        (anchor["requests"][1]["text"].clone(), anchor["acceptance"][1]["status"].clone()),
+        (
+            anchor["requests"][1]["text"].clone(),
+            anchor["acceptance"][1]["status"].clone()
+        ),
         (json!(words), json!("open"))
     );
     let record = s.record().await?;
     assert_eq!(record.corrections, vec![words.to_owned()]);
     assert!(matches!(record.state, DriveState::Reported { .. }));
-    assert_eq!(s.host.delivered().len(), 1, "the Router speaks next, not the engine");
+    assert_eq!(
+        s.host.delivered().len(),
+        1,
+        "the Router speaks next, not the engine"
+    );
     s.drive
-        .say(THREAD, say("先把吃食物和计分做上，用命令行测试自己跑通。", "吃不到东西", "吃到食物变长加分"))
+        .say(
+            THREAD,
+            say(
+                "先把吃食物和计分做上，用命令行测试自己跑通。",
+                "吃不到东西",
+                "吃到食物变长加分",
+            ),
+        )
         .await?;
     assert_eq!(s.host.delivered().len(), 2);
     Ok(())
@@ -838,7 +968,11 @@ async fn the_persons_feedback_reopens_items_and_waits_for_the_router() -> anyhow
 async fn while_a_step_runs_say_is_steered_into_it_and_interrupt_pauses() -> anyhow::Result<()> {
     let s = setup().await?;
     s.start().await?;
-    let next = say("方向错了，换成另一个仓库重新查。", "整理笔记目录，按主题分好", "按主题分好");
+    let next = say(
+        "方向错了，换成另一个仓库重新查。",
+        "整理笔记目录，按主题分好",
+        "按主题分好",
+    );
     // Handed over but not started: too early.
     let early = s.drive.say(THREAD, next.clone()).await;
     assert!(format!("{:#}", early.expect_err("not started")).contains("还没开始"));
@@ -846,7 +980,10 @@ async fn while_a_step_runs_say_is_steered_into_it_and_interrupt_pauses() -> anyh
     s.host.finish("inProgress", "在查");
     let record = s.drive.say(THREAD, next.clone()).await?.expect("a record");
     let last = record.history.last().expect("the steered step");
-    assert_eq!((record.steps, record.state.clone(), last.n, last.steered), (1, DriveState::Driving, 1, true));
+    assert_eq!(
+        (record.steps, record.state.clone(), last.n, last.steered),
+        (1, DriveState::Driving, 1, true)
+    );
     assert_eq!(
         FakeHost::lock(&s.host.calls).last().map(String::as_str),
         Some(&format!("deliver:{THREAD}:Steer")[..])
@@ -857,10 +994,15 @@ async fn while_a_step_runs_say_is_steered_into_it_and_interrupt_pauses() -> anyh
     // The turn ends normally afterwards: its conclusion is read as usual.
     s.host.finish("completed", "换好了");
     s.drive.step(THREAD).await?;
-    assert!(matches!(s.record().await?.state, DriveState::Reported { .. }));
+    assert!(matches!(
+        s.record().await?.state,
+        DriveState::Reported { .. }
+    ));
 
     // The Router stops a running step: the drive pauses and the host interrupts the turn.
-    s.drive.say(THREAD, say("接着做。", "换好了", "按主题分好")).await?;
+    s.drive
+        .say(THREAD, say("接着做。", "换好了", "按主题分好"))
+        .await?;
     s.drive.turn_started(THREAD).await?;
     let paused = s.drive.interrupt(THREAD).await?.expect("a record");
     assert_eq!(
@@ -870,7 +1012,11 @@ async fn while_a_step_runs_say_is_steered_into_it_and_interrupt_pauses() -> anyh
         }
     );
     s.drive.turn_interrupted(THREAD).await?;
-    assert_eq!(s.record().await?.state, paused.state, "the hook keeps the Router's reason");
+    assert_eq!(
+        s.record().await?.state,
+        paused.state,
+        "the hook keeps the Router's reason"
+    );
     Ok(())
 }
 
@@ -889,33 +1035,58 @@ async fn a_step_failing_on_its_account_goes_again_on_the_account_that_resets_soo
 
     // The model is at capacity on the session's account: it cools down, the next goes.
     s.drive.turn_started(THREAD).await?;
-    s.host.fail("serverOverloaded", "Selected model is at capacity. Please try a different model.");
+    s.host.fail(
+        "serverOverloaded",
+        "Selected model is at capacity. Please try a different model.",
+    );
     s.drive.step(THREAD).await?;
     let record = s.record().await?;
     assert_eq!(
-        (record.state.clone(), record.steps, record.inflight, record.account.clone()),
+        (
+            record.state.clone(),
+            record.steps,
+            record.inflight,
+            record.account.clone()
+        ),
         (DriveState::Driving, 1, Some(1), Some("sooner".to_owned()))
     );
-    assert_eq!(FakeHost::lock(&s.host.bound).clone(), vec!["sooner".to_owned()]);
-    assert_eq!(s.host.delivered(), vec![FIRST.to_owned(), FIRST.to_owned()], "the same step again");
+    assert_eq!(
+        FakeHost::lock(&s.host.bound).clone(),
+        vec!["sooner".to_owned()]
+    );
+    assert_eq!(
+        s.host.delivered(),
+        vec![FIRST.to_owned(), FIRST.to_owned()],
+        "the same step again"
+    );
     let cooling = s.drive.cooldowns().await?;
     let until = cooling.get("lab-account").expect("cooling down").until;
     let left = until - chrono::Utc::now().timestamp();
     assert!((14 * 60..=15 * 60).contains(&left), "{left}");
     let notices = s.notices().await?;
-    assert!(notices.last().expect("a notice").contains("已换到 sooner"), "{notices:?}");
+    assert!(
+        notices.last().expect("a notice").contains("已换到 sooner"),
+        "{notices:?}"
+    );
 
     // Out of quota there too: it cools down until its reset, and the step goes on the next.
     s.drive.turn_started(THREAD).await?;
-    s.host.fail("usageLimitExceeded", "You've hit your usage limit.");
+    s.host
+        .fail("usageLimitExceeded", "You've hit your usage limit.");
     s.drive.step(THREAD).await?;
     assert_eq!(s.record().await?.account.as_deref(), Some("later"));
     let sooner_reset = FakeHost::lock(&s.accounts.pool)[3].resets_at;
-    assert_eq!(s.drive.cooldowns().await?.get("sooner").map(|c| c.until), sooner_reset);
+    assert_eq!(
+        s.drive.cooldowns().await?.get("sooner").map(|c| c.until),
+        sooner_reset
+    );
 
     // Nothing left that is paid, has quota and is not cooling down: the drive pauses.
     s.drive.turn_started(THREAD).await?;
-    s.host.fail("serverOverloaded", "Selected model is at capacity. Please try a different model.");
+    s.host.fail(
+        "serverOverloaded",
+        "Selected model is at capacity. Please try a different model.",
+    );
     s.drive.step(THREAD).await?;
     match s.record().await?.state {
         DriveState::Paused { reason } => assert!(reason.contains("没有可换的账号"), "{reason}"),
@@ -936,7 +1107,8 @@ async fn other_failures_pause_with_their_error_and_the_router_can_switch_account
     ];
     s.start().await?;
     s.drive.turn_started(THREAD).await?;
-    s.host.fail("contextWindowExceeded", "context window exceeded");
+    s.host
+        .fail("contextWindowExceeded", "context window exceeded");
     s.drive.step(THREAD).await?;
     assert_eq!(
         s.record().await?.state,
@@ -946,12 +1118,26 @@ async fn other_failures_pause_with_their_error_and_the_router_can_switch_account
     );
     assert!(FakeHost::lock(&s.host.bound).is_empty());
 
-    let (record, label) = s.drive.switch_account(THREAD, Some("later".to_owned())).await?;
+    let (record, label) = s
+        .drive
+        .switch_account(THREAD, Some("later".to_owned()))
+        .await?;
     assert!(label.starts_with("later（剩 90%"), "{label}");
-    assert_eq!(record.and_then(|record| record.account), Some("later".to_owned()));
+    assert_eq!(
+        record.and_then(|record| record.account),
+        Some("later".to_owned())
+    );
     let (_, label) = s.drive.switch_account(THREAD, None).await?;
-    assert!(label.starts_with("lab-account"), "the next by reset time, not the current one: {label}");
-    assert!(s.drive.switch_account(THREAD, Some("nobody".to_owned())).await.is_err());
+    assert!(
+        label.starts_with("lab-account"),
+        "the next by reset time, not the current one: {label}"
+    );
+    assert!(
+        s.drive
+            .switch_account(THREAD, Some("nobody".to_owned()))
+            .await
+            .is_err()
+    );
 
     s.host.finish("inProgress", "在做");
     let busy = s.drive.switch_account(THREAD, None).await;
@@ -974,18 +1160,39 @@ fn the_account_status_report_reads_as_a_pool() -> anyhow::Result<()> {
     assert_eq!(
         pool,
         vec![
-            AccountInfo { name: "kalliesallerwu".to_owned(), plan: "pro".to_owned(), usable: true,
-                remaining: 40.0, resets_at: Some(1793900000) },
-            AccountInfo { name: "OmarGuthorn8".to_owned(), plan: "free".to_owned(), usable: true,
-                remaining: 100.0, resets_at: Some(1796000000) },
-            AccountInfo { name: "broken".to_owned(), plan: "pro".to_owned(), usable: false,
-                remaining: 0.0, resets_at: None },
+            AccountInfo {
+                name: "kalliesallerwu".to_owned(),
+                plan: "pro".to_owned(),
+                usable: true,
+                remaining: 40.0,
+                resets_at: Some(1793900000)
+            },
+            AccountInfo {
+                name: "OmarGuthorn8".to_owned(),
+                plan: "free".to_owned(),
+                usable: true,
+                remaining: 100.0,
+                resets_at: Some(1796000000)
+            },
+            AccountInfo {
+                name: "broken".to_owned(),
+                plan: "pro".to_owned(),
+                usable: false,
+                remaining: 0.0,
+                resets_at: None
+            },
         ]
     );
     let chosen = codex_superagent_extension::drive::choose(
-        &pool, &std::collections::BTreeMap::new(), 0, None,
+        &pool,
+        &std::collections::BTreeMap::new(),
+        0,
+        None,
     );
-    assert_eq!(chosen.map(|account| account.name.as_str()), Some("kalliesallerwu"));
+    assert_eq!(
+        chosen.map(|account| account.name.as_str()),
+        Some("kalliesallerwu")
+    );
     Ok(())
 }
 
@@ -1010,11 +1217,22 @@ async fn a_router_turn_failing_on_its_account_moves_the_router_and_hands_it_the_
         ..TurnBrief::default()
     });
     s.drive.router_turn_failed(THREAD).await?;
-    assert_eq!(FakeHost::lock(&s.host.bound).clone(), vec!["sooner".to_owned()]);
+    assert_eq!(
+        FakeHost::lock(&s.host.bound).clone(),
+        vec!["sooner".to_owned()]
+    );
     let sent = s.host.delivered();
     assert_eq!(sent.len(), 1);
-    assert!(sent[0].starts_with("[通知] Router 的账号模型满载"), "{}", sent[0]);
-    assert!(sent[0].contains("已换到 sooner") && sent[0].ends_with(words), "{}", sent[0]);
+    assert!(
+        sent[0].starts_with("[通知] Router 的账号模型满载"),
+        "{}",
+        sent[0]
+    );
+    assert!(
+        sent[0].contains("已换到 sooner") && sent[0].ends_with(words),
+        "{}",
+        sent[0]
+    );
     assert_eq!(
         FakeHost::lock(&s.host.calls).last().map(String::as_str),
         Some(&format!("deliver:{THREAD}:Steer")[..])
@@ -1027,5 +1245,210 @@ async fn a_router_turn_failing_on_its_account_moves_the_router_and_hands_it_the_
     s.host.finish("completed", "好的");
     s.drive.router_turn_failed(THREAD).await?;
     assert_eq!(FakeHost::lock(&s.host.bound).len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_look_before_the_end_reached_the_history_waits_and_then_reads_it() -> anyhow::Result<()> {
+    let s = setup().await?;
+    s.start().await?;
+    s.drive.turn_started(THREAD).await?;
+    // The stop hook ran, and the history still shows the turn running: the look fails, so the
+    // effect queue runs it again shortly, instead of dropping it and leaving the drive stuck.
+    s.host.finish("inProgress", "整理到一半");
+    s.drive.turn_stopped(THREAD).await?;
+    let early = s.drive.step(THREAD).await;
+    assert!(format!("{:#}", early.expect_err("not settled")).contains("还没写进会话记录"));
+    assert_eq!(s.record().await?.state, DriveState::Driving);
+    // Neither may the Router steer into a turn that has ended.
+    let next = say("接着做索引。", "整理笔记目录", "按主题分好");
+    let refused = s.drive.say(THREAD, next).await;
+    assert!(format!("{:#}", refused.expect_err("ended")).contains("正在读它的结论"));
+    // The history caught up: the same look reads the conclusion.
+    *FakeHost::lock(&s.host.latest) = Some(TurnBrief {
+        id: "turn-1".to_owned(),
+        status: "completed".to_owned(),
+        assistant: vec!["分好了 3 个主题目录".to_owned()],
+        ..TurnBrief::default()
+    });
+    s.drive.step(THREAD).await?;
+    assert_eq!(
+        s.record().await?.state,
+        DriveState::Reported {
+            summary: "分好了 3 个主题目录".to_owned()
+        }
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_failure_the_history_shows_as_an_interruption_is_read_from_the_error_hook()
+-> anyhow::Result<()> {
+    let s = setup().await?;
+    *FakeHost::lock(&s.accounts.pool) = vec![
+        account("lab-account", "pro", 60.0, 6),
+        account("sooner", "pro", 80.0, 24),
+    ];
+    s.start().await?;
+    s.drive.turn_started(THREAD).await?;
+    // The account ran out; the session stopped before the error reached the history, which
+    // shows the turn interrupted and without its error.
+    s.drive.turn_failed(
+        THREAD,
+        "turn-1",
+        &codex_protocol::protocol::CodexErrorInfo::UsageLimitExceeded,
+        "You've hit your usage limit.",
+    );
+    s.host.finish("interrupted", "");
+    s.drive.turn_stopped(THREAD).await?;
+    s.drive.step(THREAD).await?;
+    let record = s.record().await?;
+    assert_eq!(
+        (record.state, record.account),
+        (DriveState::Driving, Some("sooner".to_owned())),
+        "the step goes again on another account"
+    );
+    assert_eq!(s.host.delivered(), vec![FIRST.to_owned(), FIRST.to_owned()]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_step_that_broke_off_on_the_network_goes_again_once() -> anyhow::Result<()> {
+    let s = setup().await?;
+    s.start().await?;
+    s.drive.turn_started(THREAD).await?;
+    s.host.fail(
+        "other",
+        "stream disconnected before completion: error decoding response body",
+    );
+    s.drive.step(THREAD).await?;
+    let record = s.record().await?;
+    match &record.state {
+        DriveState::Paused { reason } => {
+            assert!(
+                reason.ends_with(codex_superagent_extension::drive::RETRYING),
+                "{reason}"
+            )
+        }
+        other => panic!("not paused for the resend: {other:?}"),
+    }
+    assert_eq!(record.retried, Some(1));
+    assert!(
+        s.notices().await?.is_empty(),
+        "the resend is the engine's own business"
+    );
+    s.drive.resend_step(THREAD, 1).await?;
+    let record = s.record().await?;
+    assert_eq!(
+        (record.state, record.steps, record.inflight),
+        (DriveState::Driving, 1, Some(1))
+    );
+    assert_eq!(s.host.delivered(), vec![FIRST.to_owned(), FIRST.to_owned()]);
+    // The same step breaks off again: the drive pauses with the error.
+    s.drive.turn_started(THREAD).await?;
+    s.host.fail("other", "workspace routing discovery failed");
+    s.drive.step(THREAD).await?;
+    assert_eq!(
+        s.record().await?.state,
+        DriveState::Paused {
+            reason: "第 1 步没有正常结束（failed：workspace routing discovery failed）".to_owned()
+        }
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_resend_after_the_router_spoke_does_nothing() -> anyhow::Result<()> {
+    let s = setup().await?;
+    s.start().await?;
+    s.drive.turn_started(THREAD).await?;
+    s.host.fail(
+        "responseStreamDisconnected",
+        "stream disconnected before completion",
+    );
+    s.drive.step(THREAD).await?;
+    // The Router hands the session back before the resend comes.
+    s.drive.resume(THREAD).await?;
+    s.drive.resend_step(THREAD, 1).await?;
+    assert_eq!(s.host.delivered().len(), 1, "nothing was sent again");
+    assert!(matches!(
+        s.record().await?.state,
+        DriveState::Reported { .. }
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_step_that_ends_while_the_drive_is_paused_keeps_its_conclusion() -> anyhow::Result<()> {
+    let s = setup().await?;
+    s.start().await?;
+    s.drive.turn_started(THREAD).await?;
+    // The Router parks the session while its step still runs.
+    s.drive.pause(THREAD, "你接管了这个会话").await?;
+    s.host
+        .finish("completed", "分好了 3 个主题目录，索引也写了");
+    s.drive.turn_stopped(THREAD).await?;
+    s.drive.step(THREAD).await?;
+    let record = s.record().await?;
+    assert_eq!(
+        record.state,
+        DriveState::Paused {
+            reason: format!(
+                "你接管了这个会话{}",
+                codex_superagent_extension::drive::DONE_WHILE_PAUSED
+            )
+        }
+    );
+    assert_eq!(
+        record.report.map(|report| report.text),
+        Some("分好了 3 个主题目录，索引也写了".to_owned())
+    );
+    assert!(
+        s.notices().await?.is_empty(),
+        "a pause the Router made is not told back"
+    );
+    // Handed back, the Router answers the conclusion the step ended with.
+    s.drive
+        .say(
+            THREAD,
+            say("把索引按日期排一遍。", "索引也写了", "按主题分好"),
+        )
+        .await?;
+    assert_eq!(s.record().await?.steps, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_step_said_while_a_turn_still_runs_joins_that_turn() -> anyhow::Result<()> {
+    let s = setup().await?;
+    s.start().await?;
+    s.drive.turn_started(THREAD).await?;
+    s.drive.pause(THREAD, "你接管了这个会话").await?;
+    // The step's turn still runs when the Router speaks again: the words join it, and no turn of
+    // the step's own is waited for.
+    s.host.finish("inProgress", "还在整理");
+    let record = s
+        .drive
+        .say(
+            THREAD,
+            say("顺便把索引也写了。", "整理笔记目录", "按主题分好"),
+        )
+        .await?
+        .expect("a record");
+    assert_eq!(
+        (record.steps, record.inflight, record.started, record.state),
+        (2, None, Some(2), DriveState::Driving)
+    );
+    // That turn's end answers step 2.
+    s.host.end_latest("completed", "分好了，索引也写了");
+    s.drive.turn_stopped(THREAD).await?;
+    s.drive.step(THREAD).await?;
+    assert!(
+        s.notices()
+            .await?
+            .last()
+            .expect("a notice")
+            .contains("第 2 步结束")
+    );
     Ok(())
 }
