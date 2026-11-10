@@ -312,6 +312,32 @@ impl SuperagentHost for AppServerSuperagentHost {
         })
     }
 
+    fn start_queued(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<bool>> {
+        Box::pin(async move {
+            let Some(queue) = self.queue_service.as_ref() else {
+                return Ok(false);
+            };
+            if queue.list(thread).await?.is_empty() {
+                return Ok(false);
+            }
+            // A thread that is not loaded starts its queue when it loads.
+            let Ok(loaded) = self.thread(thread).await else {
+                return Ok(false);
+            };
+            let submission = queue
+                .start(
+                    loaded.as_ref(),
+                    /*queued_item_id*/ None,
+                    /*trace*/ None,
+                )
+                .await?;
+            Ok(matches!(
+                submission,
+                codex_core::StartIfIdleSubmission::Started { .. }
+            ))
+        })
+    }
+
     fn start_thread(&self, spec: ThreadSpec) -> BoxFut<'_, anyhow::Result<ThreadId>> {
         Box::pin(async move {
             let ThreadSpec {

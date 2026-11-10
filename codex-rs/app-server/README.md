@@ -53,11 +53,12 @@ replaced by an empty database after corruption or a migration error.
 After opting into `initialize.capabilities.experimentalApi`, call
 `superagent/status` with no parameters. The response is
 `{ "exitCode": 0, "status": { ... } }`. Status includes initialization, registered
-PMs and their project groups, open tickets, health, queued effects, and questions
-waiting for a person. Exit codes are 0 (healthy), 2 (failed component or stalled
-ticket), and 3 (initialization or PM configuration incomplete). A disabled feature
-returns an RPC error. This status does not prove which account an upstream
-account gateway used for a model request.
+PMs and their project groups, open tickets, health, queued effects, questions
+waiting for a person, and the account moves the coordinator made for the Router
+and driven sessions (`accountMoves`). Exit codes are 0 (healthy), 2 (failed
+component or stalled ticket), and 3 (initialization or PM configuration
+incomplete). A disabled feature returns an RPC error. This status does not prove
+which account an upstream account gateway used for a model request.
 
 PM registrations live in `CODEX_HOME/superagent/pm-threads`. Each line has a
 thread ID and optional `project=`, `repo=`, `base=`, `worktrees=`, and `account=`
@@ -81,7 +82,10 @@ threads of open tickets) are left to its own startup reconciliation: the daemon
 snapshot skips them, shutdown stops the coordinator's scheduling before the
 snapshot is taken, and a registered `AutomaticTurnArbiter` declines Goal and
 daemon-recovery turns on them (`NotSubmittedReason::DeclinedByDriver`). Queue
-starts stay allowed, since the coordinator delivers through the queue.
+starts stay allowed, since the coordinator delivers through the queue, except
+while the coordinator moves a Router to another account at the end of a turn:
+that start waits (at most a minute) and the coordinator then starts the queued
+input itself through the host, on the new account.
 
 The organization's working files default to `CODEX_HOME/superagent`;
 `CODEXT_SUPERAGENT_ROOT` selects another absolute directory. There is no built-in
