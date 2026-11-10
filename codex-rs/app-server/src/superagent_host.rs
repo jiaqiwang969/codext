@@ -24,6 +24,7 @@ use codex_goal_extension::GoalTokenBudgetUpdate;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadGoalStatus;
+use codex_protocol::turn_input::TurnInputSubmission;
 use codex_protocol::user_input::UserInput;
 use codex_queue_extension::QueuedItemService;
 use codex_state::StateRuntime;
@@ -32,6 +33,7 @@ use codex_superagent_extension::host::DeliveryMode;
 use codex_superagent_extension::host::GoalStatus;
 use codex_superagent_extension::host::SessionBrief;
 use codex_superagent_extension::host::SessionPage;
+use codex_superagent_extension::host::StepStart;
 use codex_superagent_extension::host::SuperagentHost;
 use codex_superagent_extension::host::ThreadSpec;
 use codex_superagent_extension::host::TurnBrief;
@@ -551,7 +553,7 @@ impl SuperagentHost for AppServerSuperagentHost {
         })
     }
 
-    fn start_step(&self, thread: ThreadId, text: String) -> BoxFut<'_, anyhow::Result<()>> {
+    fn start_step(&self, thread: ThreadId, text: String) -> BoxFut<'_, anyhow::Result<StepStart>> {
         Box::pin(async move {
             // A cold session loads with the config's defaults; the step's own settings below are
             // what its turn runs under.
@@ -564,14 +566,27 @@ impl SuperagentHost for AppServerSuperagentHost {
             request.thread_settings.approval_policy =
                 Some(codex_protocol::protocol::AskForApproval::Never);
             request.start.turn_trigger = Some("drive".to_owned());
-            self.thread(thread)
+            let submitted = self
+                .thread(thread)
                 .await?
                 .start_or_steer_turn(request)
                 .await
                 .map_err(|err| {
                     anyhow::anyhow!("starting a drive step on {thread} failed: {err}")
                 })?;
-            Ok(())
+            // A turn that runs already takes the step's words; the drive must know, since no
+            // turn of the step's own will start.
+            match submitted {
+                TurnInputSubmission::Started { turn_id, .. } => Ok(StepStart::Started {
+                    turn: Some(turn_id),
+                }),
+                TurnInputSubmission::Steered { turn_id, .. } => Ok(StepStart::Steered {
+                    turn: Some(turn_id),
+                }),
+                TurnInputSubmission::NotSubmitted { reason } => Err(anyhow::anyhow!(
+                    "the drive step on {thread} was not submitted: {reason:?}"
+                )),
+            }
         })
     }
 

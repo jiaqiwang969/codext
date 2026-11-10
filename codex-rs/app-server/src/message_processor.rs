@@ -360,18 +360,17 @@ impl MessageProcessor {
         let turn_start_admission: Arc<dyn TurnStartAdmission> = Arc::new(turn_admission.clone());
         let extension_event_sink =
             app_server_extension_event_sink(outgoing.clone(), thread_state_manager.clone());
-        let superagent = if superagent_host
-            && config.features.enabled(codex_features::Feature::Superagent)
-        {
-            state_db.as_ref().map(|state_db| {
-                Arc::new(codex_superagent_extension::SuperagentService::new(
-                    Arc::clone(state_db),
-                    config.codex_home.as_path().join("superagent"),
-                ))
-            })
-        } else {
-            None
-        };
+        let superagent =
+            if superagent_host && config.features.enabled(codex_features::Feature::Superagent) {
+                state_db.as_ref().map(|state_db| {
+                    Arc::new(codex_superagent_extension::SuperagentService::new(
+                        Arc::clone(state_db),
+                        config.codex_home.as_path().join("superagent"),
+                    ))
+                })
+            } else {
+                None
+            };
         let mut queue_service = None;
         let sample_responses = Arc::new(crate::thread_sample::SampleResponseRegistry::default());
         let thread_manager = Arc::new_cyclic(|thread_manager| {
