@@ -41,6 +41,7 @@ pub use standing::standing_section;
 
 use crate::SuperagentService;
 use crate::cards::truncate_chars;
+use crate::drive::StandingRule;
 use crate::host::SessionBrief;
 
 /// The file under the extension's directory that holds the Router's level.
@@ -256,7 +257,7 @@ impl ContextContributor for RouterContext {
                         }
                         match drive.standing_rules().await {
                             Ok(rules) => sections.push(standing_section(
-                                rules.iter().map(|rule| rule.line()).collect(),
+                                rules.iter().map(StandingRule::line).collect(),
                             )),
                             Err(err) => tracing::warn!(
                                 "superagent: the standing rules are unavailable: {err:#}"

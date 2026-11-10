@@ -217,10 +217,7 @@ impl DriveService {
                 let woke = self
                     .change_locked(&record.thread_id, |record| {
                         // The Router spoke to the session meanwhile: nothing to wake.
-                        if record.wait.is_none() {
-                            return None;
-                        }
-                        record.wait = None;
+                        record.wait.take()?;
                         record.state = state;
                         Some(record.clone())
                     })
