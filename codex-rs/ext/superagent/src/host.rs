@@ -23,6 +23,8 @@ pub struct ThreadSpec {
     /// The role file to apply, such as `worker`.
     pub role: Option<String>,
     pub developer_instructions: Option<String>,
+    /// The thread may look but not change anything: a read-only sandbox, never asking.
+    pub read_only: bool,
 }
 
 /// Whether an input waits for the current turn to end or is steered into it.

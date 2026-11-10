@@ -378,6 +378,7 @@ impl SuperagentHost for AppServerSuperagentHost {
                 model,
                 role,
                 developer_instructions,
+                read_only,
             } = spec;
             // The role file (`agents/<role>.toml` in any config layer) fills what the spec leaves
             // open: the model, the developer instructions and the reasoning effort. Without it a
@@ -396,6 +397,10 @@ impl SuperagentHost for AppServerSuperagentHost {
             let params = ThreadStartParams {
                 cwd: Some(cwd.to_string_lossy().into_owned()),
                 model: model.or(role.model),
+                // A thread that only looks (the drive's drafter) never changes anything.
+                sandbox: read_only.then_some(codex_app_server_protocol::SandboxMode::ReadOnly),
+                approval_policy: read_only
+                    .then_some(codex_app_server_protocol::AskForApproval::Never),
                 developer_instructions: developer_instructions.or(role.developer_instructions),
                 config: (!overrides.is_empty()).then_some(overrides),
                 ephemeral: Some(false),

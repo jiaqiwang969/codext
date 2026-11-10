@@ -642,6 +642,7 @@ impl CodextThreadExecutor {
                     model: self.inner.config.model.clone(),
                     role: Some(self.inner.config.worker_role.clone()),
                     developer_instructions: None,
+                    read_only: false,
                 };
                 let thread = match self.inner.host.start_thread(spec).await {
                     Ok(thread) => thread,
