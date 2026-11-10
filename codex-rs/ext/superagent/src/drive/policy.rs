@@ -23,12 +23,19 @@ pub const RESCUE_THRESHOLD_VAR: &str = "CODEXT_SUPERAGENT_ROUTER_RESCUE_THRESHOL
 pub const RESCUE_WINDOW_SECS_VAR: &str = "CODEXT_SUPERAGENT_ROUTER_RESCUE_WINDOW_SECS";
 /// How many sessions at work an account carries before a move passes it by; 0 turns it off.
 pub const MAX_PER_ACCOUNT_VAR: &str = "CODEXT_SUPERAGENT_MAX_PER_ACCOUNT";
+/// How many reset cards the engine may use in a day when no account can take a move; 0 (the
+/// default) leaves the cards to the person.
+pub const RESET_CARDS_PER_DAY_VAR: &str = "CODEXT_SUPERAGENT_RESET_CARDS_PER_DAY";
+/// How many hours off an account's natural reset must be for the engine to card it.
+pub const RESET_CARD_MIN_HOURS_VAR: &str = "CODEXT_SUPERAGENT_RESET_CARD_MIN_HOURS";
 
 const WATCH_EVERY: Duration = Duration::from_secs(120);
 const RESCUE_AFTER: usize = 2;
 const RESCUE_WINDOW: Duration = Duration::from_secs(180);
 /// The person's rule: three or four sessions per account.
 const MAX_PER_ACCOUNT: usize = 4;
+/// A card given to an account that resets on its own within this long is mostly wasted.
+const CARD_RESET_AWAY: Duration = Duration::from_secs(12 * 3600);
 /// How old the pool may be, when nothing watches it, before a check reads it again.
 const POOL_MAX_AGE: Duration = Duration::from_secs(240);
 
@@ -66,6 +73,11 @@ pub struct AccountPolicy {
     /// How many sessions at work (driven sessions and Routers) an account carries before the
     /// engine's own moves pass it by, while another account has room; zero turns it off.
     pub max_per_account: usize,
+    /// How many reset cards the engine may use in a day when no account can take a move
+    /// (`reset_cards.rs`); zero leaves them to the person.
+    pub cards_per_day: usize,
+    /// How far off an account's natural reset must be for the engine to card it.
+    pub card_reset_away: Duration,
 }
 
 impl Default for AccountPolicy {
@@ -76,6 +88,8 @@ impl Default for AccountPolicy {
             rescue_after: RESCUE_AFTER,
             rescue_window: RESCUE_WINDOW,
             max_per_account: MAX_PER_ACCOUNT,
+            cards_per_day: 0,
+            card_reset_away: CARD_RESET_AWAY,
         }
     }
 }
@@ -115,6 +129,13 @@ impl AccountPolicy {
             max_per_account: value(MAX_PER_ACCOUNT_VAR)
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(defaults.max_per_account),
+            cards_per_day: value(RESET_CARDS_PER_DAY_VAR)
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(defaults.cards_per_day),
+            card_reset_away: value(RESET_CARD_MIN_HOURS_VAR)
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(|hours| Duration::from_secs(hours * 3600))
+                .unwrap_or(defaults.card_reset_away),
         }
     }
 

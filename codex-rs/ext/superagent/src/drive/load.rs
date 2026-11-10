@@ -101,8 +101,13 @@ impl DriveService {
         thresholds: Thresholds,
     ) -> anyhow::Result<Option<AccountInfo>> {
         let roomy = self.roomy(pool, current).await?;
-        Ok(accounts::pick(&roomy, cooling, now, current, thresholds)
+        let picked = accounts::pick(&roomy, cooling, now, current, thresholds)
             .or_else(|| accounts::pick(pool, cooling, now, current, thresholds))
-            .cloned())
+            .cloned();
+        // No account can take the move: a reset card may refill one (off unless allowed).
+        Ok(match picked {
+            Some(account) => Some(account),
+            None => self.refill_with_card(pool, now, current).await,
+        })
     }
 }

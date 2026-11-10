@@ -71,6 +71,8 @@ pub struct Status {
     pub ended_cooldowns: Vec<crate::drive::EndedCooldown>,
     /// Every driven session, in the shape of the drives' events.
     pub drives: Vec<crate::drive::DriveStatus>,
+    /// The reset cards the drive used when no account could take a move, oldest first.
+    pub reset_cards: Vec<crate::drive::CardUse>,
     /// The exit code the watchdog acts on (`exit_code`).
     pub exit_code: i32,
 }
@@ -185,6 +187,7 @@ pub async fn status_with(
     let mut account_moves = Vec::new();
     let mut ended_cooldowns = Vec::new();
     let mut drives = Vec::new();
+    let mut reset_cards = Vec::new();
     let mut tickets = Vec::new();
     let mut attention = Vec::new();
     let mut pm_groups = pm_threads
@@ -217,6 +220,7 @@ pub async fn status_with(
                 .iter()
                 .map(crate::drive::DriveStatus::of)
                 .collect();
+            reset_cards = drive.card_uses().await?;
         }
         let host = service.host();
         let open_ticket_rows = runtime.store.tickets_open().await?;
@@ -268,6 +272,7 @@ pub async fn status_with(
         account_moves,
         ended_cooldowns,
         drives,
+        reset_cards,
         exit_code: 0,
     };
     status.exit_code = exit_code(&status);

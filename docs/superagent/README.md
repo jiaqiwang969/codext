@@ -46,6 +46,7 @@ Superagent 是跑在 app-server daemon 里的组织引擎。Router 是它管的�
 - 冷却提前结束：额度用完的账号常被用户用重置卡充回。引擎之后新读到这个账号（读它自己或读整个账号池）能用、剩余不低于软阈值、而且比它用完时读到的多，就在这次读时结束它的冷却，同一次检查就能换到它。用完时读到的额度本来就不低的账号（读不出用完的是哪项额度）照旧冷却到重置时间；满载的冷却不提前结束。提前结束的冷却记在 `superagent/status` 的 `endedCooldowns` 里（最近 30 次）。
 - 手动：Router 可以用 `switch_account` 给会话换号。用户指定新的推进用哪个账号时，`start` 带上 `account`：新会话直接在这个账号上开，已有的会话在第一步之前换过去，这一步不会被提前换走。
 - 每次换号都记在 `superagent/status` 的 `accountMoves` 里（最近 30 次）。
+- 重置卡（默认关）：`CODEXT_SUPERAGENT_RESET_CARDS_PER_DAY` 设成大于 0 时，没有任何账号能接手（当前账号已用完、别的也都用完或在冷却）的那一刻，引擎自己用一张重置卡。只给已经用完、而且自然重置还在 12 小时以外的账号用，自然重置最晚的先用；同一个账号先用最早过期的卡。一张卡把账号充回满额，并从用的那一刻重新算 7 天，所以快自然重置的账号不值得用卡。用了就通知 Router，记在 `superagent/status` 的 `resetCards` 里（最近 30 次）；24 小时内最多用这么多张。
 
 可调的值放在 daemon 的环境变量里，daemon 启动时读一次：
 
@@ -57,6 +58,8 @@ Superagent 是跑在 app-server daemon 里的组织引擎。Router 是它管的�
 | `CODEXT_SUPERAGENT_ROUTER_RESCUE_THRESHOLD` | 2 | Router 同一轮出现几次满载或额度用完就打断换号；0 关掉 |
 | `CODEXT_SUPERAGENT_ROUTER_RESCUE_WINDOW_SECS` | 180 | 上面这几次要落在多少秒之内 |
 | `CODEXT_SUPERAGENT_MAX_PER_ACCOUNT` | 4 | 一个账号上有几路在做，引擎自己换号时就跳过它；0 关掉 |
+| `CODEXT_SUPERAGENT_RESET_CARDS_PER_DAY` | 0 | 没有账号能接手时，引擎 24 小时内最多自己用几张重置卡；0 不用，留给用户 |
+| `CODEXT_SUPERAGENT_RESET_CARD_MIN_HOURS` | 12 | 自然重置还有多少小时以上的账号才值得用卡 |
 
 **权限。** 推进的步骤用完全访问：不加沙箱，不问批准，可以用本机软件和浏览器。
 
@@ -94,7 +97,7 @@ daemon 可以随时重启。重启后引擎逐个检查推进中的会话：已�
 | `drive/notices.rs` | 给 Router 的通知：Router 忙时攒着，空下来并成一条，过期的不送，送给开这次推进的 Router |
 | `drive/wait.rs`、`drive/sweep.rs`、`drive/events.rs` | 停放等待；每分钟的巡检和标记；事件流和 `superagent/status` 里的 `drives` |
 | `drive/report.rs`、`drive/progress.rs` | 取结论、判定、通知卡片；文件夹里有没有新写入 |
-| `drive/accounts.rs`、`drive/cooldown.rs`、`drive/policy.rs`、`drive/load.rs` | 账号池、挑号、要不要换号的判断（`plan`）；账号冷却，读到额度回来就提前结束；可调的值；每个账号上有几路 |
+| `drive/accounts.rs`、`drive/cooldown.rs`、`drive/policy.rs`、`drive/load.rs`、`drive/reset_cards.rs` | 账号池、挑号、要不要换号的判断（`plan`）；账号冷却，读到额度回来就提前结束；可调的值；每个账号上有几路；没有账号能接手时用重置卡 |
 | `drive/pool.rs`、`drive/step_account.rs`、`drive/switch.rs` | 读账号的额度和账号池、换号记录；每步前的检查、指定账号开始推进；推进会话失败后的换号 |
 | `drive/router_account.rs`、`drive/router_rescue.rs` | Router 提前换号（定时查看、一轮结束、送话前）和兜底（失败或卡在重连的一轮） |
 | `drive/anchor.rs`、`drive/audit.rs` | 锚定目标和 oev2 判定 |

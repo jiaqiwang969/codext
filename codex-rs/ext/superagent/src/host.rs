@@ -41,6 +41,29 @@ pub enum StepStart {
     Steered { turn: Option<String> },
 }
 
+/// One reset card of an account, as the host reads it: using it refills that account's quota.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResetCard {
+    pub id: String,
+    /// Whether it can still be used.
+    pub available: bool,
+    /// When it expires, Unix seconds.
+    pub expires_at: Option<i64>,
+}
+
+/// What using a reset card did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResetOutcome {
+    /// The account's quota is full again.
+    Reset,
+    /// The account was not used up; the card stays.
+    NothingToReset,
+    /// There is no such card.
+    NoCard,
+    /// The card was used already.
+    AlreadyUsed,
+}
+
 /// A thread's Goal, as the executor reads it: only the budget states matter to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GoalStatus {
@@ -226,6 +249,23 @@ pub trait SuperagentHost: Send + Sync {
         let _ = thread;
         Box::pin(async { Ok(None) })
     }
+    /// The reset cards of the account `profile` (each refills that account's quota once). A host
+    /// that cannot read them says so.
+    fn reset_cards(&self, profile: String) -> BoxFut<'_, anyhow::Result<Vec<ResetCard>>> {
+        let _ = profile;
+        Box::pin(async { anyhow::bail!("this host cannot read reset cards") })
+    }
+    /// Uses the reset card `card` on the account `profile`; `key` makes a repeated request use
+    /// it once. A host that cannot use them says so.
+    fn use_reset_card(
+        &self,
+        profile: String,
+        card: String,
+        key: String,
+    ) -> BoxFut<'_, anyhow::Result<ResetOutcome>> {
+        let _ = (profile, card, key);
+        Box::pin(async { anyhow::bail!("this host cannot use reset cards") })
+    }
 }
 
 pub use ledger::DeliveryLedger;
@@ -250,6 +290,8 @@ mod ledger {
     use super::DeliveryGate;
     use super::DeliveryMode;
     use super::GoalStatus;
+    use super::ResetCard;
+    use super::ResetOutcome;
     use super::SessionPage;
     use super::StepStart;
     use super::SuperagentHost;
@@ -448,6 +490,19 @@ mod ledger {
 
         fn tokens_used(&self, thread: ThreadId) -> BoxFut<'_, anyhow::Result<Option<i64>>> {
             self.inner.tokens_used(thread)
+        }
+
+        fn reset_cards(&self, profile: String) -> BoxFut<'_, anyhow::Result<Vec<ResetCard>>> {
+            self.inner.reset_cards(profile)
+        }
+
+        fn use_reset_card(
+            &self,
+            profile: String,
+            card: String,
+            key: String,
+        ) -> BoxFut<'_, anyhow::Result<ResetOutcome>> {
+            self.inner.use_reset_card(profile, card, key)
         }
     }
 }

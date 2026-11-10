@@ -129,6 +129,24 @@ impl DriveService {
             .await
     }
 
+    /// Queues a notice about no session in particular for the first registered Router, keyed
+    /// `key` among such notices.
+    pub(super) async fn tell_router(&self, key: &str, summary: String) -> anyhow::Result<()> {
+        let router = (self.inner.routers)()
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        let payload = json!({
+            "router": router,
+            "summary": summary,
+            "at": now_iso(),
+        });
+        self.inner
+            .effects
+            .enqueue_now(KIND_NOTICE, &format!("{router}|{key}"), &payload)
+            .await
+    }
+
     /// Tells the Router when the worker reported or the drive stopped by itself, as a notice its
     /// next turn reads; a pause the person asked for is not told back.
     pub(super) async fn notify(

@@ -31,7 +31,9 @@ use codex_superagent_extension::drive::AccountPolicy;
 use codex_superagent_extension::drive::AccountSource;
 use codex_superagent_extension::drive::Activity;
 use codex_superagent_extension::drive::Audit;
+use codex_superagent_extension::drive::CARDS_KEY;
 use codex_superagent_extension::drive::COOLDOWN_KEY;
+use codex_superagent_extension::drive::CardUse;
 use codex_superagent_extension::drive::Cooldown;
 use codex_superagent_extension::drive::DriveMode;
 use codex_superagent_extension::drive::DriveOptions;
@@ -57,6 +59,8 @@ use codex_superagent_extension::host::DeliveryLedger;
 use codex_superagent_extension::host::DeliveryMode;
 use codex_superagent_extension::host::GoalStatus;
 use codex_superagent_extension::host::LedgerHost;
+use codex_superagent_extension::host::ResetCard;
+use codex_superagent_extension::host::ResetOutcome;
 use codex_superagent_extension::host::StepStart;
 use codex_superagent_extension::host::SuperagentHost;
 use codex_superagent_extension::host::ThreadSpec;
@@ -93,6 +97,8 @@ struct Host {
     turns: Mutex<HashMap<String, Vec<TurnBrief>>>,
     delivered: Mutex<Vec<String>>,
     opened: Mutex<Vec<(PathBuf, Option<String>)>>,
+    /// Each account's reset cards; using one logs `card:<account>:<card>` and takes it.
+    cards: Mutex<HashMap<String, Vec<ResetCard>>>,
 }
 
 impl Host {
@@ -228,6 +234,28 @@ impl SuperagentHost for Host {
     }
     fn goal_status(&self, _thread: ThreadId) -> BoxFut<'_, anyhow::Result<Option<GoalStatus>>> {
         Box::pin(async { Ok(None) })
+    }
+    fn reset_cards(&self, profile: String) -> BoxFut<'_, anyhow::Result<Vec<ResetCard>>> {
+        let cards = lock(&self.cards).get(&profile).cloned().unwrap_or_default();
+        Box::pin(async move { Ok(cards) })
+    }
+    fn use_reset_card(
+        &self,
+        profile: String,
+        card: String,
+        _key: String,
+    ) -> BoxFut<'_, anyhow::Result<ResetOutcome>> {
+        lock(&self.log).push(format!("card:{profile}:{card}"));
+        let mut cards = lock(&self.cards);
+        let held = cards.entry(profile).or_default();
+        let before = held.len();
+        held.retain(|held| held.id != card);
+        let outcome = if held.len() < before {
+            ResetOutcome::Reset
+        } else {
+            ResetOutcome::NoCard
+        };
+        Box::pin(async move { Ok(outcome) })
     }
 }
 
@@ -630,6 +658,8 @@ fn the_knobs_come_from_the_environment_and_fall_back_to_the_defaults() {
             rescue_after: 2,
             rescue_window: Duration::from_secs(180),
             max_per_account: 4,
+            cards_per_day: 0,
+            card_reset_away: Duration::from_secs(12 * 3600),
         }
     );
     assert_eq!(AccountPolicy::from_env(|_| None), AccountPolicy::default());
@@ -641,6 +671,8 @@ fn the_knobs_come_from_the_environment_and_fall_back_to_the_defaults() {
         ("CODEXT_SUPERAGENT_ROUTER_RESCUE_THRESHOLD", " 3 "),
         ("CODEXT_SUPERAGENT_ROUTER_RESCUE_WINDOW_SECS", "soon"),
         ("CODEXT_SUPERAGENT_MAX_PER_ACCOUNT", "3"),
+        ("CODEXT_SUPERAGENT_RESET_CARDS_PER_DAY", "2"),
+        ("CODEXT_SUPERAGENT_RESET_CARD_MIN_HOURS", "24"),
     ]);
     assert_eq!(
         AccountPolicy::from_env(|name| vars.get(name).map(|value| (*value).to_owned())),
@@ -653,6 +685,8 @@ fn the_knobs_come_from_the_environment_and_fall_back_to_the_defaults() {
             rescue_after: 3,
             rescue_window: Duration::from_secs(180),
             max_per_account: 3,
+            cards_per_day: 2,
+            card_reset_away: Duration::from_secs(24 * 3600),
         }
     );
     let out_of_range = HashMap::from([("CODEXT_SUPERAGENT_QUOTA_SOFT_PERCENT", "150")]);
@@ -1678,5 +1712,126 @@ async fn cooldown_rows_of_earlier_versions_are_known_by_their_reason() -> anyhow
             "额度恢复（剩 50%），提前结束冷却"
         )]
     );
+    Ok(())
+}
+
+fn card(id: &str, expires_in_days: i64) -> ResetCard {
+    ResetCard {
+        id: id.to_owned(),
+        available: true,
+        expires_at: Some(now() + expires_in_days * 24 * 3600),
+    }
+}
+
+#[tokio::test]
+async fn with_every_account_spent_a_reset_card_refills_the_one_that_resets_last()
+-> anyhow::Result<()> {
+    let s = setup_with(AccountPolicy {
+        cards_per_day: 1,
+        ..AccountPolicy::default()
+    })
+    .await?;
+    s.pool.set(vec![
+        account("low-acct", "pro", 2.0, 2),
+        // Resets within a day: not worth a card.
+        account("soon-acct", "pro", 0.0, 5),
+        account("late-acct", "pro", 0.0, 100),
+        account("mid-acct", "pro", 1.0, 40),
+    ]);
+    lock(&s.host.cards).extend([
+        ("soon-acct".to_owned(), vec![card("soon-card", 20)]),
+        (
+            "late-acct".to_owned(),
+            vec![card("late-later", 21), card("late-first", 20)],
+        ),
+        ("mid-acct".to_owned(), vec![card("mid-card", 20)]),
+    ]);
+    s.host.on(SESSION, "low-acct");
+    s.drive.start(SESSION, simple(s.work.path(), None)).await?;
+    assert_eq!(
+        s.host.log(),
+        vec![
+            "card:late-acct:late-first".to_owned(),
+            format!("bind:{SESSION}:late-acct"),
+            format!("step:{SESSION}"),
+        ],
+        "the account whose natural reset is furthest off, with its card that expires first"
+    );
+    let uses = s.drive.card_uses().await?;
+    assert_eq!(
+        uses.iter()
+            .map(|used| (
+                used.account.as_str(),
+                used.card.as_str(),
+                used.outcome.as_str()
+            ))
+            .collect::<Vec<_>>(),
+        vec![("late-acct", "late-first", "reset")]
+    );
+    let notices: Vec<String> = s
+        .effects
+        .queued(codex_superagent_extension::drive::KIND_NOTICE)
+        .await?
+        .into_iter()
+        .map(|(_, payload)| payload["summary"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert!(
+        notices
+            .iter()
+            .any(|notice| notice.contains("用了一张重置卡给 late-acct")),
+        "{notices:?}"
+    );
+
+    // The refilled account takes the next session without another card.
+    s.drive.stop(SESSION).await?;
+    s.host.on(SESSION, "low-acct");
+    s.drive.start(SESSION, simple(s.work.path(), None)).await?;
+    assert_eq!(s.host.account(SESSION).as_deref(), Some("late-acct"));
+    assert_eq!(s.drive.card_uses().await?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_days_reset_cards_are_not_exceeded() -> anyhow::Result<()> {
+    let s = setup_with(AccountPolicy {
+        cards_per_day: 1,
+        ..AccountPolicy::default()
+    })
+    .await?;
+    let earlier = CardUse {
+        at: (chrono::Utc::now() - chrono::Duration::hours(3))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        account: "other-acct".to_owned(),
+        card: "used-card".to_owned(),
+        outcome: "reset".to_owned(),
+        natural_reset: None,
+    };
+    s.store
+        .atomic(async |tx| tx.kv_set(CARDS_KEY, &vec![earlier]).await)
+        .await?;
+    s.pool.set(vec![
+        account("low-acct", "pro", 2.0, 2),
+        account("late-acct", "pro", 0.0, 100),
+    ]);
+    lock(&s.host.cards).insert("late-acct".to_owned(), vec![card("late-card", 20)]);
+    s.host.on(SESSION, "low-acct");
+    s.drive.start(SESSION, simple(s.work.path(), None)).await?;
+    assert_eq!(s.host.log(), vec![format!("step:{SESSION}")]);
+    assert_eq!(s.drive.card_uses().await?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn without_the_persons_leave_no_reset_card_is_used() -> anyhow::Result<()> {
+    let s = setup().await?;
+    s.pool.set(vec![
+        account("low-acct", "pro", 2.0, 2),
+        account("late-acct", "pro", 0.0, 100),
+    ]);
+    lock(&s.host.cards).insert("late-acct".to_owned(), vec![card("late-card", 20)]);
+    s.host.on(SESSION, "low-acct");
+    s.drive.start(SESSION, simple(s.work.path(), None)).await?;
+    assert_eq!(s.host.log(), vec![format!("step:{SESSION}")]);
+    assert!(s.drive.card_uses().await?.is_empty());
     Ok(())
 }

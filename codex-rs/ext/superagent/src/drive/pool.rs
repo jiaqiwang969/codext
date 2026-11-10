@@ -314,6 +314,26 @@ impl DriveService {
             }
             plan => plan,
         };
+        // The pool ran dry under a spent account: a reset card may refill another one (off
+        // unless the person allows it, `reset_cards.rs`).
+        let plan = match plan {
+            Plan::NoneFree(Headroom::Spent) => {
+                match self.refill_with_card(&pool, now, Some(&current)).await {
+                    Some(to) => match activity {
+                        Activity::Idle => Plan::Move {
+                            to,
+                            headroom: Headroom::Spent,
+                        },
+                        Activity::InTurn => Plan::AtTurnEnd {
+                            to,
+                            headroom: Headroom::Spent,
+                        },
+                    },
+                    None => plan,
+                }
+            }
+            plan => plan,
+        };
         Ok(Verdict {
             plan,
             why: accounts::shortfall(&pool, &cooling, now, &current),
