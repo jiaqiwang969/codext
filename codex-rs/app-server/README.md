@@ -68,7 +68,13 @@ and driven sessions (`accountMoves`), and every driven session (`drives`, in the
 shape of the lines the coordinator appends to `CODEX_HOME/superagent/events.jsonl`
 whenever a drive changes state, step or account), and the reset cards the
 coordinator used when no account could take a session (`resetCards`; off unless
-`CODEXT_SUPERAGENT_RESET_CARDS_PER_DAY` allows some). Exit codes are 0 (healthy), 2 (failed
+`CODEXT_SUPERAGENT_RESET_CARDS_PER_DAY` allows some). `machine` is what the
+coordinator last read of the volume that holds `CODEX_HOME`: `freeBytes`, `totalBytes`,
+`freePercent`, `checkedAt`, and `lastNoticeAt`, when it last told the main Router (the PM
+registered without `project=`) that free space fell below
+`CODEXT_SUPERAGENT_DISK_FREE_PERCENT` (5 by default; 0 turns the check off). It is `null`
+before the first reading; each such notice and each recovery also appends a line to
+`events.jsonl` (`disk_low`, `disk_rearmed`). Exit codes are 0 (healthy), 2 (failed
 component or stalled ticket), and 3 (initialization or PM configuration
 incomplete). A disabled feature returns an RPC error. This status does not prove
 which account an upstream account gateway used for a model request.

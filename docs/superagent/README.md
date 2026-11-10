@@ -34,6 +34,8 @@ Superagent 是跑在 app-server daemon 里的组织引擎。Router 是它管的�
 
 **巡检。** 引擎每分钟自己看一遍推进中的会话：等待的东西到了就叫醒；一步做完却没读到结论的再读一次；再把看到的情况标在这一路的清单行上（"注意：…"）。标的有：交了结论半小时以上没人回、一步做了一个半小时以上而文件夹一小时没有写入（这两条会通知 Router 一次）、步数快用完、最近两次结论开头一样、连着 5 步都不到 3 分钟、账号上的会话太多。状态一变，标记跟着清掉。
 
+**机器健康。** 巡检时，引擎最多每 10 分钟看一次存 `CODEX_HOME` 的那块盘还剩多少可用空间。低于 `CODEXT_SUPERAGENT_DISK_FREE_PERCENT`（默认 5%）时通知总 Router，即 `pm-threads` 里不带 `project=` 的那个（没有总 Router 时给第一个）。第一次低于时通知一次；一直低着，最多每 24 小时再通知一次；可用空间回到阈值以上 1 个百分点才算恢复，之后再低于才会马上通知。通知走上面的通知路径，Router 正在回答时先攒着。上次通知的时间和是否已经通知过记在账本里，daemon 重启后不会马上再通知。`superagent/status` 的 `machine` 给出最近一次读到的可用字节数、总字节数、可用百分比、读的时间和上次通知的时间；每次通知和恢复往 `events.jsonl` 追加一行（`disk_low`、`disk_rearmed`）。
+
 **事件。** 推进的每次状态、步数、账号变化，以及开始和释放，都往 `$CODEX_HOME/superagent/events.jsonl` 追加一行 JSON（超过 8 MB 换到 `events.1.jsonl`）。`superagent/status` 的 `drives` 用同样的形状列出每一路。外面要盯推进的，读这个文件就行，不用逐个扫会话记录。
 
 **换号。** 引擎在账号用完之前就换（引擎查账号不花模型额度），失败后再换只是兜底。
@@ -62,6 +64,7 @@ Superagent 是跑在 app-server daemon 里的组织引擎。Router 是它管的�
 | `CODEXT_SUPERAGENT_MAX_PER_ACCOUNT` | 4 | 一个账号上有几路在做，引擎自己换号时就跳过它；0 关掉 |
 | `CODEXT_SUPERAGENT_RESET_CARDS_PER_DAY` | 0 | 没有账号能接手时，引擎 24 小时内最多自己用几张重置卡；0 不用，留给用户 |
 | `CODEXT_SUPERAGENT_RESET_CARD_MIN_HOURS` | 12 | 自然重置还有多少小时以上的账号才值得用卡 |
+| `CODEXT_SUPERAGENT_DISK_FREE_PERCENT` | 5 | 存 `CODEX_HOME` 的那块盘可用空间低于这个百分比，通知总 Router（见上面的机器健康）；0 关掉 |
 
 **权限。** 推进的步骤用完全访问：不加沙箱，不问批准，可以用本机软件和浏览器。
 
@@ -100,6 +103,7 @@ daemon 可以随时重启。重启后引擎逐个检查推进中的会话：已�
 | `drive/say.rs`、`drive/basis.rs`、`drive/standing.rs` | `say` 的依据核对和话的检查，插话；依据可以从哪里来；长期规矩 |
 | `drive/notices.rs` | 给 Router 的通知：Router 忙时攒着，空下来并成一条，过期的不送，送给开这次推进的 Router |
 | `drive/wait.rs`、`drive/sweep.rs`、`drive/events.rs` | 停放等待；每分钟的巡检和标记；事件流和 `superagent/status` 里的 `drives` |
+| `drive/machine.rs` | 机器健康：巡检时看磁盘余量，低了通知总 Router；`superagent/status` 里的 `machine` |
 | `drive/drafter.rs` | 起草者：结论先交给起草会话，它写的下一句经核对后发出，交上来的事和小结给 Router |
 | `drive/report.rs`、`drive/progress.rs` | 取结论、判定、通知卡片；文件夹里有没有新写入 |
 | `drive/accounts.rs`、`drive/cooldown.rs`、`drive/policy.rs`、`drive/load.rs`、`drive/reset_cards.rs` | 账号池、挑号、要不要换号的判断（`plan`）；账号冷却，读到额度回来就提前结束；可调的值；每个账号上有几路；没有账号能接手时用重置卡 |
@@ -117,7 +121,7 @@ daemon 可以随时重启。重启后引擎逐个检查推进中的会话：已�
 
 ## 测试
 
-- 引擎：`cd codex-rs && cargo test -p codex-superagent-extension`。推进的测试在 `ext/superagent/tests/drive.rs`，换号的在 `tests/accounts.rs`。
+- 引擎：`cd codex-rs && cargo test -p codex-superagent-extension`。推进的测试在 `ext/superagent/tests/drive.rs`，换号的在 `tests/accounts.rs`，机器健康的在 `tests/machine.rs`。
 - 端到端：实验室的 `~/242-superagent-codext-lab/tests/scripts/drive_e2e.py`，用 mock 模型跑简单、锚定、换号、Router 换号四个场景。
 - 真实模型：在实验室 daemon 上让 Router 推进一个小目标，看通知、`say`、插话、换号是否正常。
 
