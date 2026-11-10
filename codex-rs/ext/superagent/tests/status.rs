@@ -42,6 +42,25 @@ async fn service() -> anyhow::Result<(TempDir, Arc<SuperagentService>, StatusPat
 }
 
 #[tokio::test]
+async fn a_second_process_on_the_same_home_does_not_run_the_engine() -> anyhow::Result<()> {
+    let (dir, service, _paths) = service().await?;
+    service.start().await?;
+    // Another process opens the same CODEX_HOME (an embedded app-server, a daemon starting while
+    // the old one drains): the engine lock is taken, so it runs nothing on the ledger.
+    let sqlite = SqliteConfig::new_for_testing(dir.path().abs());
+    let state = StateRuntime::init(sqlite, "test-provider".to_owned()).await?;
+    let second = Arc::new(SuperagentService::new(state, dir.path().join("superagent")));
+    let refused = match second.start().await {
+        Ok(_) => panic!("the second engine must not start"),
+        Err(err) => format!("{err:#}"),
+    };
+    assert!(refused.contains("another process"), "{refused}");
+    assert!(second.runtime().is_none());
+    assert!(dir.path().join("superagent").join("engine.lock").is_file());
+    Ok(())
+}
+
+#[tokio::test]
 async fn waits_for_configuration_until_the_engine_runs_with_a_pm() -> anyhow::Result<()> {
     let (_dir, service, paths) = service().await?;
     let before = status_with(&service, &paths, T1).await?;

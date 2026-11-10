@@ -108,7 +108,16 @@ pub struct SuperagentService {
     /// account runs low before the delivery starts the Router's next turn.
     gate: Arc<OnceLock<host::DeliveryGate>>,
     executor_config: Mutex<Option<ExecutorConfig>>,
+    /// `<dir>/engine.lock`, held exclusively while this process runs the engine, so a second
+    /// process on the same `CODEX_HOME` (a daemon starting while the old one drains) waits
+    /// instead of running a second engine on the same ledger.
+    engine_lock: OnceLock<std::fs::File>,
 }
+
+/// The file whose exclusive lock marks the one process that runs the engine of a `CODEX_HOME`.
+pub const ENGINE_LOCK: &str = "engine.lock";
+/// How often a process that found the engine lock taken tries again.
+const ENGINE_LOCK_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl SuperagentService {
     /// Takes the shared SQLite configuration and the extension directory under `CODEX_HOME`.
@@ -128,6 +137,28 @@ impl SuperagentService {
             ledger: Arc::new(host::DeliveryLedger::default()),
             gate: Arc::new(OnceLock::new()),
             executor_config: Mutex::new(None),
+            engine_lock: OnceLock::new(),
+        }
+    }
+
+    /// Takes the engine lock for this process; false while another process holds it.
+    fn take_engine_lock(&self) -> anyhow::Result<bool> {
+        if self.engine_lock.get().is_some() {
+            return Ok(true);
+        }
+        std::fs::create_dir_all(&self.dir)?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.dir.join(ENGINE_LOCK))?;
+        match file.try_lock() {
+            Ok(()) => {
+                let _ = self.engine_lock.set(file);
+                Ok(true)
+            }
+            Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+            Err(std::fs::TryLockError::Error(err)) => Err(err.into()),
         }
     }
 
@@ -180,6 +211,11 @@ impl SuperagentService {
         if let Some(runtime) = self.runtime.get() {
             return Ok(Arc::clone(runtime));
         }
+        anyhow::ensure!(
+            self.take_engine_lock()?,
+            "another process runs the superagent engine on {}",
+            self.dir.display()
+        );
         let runtime = self
             .runtime
             .get_or_try_init(|| async {
@@ -506,10 +542,38 @@ impl SuperagentService {
         &self.dir
     }
 
-    /// Starts the service once the host is supplied; errors are logged.
+    /// Starts the service once the host is supplied; errors are logged. While another process
+    /// holds the engine lock (the daemon this one replaces, still draining), it waits for the
+    /// lock first.
     pub fn start_in_background(self: &Arc<Self>) {
         let service = Arc::clone(self);
         tokio::spawn(async move {
+            let mut warned = false;
+            loop {
+                match service.take_engine_lock() {
+                    Ok(true) => break,
+                    Ok(false) => {
+                        if !warned {
+                            tracing::warn!(
+                                "superagent: another process runs the engine on {}; this one starts when it stops",
+                                service.dir.display()
+                            );
+                            warned = true;
+                        }
+                        if service.stopping.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        tokio::time::sleep(ENGINE_LOCK_RETRY).await;
+                    }
+                    Err(err) => {
+                        tracing::error!("superagent engine lock failed: {err:#}");
+                        return;
+                    }
+                }
+            }
+            if warned {
+                tracing::info!("superagent: the engine lock is free; starting the engine");
+            }
             if let Err(err) = service.start().await {
                 tracing::error!("superagent engine failed to start: {err:#}");
             }
