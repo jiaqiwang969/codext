@@ -628,6 +628,7 @@ fn the_knobs_come_from_the_environment_and_fall_back_to_the_defaults() {
             watch_every: Duration::from_secs(120),
             rescue_after: 2,
             rescue_window: Duration::from_secs(180),
+            max_per_account: 4,
         }
     );
     assert_eq!(AccountPolicy::from_env(|_| None), AccountPolicy::default());
@@ -638,6 +639,7 @@ fn the_knobs_come_from_the_environment_and_fall_back_to_the_defaults() {
         ("CODEXT_SUPERAGENT_QUOTA_WATCH_SECS", "0"),
         ("CODEXT_SUPERAGENT_ROUTER_RESCUE_THRESHOLD", " 3 "),
         ("CODEXT_SUPERAGENT_ROUTER_RESCUE_WINDOW_SECS", "soon"),
+        ("CODEXT_SUPERAGENT_MAX_PER_ACCOUNT", "3"),
     ]);
     assert_eq!(
         AccountPolicy::from_env(|name| vars.get(name).map(|value| (*value).to_owned())),
@@ -649,6 +651,7 @@ fn the_knobs_come_from_the_environment_and_fall_back_to_the_defaults() {
             watch_every: Duration::ZERO,
             rescue_after: 3,
             rescue_window: Duration::from_secs(180),
+            max_per_account: 3,
         }
     );
     let out_of_range = HashMap::from([("CODEXT_SUPERAGENT_QUOTA_SOFT_PERCENT", "150")]);
@@ -1380,6 +1383,36 @@ async fn a_step_goes_out_on_an_account_with_headroom_and_never_moves_midway() ->
         (1, vec!["low-acct".to_owned()]),
         "a running session is not looked at"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_move_passes_by_an_account_that_carries_its_share_of_sessions() -> anyhow::Result<()> {
+    let s = setup_with(AccountPolicy {
+        max_per_account: 2,
+        ..AccountPolicy::default()
+    })
+    .await?;
+    s.pool.set(vec![
+        account("low-acct", "pro", 6.0, 2),
+        account("soonest", "pro", 80.0, 3),
+        account("later", "pro", 80.0, 9),
+    ]);
+    // The Router and one session at work run on the account that resets soonest.
+    s.host.on(ROUTER, "soonest");
+    s.drive
+        .start(OPENED, simple(s.work.path(), Some("soonest")))
+        .await?;
+    // A session whose account runs low moves before its step, past that full account.
+    s.host.on(SESSION, "low-acct");
+    s.drive.start(SESSION, simple(s.work.path(), None)).await?;
+    assert_eq!(s.host.account(SESSION).as_deref(), Some("later"));
+    // With room on every account, the soonest reset wins again.
+    s.drive.stop(OPENED).await?;
+    s.host.on(SESSION, "low-acct");
+    s.drive.stop(SESSION).await?;
+    s.drive.start(SESSION, simple(s.work.path(), None)).await?;
+    assert_eq!(s.host.account(SESSION).as_deref(), Some("soonest"));
     Ok(())
 }
 

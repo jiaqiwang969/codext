@@ -4,16 +4,13 @@
 //! the Router's own moves are in `router_account.rs` and `router_rescue.rs`.
 
 use codex_protocol::ThreadId;
-use serde_json::json;
 
 use super::DriveRecord;
 use super::DriveService;
 use super::DriveState;
-use super::KEY_PREFIX;
-use super::NOTICE;
-use super::accounts;
 use super::accounts::Trouble;
 use super::accounts::now;
+use super::notices::Topic;
 use super::step_account::STEP_MOVED_KEY;
 use super::step_account::step_key;
 use crate::core::now_iso;
@@ -49,17 +46,9 @@ pub(super) fn step_text(record: &DriveRecord) -> Option<String> {
 }
 
 impl DriveService {
-    /// A notice to the Router in its own words.
+    /// A notice to the Router in its own words, about the session's account.
     async fn tell(&self, record: &DriveRecord, summary: String) -> anyhow::Result<()> {
-        let thread_id = &record.thread_id;
-        self.inner
-            .effects
-            .enqueue_now(
-                NOTICE,
-                &format!("{KEY_PREFIX}{thread_id}"),
-                &json!({ "value": { "threadId": thread_id, "account": record.account }, "summary": summary }),
-            )
-            .await
+        self.queue_notice(record, Topic::Account, summary).await
     }
 
     /// Gives up switching: the drive stays paused with `reason`, and the Router is told.
@@ -110,8 +99,9 @@ impl DriveService {
         }
         let cooling = self.cooldowns().await?;
         let thresholds = self.inner.policy.thresholds;
-        let Some(next) =
-            accounts::pick(&pool, &cooling, now, current.as_deref(), thresholds).cloned()
+        let Some(next) = self
+            .pick_spread(&pool, &cooling, now, current.as_deref(), thresholds)
+            .await?
         else {
             let soonest = cooling
                 .values()
@@ -224,8 +214,8 @@ impl DriveService {
             None => {
                 let cooling = self.cooldowns().await?;
                 let thresholds = self.inner.policy.thresholds;
-                accounts::pick(&pool, &cooling, now(), current.as_deref(), thresholds)
-                    .cloned()
+                self.pick_spread(&pool, &cooling, now(), current.as_deref(), thresholds)
+                    .await?
                     .ok_or_else(|| anyhow::anyhow!("没有可换的账号：额度见底或都在冷却"))?
             }
         };

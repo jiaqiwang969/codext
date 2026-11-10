@@ -384,6 +384,44 @@ async fn setup() -> anyhow::Result<Setup> {
     setup_with(std::time::Duration::from_secs(3600)).await
 }
 
+/// Like `setup`, with Routers registered (the first is the one drives without a Router of their
+/// own report to).
+async fn setup_routed(routers: &[&str]) -> anyhow::Result<Setup> {
+    let (dir, store) = open_store().await?;
+    let work = TempDir::new()?;
+    let home = workspace(work.path())?;
+    let host = Arc::new(FakeHost::default());
+    let judge = Arc::new(ScriptedJudge::default());
+    let accounts = Arc::new(FakeAccounts::default());
+    let effects =
+        Effects::new(store.clone(), HealthBoard::new(), FakeClock::at(T0).clock()).await?;
+    let routers: Vec<String> = routers.iter().map(|router| (*router).to_owned()).collect();
+    let drive = DriveService::install_with(
+        store,
+        effects.clone(),
+        host.clone() as Arc<dyn SuperagentHost>,
+        judge.clone() as Arc<dyn Judge>,
+        codex_superagent_extension::drive::DriveOptions {
+            accounts: Some(accounts.clone() as Arc<dyn AccountSource>),
+            stall: std::time::Duration::from_secs(3600),
+            policy: codex_superagent_extension::drive::AccountPolicy::default(),
+            routers: Arc::new(move || routers.clone()),
+            retry_after: std::time::Duration::ZERO,
+        },
+    )
+    .await?;
+    Ok(Setup {
+        _dir: dir,
+        work,
+        home,
+        host,
+        judge,
+        accounts,
+        effects,
+        drive,
+    })
+}
+
 impl Setup {
     /// A simple drive in the work folder.
     async fn start(&self) -> anyhow::Result<DriveRecord> {
@@ -410,7 +448,7 @@ impl Setup {
     async fn notices(&self) -> anyhow::Result<Vec<String>> {
         Ok(self
             .effects
-            .queued("notice")
+            .queued(codex_superagent_extension::drive::KIND_NOTICE)
             .await?
             .into_iter()
             .map(|(_, payload)| payload["summary"].as_str().unwrap_or_default().to_owned())
@@ -1450,5 +1488,120 @@ async fn a_step_said_while_a_turn_still_runs_joins_that_turn() -> anyhow::Result
             .expect("a notice")
             .contains("第 2 步结束")
     );
+    Ok(())
+}
+
+const ROUTER_B: &str = "019a0000-0000-7000-8000-00000000d0bb";
+
+/// A moment, so the times the record keeps come one after the other.
+async fn tick() {
+    tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+}
+
+#[tokio::test]
+async fn notices_wait_while_the_router_is_in_a_turn_and_then_go_together() -> anyhow::Result<()> {
+    let s = setup_routed(&[ROUTER]).await?;
+    s.start().await?;
+    s.drive
+        .start(OPENED, simple(s.work.path().to_owned()))
+        .await?;
+    tick().await;
+    s.turn("笔记分好了 3 个主题").await?;
+    s.drive.turn_started(OPENED).await?;
+    s.host.finish("completed", "索引写好了");
+    s.drive.turn_stopped(OPENED).await?;
+    s.drive.step(OPENED).await?;
+    assert_eq!(s.notices().await?.len(), 2);
+
+    // The Router is in a turn: nothing goes, and the notices keep waiting.
+    s.drive.router_turn_started(ROUTER, "router-turn-1");
+    assert!(s.drive.deliver_notices(ROUTER).await.is_err());
+    assert!(
+        s.host
+            .delivered()
+            .iter()
+            .all(|text| !text.starts_with("[通知]"))
+    );
+
+    // Once it is idle, both go in one message.
+    s.drive.router_turn_ended(ROUTER).await?;
+    s.drive
+        .deliver_notices(ROUTER)
+        .await
+        .map_err(|err| anyhow::anyhow!("{err}"))?;
+    let sent: Vec<String> = s
+        .host
+        .delivered()
+        .into_iter()
+        .filter(|text| text.starts_with("[通知]"))
+        .collect();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].starts_with("[通知] 2 路有新情况"), "{}", sent[0]);
+    assert!(sent[0].contains("笔记分好了 3 个主题") && sent[0].contains("索引写好了"));
+    assert!(
+        FakeHost::lock(&s.host.calls).contains(&format!("deliver:{ROUTER}:Queue")),
+        "queued for the Router's next turn"
+    );
+    assert!(s.notices().await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_notice_the_router_acted_on_meanwhile_is_dropped() -> anyhow::Result<()> {
+    let s = setup_routed(&[ROUTER]).await?;
+    s.start().await?;
+    tick().await;
+    s.turn("分好了 3 个主题目录").await?;
+    tick().await;
+    // Busy with another session, the Router saw the conclusion in its list and answered it.
+    s.drive
+        .say(
+            THREAD,
+            say("再写个索引。", "分好了 3 个主题目录", "按主题分好"),
+        )
+        .await?;
+    s.drive
+        .deliver_notices(ROUTER)
+        .await
+        .map_err(|err| anyhow::anyhow!("{err}"))?;
+    assert!(
+        s.host
+            .delivered()
+            .iter()
+            .all(|text| !text.starts_with("[通知]")),
+        "the answered conclusion is not delivered: {:?}",
+        s.host.delivered()
+    );
+    assert!(s.notices().await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_drives_notices_go_to_the_router_that_started_it() -> anyhow::Result<()> {
+    let s = setup_routed(&[ROUTER, ROUTER_B]).await?;
+    let start = DriveStart {
+        router: Some(ROUTER_B.to_owned()),
+        ..simple(s.work.path().to_owned())
+    };
+    s.drive.start(THREAD, start).await?;
+    tick().await;
+    s.turn("分好了 3 个主题目录").await?;
+    assert!(s.drive.records_of(ROUTER).await?.is_empty());
+    assert_eq!(s.drive.records_of(ROUTER_B).await?.len(), 1);
+    s.drive
+        .deliver_notices(ROUTER)
+        .await
+        .map_err(|err| anyhow::anyhow!("{err}"))?;
+    assert!(
+        s.host
+            .delivered()
+            .iter()
+            .all(|text| !text.starts_with("[通知]"))
+    );
+    s.drive
+        .deliver_notices(ROUTER_B)
+        .await
+        .map_err(|err| anyhow::anyhow!("{err}"))?;
+    assert!(FakeHost::lock(&s.host.calls).contains(&format!("deliver:{ROUTER_B}:Queue")));
     Ok(())
 }

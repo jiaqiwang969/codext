@@ -17,7 +17,9 @@ mod context;
 mod cooldown;
 mod feedback;
 mod lifecycle;
+mod load;
 mod look;
+mod notices;
 mod policy;
 mod pool;
 mod report;
@@ -68,6 +70,7 @@ pub use cooldown::EndedCooldown;
 pub use feedback::Feedback;
 pub use lifecycle::DriveLifecycle;
 pub use look::DONE_WHILE_PAUSED;
+pub use notices::KIND_NOTICE;
 pub use policy::AccountPolicy;
 pub use policy::DriveOptions;
 pub use policy::Routers;
@@ -96,8 +99,6 @@ pub const KEY_PREFIX: &str = "drive:";
 pub const KIND_STEP: &str = "drive-step";
 /// How the steps of earlier versions started; such a step may still wait in a session's queue.
 pub const LEGACY_STEP_LABEL: &str = "[推进 ";
-/// The effect kind that delivers a notice to the Router (`pm.rs`).
-const NOTICE: &str = "notice";
 pub const DEFAULT_MAX_STEPS: u32 = 20;
 /// How long a handed-over step may wait for its turn to start.
 pub const STALL: std::time::Duration = std::time::Duration::from_secs(120);
@@ -232,6 +233,10 @@ pub struct DriveRecord {
     /// versions: the first registered Router gets them.
     #[serde(default)]
     pub router: Option<String>,
+    /// When the Router last did something with the session (said the next thing, paused it,
+    /// handed it back): a notice written before that is not delivered (`notices.rs`).
+    #[serde(default)]
+    pub acted: Option<String>,
     /// The latest steps, oldest first.
     pub history: Vec<Step>,
     pub since: String,
@@ -335,6 +340,8 @@ struct Inner {
     seen: std::sync::Mutex<HashMap<String, turns::TurnSeen>>,
     /// How long a step that broke off on the network waits before it goes again (`retry.rs`).
     retry_after: std::time::Duration,
+    /// One delivery of notices at a time (`notices.rs`).
+    notices: tokio::sync::Mutex<()>,
 }
 
 impl DriveService {
@@ -389,6 +396,7 @@ impl DriveService {
                 refresh: tokio::sync::Semaphore::new(1),
                 seen: std::sync::Mutex::new(HashMap::new()),
                 retry_after,
+                notices: tokio::sync::Mutex::new(()),
             }),
         };
         let runner = service.clone();
@@ -411,6 +419,7 @@ impl DriveService {
             .await?;
         router_account::install_router_handlers(&service, &effects).await?;
         retry::install_retry_handler(&service, &effects).await?;
+        notices::install_notice_handler(&service, &effects).await?;
         Ok(service)
     }
 
@@ -578,6 +587,7 @@ impl DriveService {
             started: None,
             retried: None,
             router,
+            acted: Some(now.clone()),
             history: vec![Step {
                 n: 1,
                 at: now.clone(),
@@ -621,6 +631,7 @@ impl DriveService {
             record.state = DriveState::Paused {
                 reason: reason.to_owned(),
             };
+            record.acted = Some(now_iso());
             record.clone()
         })
         .await
@@ -635,6 +646,7 @@ impl DriveService {
                 };
                 record.unchanged = 0;
             }
+            record.acted = Some(now_iso());
             record.clone()
         })
         .await
@@ -665,6 +677,7 @@ impl DriveService {
                 };
             }
             record.unchanged = 0;
+            record.acted = Some(now_iso());
             record.clone()
         })
         .await
@@ -725,6 +738,7 @@ impl DriveService {
                         reason: format!("第 {} 步被打断；交回后说下一句", record.steps),
                     };
                 }
+                record.acted = Some(now_iso());
                 record.clone()
             })
             .await?;
@@ -843,23 +857,6 @@ impl DriveService {
             }
         }
         Ok(())
-    }
-
-    /// Tells the Router when the worker reported or the drive stopped by itself, as a notice its
-    /// next turn reads; a pause the person asked for is not told back.
-    async fn notify(&self, record: &DriveRecord, state: &DriveState) -> anyhow::Result<()> {
-        let Some(summary) = report::notice(record, state) else {
-            return Ok(());
-        };
-        let thread_id = &record.thread_id;
-        self.inner
-            .effects
-            .enqueue_now(
-                NOTICE,
-                &format!("{KEY_PREFIX}{thread_id}"),
-                &json!({ "value": { "threadId": thread_id, "drive": state }, "summary": summary }),
-            )
-            .await
     }
 }
 

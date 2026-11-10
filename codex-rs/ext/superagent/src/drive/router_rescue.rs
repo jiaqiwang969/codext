@@ -307,8 +307,9 @@ impl DriveService {
         let now = now();
         let cooling = self.cooldowns().await?;
         let thresholds = self.inner.policy.thresholds;
-        let Some(next) =
-            accounts::pick(&pool, &cooling, now, current.as_deref(), thresholds).cloned()
+        let Some(next) = self
+            .pick_spread(&pool, &cooling, now, current.as_deref(), thresholds)
+            .await?
         else {
             tracing::warn!(
                 "superagent: the Router's account cannot carry its turn ({}) and no account is free",

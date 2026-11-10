@@ -267,6 +267,7 @@ impl DriveService {
         };
         let changed = self
             .change_locked(thread_id, |record| {
+                record.acted = Some(now_iso());
                 if !steering {
                     record.steps = n;
                     record.inflight = Some(n);

@@ -114,6 +114,17 @@ impl HandlerOptions {
     }
 }
 
+/// A queued effect as `Effects::queued_rows` reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct QueuedRow {
+    pub key: String,
+    pub payload: Value,
+    /// Its place in the queue and how often it was queued again: `cancel_unchanged` drops it
+    /// only while both are what was read.
+    pub seq: i64,
+    pub generation: i64,
+}
+
 struct Handler {
     run: EffectRun,
     limit: Limit,
@@ -244,9 +255,10 @@ impl Effects {
         delay: std::time::Duration,
     ) -> anyhow::Result<()> {
         let payload = serde_json::to_value(payload)?;
-        self.inner.store.atomic(async |tx| {
-            self.enqueue_after_in(tx, kind, key, &payload, delay).await
-        }).await
+        self.inner
+            .store
+            .atomic(async |tx| self.enqueue_after_in(tx, kind, key, &payload, delay).await)
+            .await
     }
 
     /// Enqueues delayed work in the command's transaction, alongside its deduplication receipt.
@@ -363,6 +375,44 @@ impl Effects {
                 Ok((key, serde_json::from_str(&value).unwrap_or(Value::Null)))
             })
             .collect()
+    }
+
+    /// The queued effects of a kind, oldest first, each with what `cancel_unchanged` needs to
+    /// leave a row that was queued again since it was read.
+    pub async fn queued_rows(&self, kind: &str) -> anyhow::Result<Vec<QueuedRow>> {
+        let rows = sqlx::query(
+            "SELECT key, value, seq, generation FROM effect WHERE kind = ? ORDER BY seq",
+        )
+        .bind(kind)
+        .fetch_all(self.inner.store.pool())
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let value: String = row.try_get("value")?;
+                Ok(QueuedRow {
+                    key: row.try_get("key")?,
+                    payload: serde_json::from_str(&value).unwrap_or(Value::Null),
+                    seq: row.try_get("seq")?,
+                    generation: row.try_get("generation")?,
+                })
+            })
+            .collect()
+    }
+
+    /// Drops a row read by `queued_rows`, unless it was queued again since; answers whether it
+    /// went.
+    pub async fn cancel_unchanged(&self, kind: &str, row: &QueuedRow) -> anyhow::Result<bool> {
+        let done = sqlx::query(
+            "DELETE FROM effect WHERE kind = ? AND key = ? AND seq = ? AND generation = ?",
+        )
+        .bind(kind)
+        .bind(&row.key)
+        .bind(row.seq)
+        .bind(row.generation)
+        .execute(self.inner.store.pool())
+        .await?;
+        self.report(kind).await;
+        Ok(done.rows_affected() > 0)
     }
 
     /// Drops a queued row; if it is running, that attempt finishes normally.

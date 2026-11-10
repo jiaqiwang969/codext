@@ -206,7 +206,8 @@ impl ContextContributor for RouterContext {
                     ));
                     if let Some(drive) = service.runtime().and_then(|runtime| runtime.drive.clone())
                     {
-                        match drive.records().await {
+                        // Each Router sees the drives whose notices it gets (`drive/notices.rs`).
+                        match drive.records_of(input.thread_store.level_id()).await {
                             Ok(records) => {
                                 waiting.extend(records.iter().filter_map(|record| {
                                     drive_attention(record).map(|reason| {

@@ -305,8 +305,17 @@ impl DriveService {
         let cooling = self.cooldowns().await?;
         let now = now();
         let thresholds = self.inner.policy.thresholds;
+        // Accounts that carry their share of sessions are passed by while another has room
+        // (`load.rs`).
+        let roomy = self.roomy(&pool, Some(&current)).await?;
+        let plan = match accounts::plan(&roomy, &cooling, now, &current, thresholds, activity) {
+            Plan::NoneFree(_) => {
+                accounts::plan(&pool, &cooling, now, &current, thresholds, activity)
+            }
+            plan => plan,
+        };
         Ok(Verdict {
-            plan: accounts::plan(&pool, &cooling, now, &current, thresholds, activity),
+            plan,
             why: accounts::shortfall(&pool, &cooling, now, &current),
         })
     }

@@ -20,10 +20,14 @@ pub const WATCH_SECS_VAR: &str = "CODEXT_SUPERAGENT_QUOTA_WATCH_SECS";
 pub const RESCUE_THRESHOLD_VAR: &str = "CODEXT_SUPERAGENT_ROUTER_RESCUE_THRESHOLD";
 /// The window (seconds) those incidents must fall in.
 pub const RESCUE_WINDOW_SECS_VAR: &str = "CODEXT_SUPERAGENT_ROUTER_RESCUE_WINDOW_SECS";
+/// How many sessions at work an account carries before a move passes it by; 0 turns it off.
+pub const MAX_PER_ACCOUNT_VAR: &str = "CODEXT_SUPERAGENT_MAX_PER_ACCOUNT";
 
 const WATCH_EVERY: Duration = Duration::from_secs(120);
 const RESCUE_AFTER: usize = 2;
 const RESCUE_WINDOW: Duration = Duration::from_secs(180);
+/// The person's rule: three or four sessions per account.
+const MAX_PER_ACCOUNT: usize = 4;
 /// How old the pool may be, when nothing watches it, before a check reads it again.
 const POOL_MAX_AGE: Duration = Duration::from_secs(240);
 
@@ -55,6 +59,9 @@ pub struct AccountPolicy {
     /// the engine stops the turn and moves the Router; zero turns the rescue off.
     pub rescue_after: usize,
     pub rescue_window: Duration,
+    /// How many sessions at work (driven sessions and Routers) an account carries before the
+    /// engine's own moves pass it by, while another account has room; zero turns it off.
+    pub max_per_account: usize,
 }
 
 impl Default for AccountPolicy {
@@ -64,6 +71,7 @@ impl Default for AccountPolicy {
             watch_every: WATCH_EVERY,
             rescue_after: RESCUE_AFTER,
             rescue_window: RESCUE_WINDOW,
+            max_per_account: MAX_PER_ACCOUNT,
         }
     }
 }
@@ -100,6 +108,9 @@ impl AccountPolicy {
             rescue_window: secs(RESCUE_WINDOW_SECS_VAR)
                 .filter(|window| !window.is_zero())
                 .unwrap_or(defaults.rescue_window),
+            max_per_account: value(MAX_PER_ACCOUNT_VAR)
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(defaults.max_per_account),
         }
     }
 
