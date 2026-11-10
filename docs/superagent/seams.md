@@ -8,12 +8,13 @@
 
 | 文件 | 做什么 | 改动 | 提交 |
 | --- | --- | --- | --- |
-| `app-server/src/superagent_host.rs`（新） | 实现引擎的 `SuperagentHost`：开会话、发消息、插话、打断，读会话的回合（含错误类型），查会话当前账号（未加载的会话答它加载时会用的账号：保存的绑定，没有就用创建它的账号，不加载它），换账号（`bind_profile`，未加载的会话只改绑定），开始排队的输入（`start_queued`：Router 一轮结束要换号时，引擎让它排队的话先等，换好后由引擎开始）。推进的步骤用完全访问（`DangerFullAccess`、`Never`），`turn_trigger = "drive"`；交出一步时回答这句话是开了新的一轮，还是插进了正在跑的那一轮（`start_step` 返回 `StepStart`），core 没收下的输入报错。给 Router 和 worker 定工具策略 | +756/-26 | c2fd5a6e7c 及之后 8 个 superagent 提交，3aa97711fa、d997bcbe16、d574ce1265 |
+| `app-server/src/superagent_host.rs`（新） | 实现引擎的 `SuperagentHost`：开会话、发消息、插话、打断，读会话的回合（含错误类型），查会话当前账号（未加载的会话答它加载时会用的账号：保存的绑定，没有就用创建它的账号，不加载它），换账号（`bind_profile`，未加载的会话只改绑定），开始排队的输入（`start_queued`：Router 一轮结束要换号时，引擎让它排队的话先等，换好后由引擎开始）。推进的步骤用完全访问（`DangerFullAccess`、`Never`），`turn_trigger = "drive"`；交出一步时回答这句话是开了新的一轮，还是插进了正在跑的那一轮（`start_step` 返回 `StepStart`），core 没收下的输入报错；读一个账号的重置卡、给它用一张（`reset_cards`、`use_reset_card`，经账号处理器）。给 Router 和 worker 定工具策略 | +789/-26 | c2fd5a6e7c 及之后 8 个 superagent 提交，3aa97711fa、d997bcbe16、d574ce1265、3e3b3e2400 |
 | `app-server/src/request_processors/superagent.rs`（新） | 引擎自己的伪连接 `SUPERAGENT_CONNECTION`；Router 不加载会话就能读会话列表和回合，以及未加载会话加载时会用的账号（`thread_account_profile_internal`，只读元数据） | +176/-2 | c2fd5a6e7c、23b6ca8d7c、722ba7c5df、d997bcbe16 |
 | `app-server/src/superagent_status.rs`（新） | 处理 `superagent/status` | +26 | c2fd5a6e7c |
-| `app-server/src/message_processor.rs` | 功能打开时建引擎服务并交给各处理器；只有 unix socket 服务（托管 daemon，或专门的 `--listen unix://`）建，`codex exec`、没有 daemon 的 TUI 和 stdio 服务不建（`MessageProcessorArgs::superagent_host`），否则它们会在同一个 `CODEX_HOME` 上多起一个引擎；停机时先停调度，再写快照（`drain_superagent`） | +99/-39 | c2fd5a6e7c、e5bae0ebfc、d59d6ce405、f7a09ce436 |
+| `app-server/src/message_processor.rs` | 功能打开时建引擎服务并交给各处理器；只有 unix socket 服务（托管 daemon，或专门的 `--listen unix://`）建，`codex exec`、没有 daemon 的 TUI 和 stdio 服务不建（`MessageProcessorArgs::superagent_host`），否则它们会在同一个 `CODEX_HOME` 上多起一个引擎；停机时先停调度，再写快照（`drain_superagent`）；宿主拿到账号处理器（重置卡用） | +101/-39 | c2fd5a6e7c、e5bae0ebfc、d59d6ce405、f7a09ce436 |
 | `app-server/src/lib.rs` | 声明两个模块；unix socket 服务才可以跑引擎（`superagent_host`）；停机前调用 `drain_superagent` | +11/-7 | c2fd5a6e7c、e5bae0ebfc、d59d6ce405、f7a09ce436 |
 | `app-server/src/in_process.rs` | 进程内 app-server（`codex exec`、没有 daemon 的 TUI）不跑引擎 | +3 | d59d6ce405 |
+| `app-server/src/request_processors/account_processor/rate_limit_resets.rs` | 给引擎的两个方法：按账号列重置卡（`superagent_reset_cards`）、按卡 id 用一张（`superagent_use_reset_card`），和 `account/rateLimitResetCredit/consume` 走同一个后端客户端 | +59 | 3e3b3e2400 |
 | `app-server/src/message_processor_tracing_tests.rs`、`message_processor_workspace_routing_tests.rs`、`user_verification_test_support.rs` | 测试里构造 `MessageProcessorArgs` 时带上 `superagent_host` | +1 ×3 | d59d6ce405 |
 | `app-server/src/extensions.rs` | `thread_extensions_with_superagent`：把引擎的工具、上下文和回合钩子装到每个线程上 | +12 | c2fd5a6e7c |
 | `app-server/src/request_processors/thread_processor.rs` | 线程处理器带上引擎；`thread_start_inner` 回报新线程 id（引擎开会话时用）；按线程套工具策略；几个读列表和回合的内部方法改成 `pub(super)` 给引擎用 | +28/-4 | c2fd5a6e7c、23b6ca8d7c |

@@ -456,6 +456,7 @@ impl MessageProcessor {
                     config: Arc::clone(&config),
                     thread_processor: std::sync::OnceLock::new(),
                     turn_processor: std::sync::OnceLock::new(),
+                    account_processor: std::sync::OnceLock::new(),
                 });
                 superagent.set_host(host.clone());
                 Some(host)
@@ -628,6 +629,7 @@ impl MessageProcessor {
         if let (Some(service), Some(host)) = (&superagent, &superagent_host) {
             host.set_thread_processor(thread_processor.clone());
             host.set_turn_processor(turn_processor.clone());
+            host.set_account_processor(account_processor.clone());
             service.start_in_background();
         }
         if let Some(startup_config) = plugin_startup_tasks {

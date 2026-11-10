@@ -100,6 +100,65 @@ impl AccountRequestProcessor {
         ))
     }
 
+    /// The reset cards of the account `profile`, for the Superagent engine, which uses one when
+    /// no account in the pool can take a session (off unless the person allows it).
+    pub(crate) async fn superagent_reset_cards(
+        &self,
+        profile: &str,
+    ) -> anyhow::Result<Vec<codex_superagent_extension::host::ResetCard>> {
+        let client = self
+            .rate_limit_reset_backend_client(Some(profile))
+            .await
+            .map_err(|err| anyhow::anyhow!("{}", err.message))?;
+        let details = tokio::time::timeout(
+            RATE_LIMIT_RESET_DETAILS_REQUEST_TIMEOUT,
+            client.list_rate_limit_reset_credits(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("listing the reset cards of {profile} timed out"))?
+        .map_err(|err| anyhow::anyhow!("listing the reset cards of {profile} failed: {err}"))?;
+        Ok(details
+            .credits
+            .into_iter()
+            .map(|credit| codex_superagent_extension::host::ResetCard {
+                available: credit.status == "available",
+                expires_at: credit
+                    .expires_at
+                    .as_deref()
+                    .and_then(|at| rate_limit_reset_credit_timestamp(at).ok()),
+                id: credit.id,
+            })
+            .collect())
+    }
+
+    /// Uses the reset card `card` on the account `profile` for the Superagent engine; `key`
+    /// makes a repeated request use it once.
+    pub(crate) async fn superagent_use_reset_card(
+        &self,
+        profile: &str,
+        card: &str,
+        key: &str,
+    ) -> anyhow::Result<codex_superagent_extension::host::ResetOutcome> {
+        use codex_superagent_extension::host::ResetOutcome;
+        let client = self
+            .rate_limit_reset_backend_client(Some(profile))
+            .await
+            .map_err(|err| anyhow::anyhow!("{}", err.message))?;
+        let response = tokio::time::timeout(
+            RATE_LIMIT_RESET_REQUEST_TIMEOUT,
+            client.consume_rate_limit_reset_credit_by_id(key, card),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("using the reset card {card} of {profile} timed out"))?
+        .map_err(|err| anyhow::anyhow!("using the reset card {card} of {profile} failed: {err}"))?;
+        Ok(match response.code {
+            BackendConsumeRateLimitResetCreditCode::Reset => ResetOutcome::Reset,
+            BackendConsumeRateLimitResetCreditCode::NothingToReset => ResetOutcome::NothingToReset,
+            BackendConsumeRateLimitResetCreditCode::NoCredit => ResetOutcome::NoCard,
+            BackendConsumeRateLimitResetCreditCode::AlreadyRedeemed => ResetOutcome::AlreadyUsed,
+        })
+    }
+
     async fn rate_limit_reset_backend_client(
         &self,
         auth_profile_id: Option<&str>,

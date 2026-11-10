@@ -57,7 +57,9 @@ PMs and their project groups, open tickets, health, queued effects, questions
 waiting for a person, the account moves the coordinator made for the Router
 and driven sessions (`accountMoves`), and every driven session (`drives`, in the
 shape of the lines the coordinator appends to `CODEX_HOME/superagent/events.jsonl`
-whenever a drive changes state, step or account). Exit codes are 0 (healthy), 2 (failed
+whenever a drive changes state, step or account), and the reset cards the
+coordinator used when no account could take a session (`resetCards`; off unless
+`CODEXT_SUPERAGENT_RESET_CARDS_PER_DAY` allows some). Exit codes are 0 (healthy), 2 (failed
 component or stalled ticket), and 3 (initialization or PM configuration
 incomplete). A disabled feature returns an RPC error. This status does not prove
 which account an upstream account gateway used for a model request.

@@ -31,6 +31,8 @@ use codex_state::StateRuntime;
 use codex_superagent_extension::BoxFut;
 use codex_superagent_extension::host::DeliveryMode;
 use codex_superagent_extension::host::GoalStatus;
+use codex_superagent_extension::host::ResetCard;
+use codex_superagent_extension::host::ResetOutcome;
 use codex_superagent_extension::host::SessionBrief;
 use codex_superagent_extension::host::SessionPage;
 use codex_superagent_extension::host::StepStart;
@@ -44,6 +46,7 @@ use codex_extension_api::ToolName;
 use codex_extension_api::ToolPolicy;
 use std::sync::OnceLock;
 
+use crate::request_processors::AccountRequestProcessor;
 use crate::request_processors::ThreadRequestProcessor;
 use crate::request_processors::TurnRequestProcessor;
 
@@ -58,6 +61,8 @@ pub(crate) struct AppServerSuperagentHost {
     pub(crate) thread_processor: OnceLock<ThreadRequestProcessor>,
     /// The turn processor, once built: thread settings (model, effort) for the capacity policy.
     pub(crate) turn_processor: OnceLock<TurnRequestProcessor>,
+    /// The account processor, once built: the reset cards of an account.
+    pub(crate) account_processor: OnceLock<Arc<AccountRequestProcessor>>,
 }
 
 /// What a PM thread may call: the Router's superagent tools and the plan tool, nothing that
@@ -94,6 +99,17 @@ impl AppServerSuperagentHost {
 
     pub(crate) fn set_turn_processor(&self, processor: TurnRequestProcessor) {
         let _ = self.turn_processor.set(processor);
+    }
+
+    pub(crate) fn set_account_processor(&self, processor: Arc<AccountRequestProcessor>) {
+        let _ = self.account_processor.set(processor);
+    }
+
+    fn accounts(&self) -> anyhow::Result<&AccountRequestProcessor> {
+        self.account_processor
+            .get()
+            .map(Arc::as_ref)
+            .ok_or_else(|| anyhow::anyhow!("the account processor is not ready yet"))
     }
 
     fn processor(&self) -> anyhow::Result<&ThreadRequestProcessor> {
@@ -680,6 +696,23 @@ impl SuperagentHost for AppServerSuperagentHost {
                 anyhow::anyhow!("reading the token count of {thread} failed: {err}")
             })?;
             Ok(metadata.map(|metadata| metadata.tokens_used))
+        })
+    }
+
+    fn reset_cards(&self, profile: String) -> BoxFut<'_, anyhow::Result<Vec<ResetCard>>> {
+        Box::pin(async move { self.accounts()?.superagent_reset_cards(&profile).await })
+    }
+
+    fn use_reset_card(
+        &self,
+        profile: String,
+        card: String,
+        key: String,
+    ) -> BoxFut<'_, anyhow::Result<ResetOutcome>> {
+        Box::pin(async move {
+            self.accounts()?
+                .superagent_use_reset_card(&profile, &card, &key)
+                .await
         })
     }
 
