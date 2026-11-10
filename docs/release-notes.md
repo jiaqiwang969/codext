@@ -1,79 +1,138 @@
 # codext 0.167.0：Superagent Router 版
 
-以 openai/codex `rust-v0.167.0` 为底，加上 Codext 底座和 Superagent。Superagent 由两部分组成：常驻 daemon 里的推进引擎，以及 Router 会话。这一版已经在作者的日常环境里运行，正推进一个六路并行的有限元项目。
+本 fork 第一次在 GitHub 上发版。基础是 openai/codex `rust-v0.167.0`，在它上面加了 Codext 底座和 Superagent。Superagent 有两部分：daemon 里的推进引擎，以及一个常驻的 Router 会话。
 
-## 这是什么
+这一版的重点是 2026-11-09 到 11-10 的两批更新：
+- 换号从"失败后再换"改成"提前换"；
+- Router 推进多路工作时，说话有凭据，会等，会记住用户定的规矩。
 
-- **Codext 底座**（细节见 [CHANGED.md](https://github.com/jiaqiwang969/codext/blob/main/CHANGED.md)）：
-  - 账号池：多个 ChatGPT 账号可以按会话切换，`/profile`，`codex-account-next`。
-  - 状态栏显示模型、目录、额度和账号。
-  - `auth.json` 热重载。
-  - 改用本地验证过的包更新。
-- **Superagent**：
-  - Router 是一个常驻会话，替你看本机的所有会话，并按你的意思推进其中几路。每一路是一个文件夹加一个工作会话，可以锚定到工程目标。
-  - 引擎是 daemon 里的程序，不花额度，负责记账、核对、等待、巡检和换号。
-  - 说明见 [docs/superagent/README.md](https://github.com/jiaqiwang969/codext/blob/main/docs/superagent/README.md)。
+这一版已经在作者的日常环境里运行，正在推进一个六路并行的有限元项目。
 
-## 这一版新增
+## 本次更新一览
 
-**Router 和推进**
-- **回话依据更宽**。Router 对工作会话说的每句话，都要写明接着哪句原话、为了什么，由引擎核对。可以引用的出处扩大到：用户对 Router 说过的话、长期规矩、这一路最近 5 条结论、别的路的结论。编造的、带方法名或编号的话，照样退回。
-- **等待**。一路要等别的路交结论、等一段时间、等某个文件、等用户回话时，Router 写明在等什么，等到了由引擎叫醒它。
-- **长期规矩**。用户说的、今后都有效的话，照抄原话记进引擎账本，可以对全部、某个文件夹或某一路生效。上下文压缩、daemon 重启后都还在，也能当回话的依据。
-- **少打扰用户**。只有方向偏了、真的没进展，才停下来要用户定，而且接着做时必须带上用户的原话。记录写错、判定程序出错这类事，由 Router 让工作会话自己补。
-- **按项目分 Router**。大项目可以有自己的 Router（`router.py create <项目> <目录>`），已有的推进用 `adopt` 接过来，通知只送给开它的那个 Router。
-- **起草者**（默认关，按路打开）。一路交了结论，先由起草会话写下一句，核对通过就直接发。
+- **提前换号**：额度快用完前，就在两轮或两步之间换号；Router 一轮里第一次报满载就换；每个账号最多挂 4 路；额度一回来，冷却就提前结束。
+- **等待**：一路要等别的路、等一段时间、等某个文件或等用户时，可以挂起，等到了由引擎叫醒。
+- **长期规矩**：用户今后都有效的话，照原话记进引擎账本，压缩和重启都不丢。
+- **回话依据更宽，打扰更少**：用户对 Router 说过的话、长期规矩、别的路的结论都能当依据；只有方向偏了、真的没进展才找用户。
+- **看得见，不卡住**：
+  - 事件流和每分钟巡检。
+  - 回合结束以钩子为准，不会再卡在"正在做"。
+  - 网络断了，自动重发一次。
+- **更大的项目**：可以按项目单独开 Router。起草者和引擎自动用重置卡也有了，这两样默认关。
+- **终端界面**：别处给会话换了号，开着的窗口状态栏当场跟着换。
+- **发版**：只发到 GitHub，不发 npm；macOS x64 改为交叉编译。
 
-**引擎**
-- **事件流**。每次状态、步数、账号变化都追加到 `$CODEX_HOME/superagent/events.jsonl`；`superagent/status` 的 `drives` 按同样的形状列出每一路。
-- **每分钟巡检**。在每路的清单行上标出：交了结论半小时没人回、做了一个半小时文件夹没动、步数快用完、原地打转、一个账号上的会话太多。
-- **更稳**：
-  - 回合结束以钩子为准，不再卡在"正在做"。
+## 详细说明
+
+### 一、换号：提前换（11-09）
+
+- **什么时候看额度**：引擎定时查看 Router 账号的额度（`CODEXT_SUPERAGENT_QUOTA_WATCH_SECS`）。另外，Router 每一轮结束时、引擎给 Router 送话之前、推进的每一步开始之前，也各看一次。
+- **怎么换**：
+  - 剩余额度低于软阈值（默认 10%）：在两轮或两步之间换到额度够的账号，正在做的事不打断。
+  - 低于硬阈值（默认 3%）、在冷却中或账号不可用：同样在交界处换。
+- **少读账号服务**：平时只读被盯着的那几个账号，要挪的时候才读整个账号池。
+- **账号设定照办**：
+  - 开新推进时指定了账号，就按那个账号开。
+  - 没加载的会话改换号，按它保存的绑定生效，下次加载就用新账号。
+- **冷却提前结束**：额度用完的账号进了冷却，之后一读到额度回来（比如刚用了重置卡），冷却就提前结束。
+- **Router 的兜底**：Router 一轮里出现满载或额度用完达到 N 次（`CODEXT_SUPERAGENT_ROUTER_RESCUE_THRESHOLD`，默认 2，建议设 1），就打断这一轮、换号，再把原话交回。
+- **分散**：每个账号上最多 4 路（`CODEXT_SUPERAGENT_MAX_PER_ACCOUNT`）。同一个账号一步之后只会被换走一次，不会来回换。
+
+### 二、Router 推进：话有凭据、会等、会记（11-10）
+
+- **回话依据**：Router 对工作会话说的每句话，都要写明两件事，引擎逐条核对：
+  - 接着哪句原话说（`builds_on`）；
+  - 为了源头的哪一点（`serves`）。
+
+  能引用的出处扩大到：这一路最近 5 条结论、用户原话和纠正、用户在会话里打的字、用户对 Router 说过的话、长期规矩；`builds_on` 还可以引用别的路的结论。被退回时，引擎说明找过哪些地方；清单上这一路会标着"上一句被退回，还在等你"。编造的、带方法名或编号的话，照样退回。
+- **多推几步，做到哪停**：
+  - 用户同意多推几步时，回话里带 `max_steps`。
+  - 用 `until` 说清这一步做到哪停，引擎把它接在话后面告诉工作会话。
+  - 已经停着的一路，可以直接接着说，不用先恢复。
+- **等待**：一路要等别的路交结论、等一段时间、等某个文件出现、等用户回话时，Router 写明在等什么，这一路显示为"等待：…"。等到了，引擎把它交回 Router 并通知。设了提醒时间却还没等到的，提醒一次。
+- **长期规矩**：
+  - 用户说的、对今后都有效的话，Router 照抄原话记下（`remember`），删掉用 `forget`。
+  - 作用范围可以是全部、某个文件夹下的各路，或某一路。
+  - 规矩常驻 Router 的上下文，压缩、重启都不丢，也能当回话的依据。
+- **少打扰用户**：
+  - 只有方向偏了、真的没进展，才停下来要用户定；接着做时，必须带上用户的原话。
+  - "没进展"要求连续两步既没有补记录，文件夹里也没有任何写入，才算。
+  - 判定程序自己出错、记录写得不对，都不再找用户，由 Router 让工作会话补上。
+- **做事习惯**：Router 的规则里加了八条做事习惯；被推进的会话，交的结论要附能复查的证据。
+
+### 三、引擎：看得见、不卡住（11-10）
+
+- **事件流**：每次状态、步数、账号的变化，以及推进的开始和结束，都追加一行到 `$CODEX_HOME/superagent/events.jsonl`（超过 8 MB 换文件）。`superagent/status` 的 `drives` 用同样的格式列出每一路。外面要盯着推进，读这个文件就行。
+- **每分钟巡检**：
+  - 等的东西到了，就叫醒 Router。
+  - 一步做完却没读到结论的，再读一次。
+  - 在这一路的清单行上标出：交了结论半小时没人回、一步做了一个半小时而文件夹一小时没写入、步数快用完、最近两次结论开头一样、连着 5 步都不到 3 分钟、一个账号上的会话太多。前两种还会通知 Router 一次。
+- **不卡住**：
+  - 回合结束以钩子为准，等会话记录跟上（最多一分钟）再取结论。所以不会再卡在"正在做"，额度失败也不会被误读成被打断。
   - 暂停期间做完的那一步，结论照样留着。
-  - 网络断开或服务出错时，45 秒后重发一次。
-  - 通知先攒着，合成一条送，过期的不送。
-- **只在 unix socket 的 daemon 里跑**，每个 `CODEX_HOME` 一把锁。对同一目录跑 `codex exec`，不会再多起一个引擎。
+  - 一步因为网络断开、工作区路由查询失败或服务出错而失败时，45 秒后在原账号上重发一次，再失败才暂停。
+- **通知**：Router 正在回答时，通知先攒着，空下来合成一条送。Router 已经回过、停过或交回过的那一路，通知就不送了。通知只送给开这次推进的那个 Router。
+- **只跑一个引擎**：引擎只在 unix socket 服务里跑，也就是托管 daemon 或专门的 `--listen unix://`；每个 `CODEX_HOME` 有一把引擎锁。`codex exec`、没有 daemon 的终端界面和 stdio 服务都不跑引擎，所以对日常目录跑 `codex exec`，不会再多起一个引擎、把正在做的几路误判成"没有正常结束"。
 
-**换号**
-- **提前换**。剩余额度低于软阈值时，在两轮或两步之间换号；低于硬阈值、在冷却中或账号不可用时，同样在交界处换。Router 的一轮里第一次报满载或额度用完，就打断、换号，再把原话交回（`CODEXT_SUPERAGENT_ROUTER_RESCUE_THRESHOLD`）。
-- **分散**。每个账号上最多 4 路（`CODEXT_SUPERAGENT_MAX_PER_ACCOUNT`）。额度用完的账号一读到额度回来，冷却就提前结束。
-- **重置卡**（默认关，`CODEXT_SUPERAGENT_RESET_CARDS_PER_DAY`）。没有账号能接手时，引擎可以按规则用卡：只给已经用完、而且离自然重置还远的账号用。
+### 四、更大的项目（11-10）
 
-**终端界面**
-- 引擎、Router 或其他客户端给一个会话换号后，正开着这个会话的窗口，状态栏的账号、额度和"weekly limit"提示会当场跟着换。这是新增的 app-server v2 通知 `thread/accountProfile/updated`。
+- **按项目分 Router**：`python3 -I scripts/superagent/router.py create <项目> <目录>` 给项目单独建一个 Router；之后用 `pin <项目>`、`ask "…" <项目>` 找它。它开的推进归它，别的 Router 推进的会话可以用 `adopt` 接过来。
+- **起草者**（默认关，按路打开）：一路交了结论，先交给起草会话写下一句和依据，引擎按同样的规则核对通过就直接发。以下情况仍交给 Router：做完等验收、要用户定的取舍、对外的动作、拿不准的。
+- **重置卡**（默认关）：`CODEXT_SUPERAGENT_RESET_CARDS_PER_DAY` 大于 0 时，一旦没有任何账号能接手，引擎就自己用一张卡。规则：
+  - 只给已经用完、而且离自然重置还远（默认 12 小时以上）的账号用；
+  - 自然重置最晚的先用；
+  - 同一个账号先用最早过期的卡。
+
+  用过的卡记在 `superagent/status` 的 `resetCards` 里。
+
+### 五、终端界面（11-10）
+
+- 引擎、Router 或其他客户端给一个会话换号后，正开着这个会话的窗口，状态栏的账号、额度和"weekly limit"提示会当场跟着换。这是新增的 app-server v2 通知 `thread/accountProfile/updated`，发给这个会话的其他订阅者。
+- `/agents` 列表里那个会话的账号列也跟着变。
+- 从 `/agents` 打开一个还没说过话的会话时，状态栏对齐到这个会话的账号。
+
+### 六、发版（11-10）
+
+- 发版只发到 GitHub。npm 上的包名属于上游 codext，所以发 npm 要在触发时显式打开 `publish_npm`，默认关。
+- 发布说明来自仓库里的 `docs/release-notes.md`。
+- macOS x64 改在 Apple 芯片的编译机上交叉编译：Intel 编译机在 4 小时的时限内编不完。
 
 ## 设置项（环境变量，在启动 daemon 时给）
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
 | `CODEXT_SUPERAGENT_QUOTA_WATCH_SECS` | 120 | 多久看一次 Router 账号的额度；0 关掉定时查看 |
-| `CODEXT_SUPERAGENT_QUOTA_SOFT_PERCENT` | 10 | 低于它就在两轮之间换号 |
+| `CODEXT_SUPERAGENT_QUOTA_SOFT_PERCENT` | 10 | 低于它就在两轮或两步之间换号 |
 | `CODEXT_SUPERAGENT_QUOTA_HARD_PERCENT` | 3 | 低于它算快用完 |
 | `CODEXT_SUPERAGENT_ROUTER_RESCUE_THRESHOLD` | 2 | Router 一轮里满载或用完几次就打断换号（建议 1） |
-| `CODEXT_SUPERAGENT_MAX_PER_ACCOUNT` | 4 | 每个账号最多几路 |
-| `CODEXT_SUPERAGENT_RESET_CARDS_PER_DAY` | 0 | 引擎 24 小时内最多自己用几张重置卡 |
+| `CODEXT_SUPERAGENT_ROUTER_RESCUE_WINDOW_SECS` | 180 | 上面这几次要落在多少秒之内 |
+| `CODEXT_SUPERAGENT_MAX_PER_ACCOUNT` | 4 | 每个账号最多几路；0 关掉 |
+| `CODEXT_SUPERAGENT_RESET_CARDS_PER_DAY` | 0 | 引擎 24 小时内最多自己用几张重置卡；0 不用 |
+| `CODEXT_SUPERAGENT_RESET_CARD_MIN_HOURS` | 12 | 离自然重置还有多少小时以上的账号才值得用卡 |
 
 ## 验证
 
-- 引擎测试全部通过；`codex-app-server-protocol` 322 项、`codex-app-server` 库 425 项通过，另有新增的服务端和界面测试。
-- 模拟模型的端到端：推进 39 项、Router 20 项全部通过，服务日志没有错误。
-- 真实模型在实验室试跑：
+- **单元测试**：引擎测试全部通过；`codex-app-server-protocol` 322 项、`codex-app-server` 库 425 项通过。新增的面板测试也通过：服务端的两个连接、界面的通知处理。
+- **模拟模型的端到端**：推进 39 项、Router 20 项全部通过，服务日志 0 个错误。
+- **真实模型在实验室试跑**，以下都通过：
   - 按指定账号开推进；
   - 长期规矩写进账本；
   - 等的文件出现后，50 秒内叫醒 Router；
   - Router 的回话通过核对，"做到哪停"由引擎接在话后面。
+- **日常环境**：2026-11-10 起运行，带着两个设置：每 5 分钟查一次额度，Router 第一次报错就换号。目前一个项目 Router 推进六路，引擎多次在两步之间自动换号。
 
-## 安装
+## 安装与升级
 
 - 从下面的附件里下载对应平台的压缩包：macOS arm64/x64、Linux x64/arm64（musl）、Windows x64。
 - 打开 Superagent：
   1. 在 `config.toml` 里写 `[features] superagent = true`；
-  2. 在 `~/.codex/superagent/router-mode` 里写 `drive`；
+  2. 在 `~/.codex/superagent/router-mode` 里写 `drive`（不写或写 `observe` 时只看不推）；
   3. 用 `scripts/superagent/router.py create` 建 Router。
-- 从源码装、更新和回退，见 [docs/superagent/updating.md](https://github.com/jiaqiwang969/codext/blob/main/docs/superagent/updating.md)。
+- 从源码装、在实验室先试、更新和回退，见 [docs/superagent/updating.md](https://github.com/jiaqiwang969/codext/blob/main/docs/superagent/updating.md)。底座的全部改动见 [CHANGED.md](https://github.com/jiaqiwang969/codext/blob/main/CHANGED.md)，Superagent 的说明见 [docs/superagent/README.md](https://github.com/jiaqiwang969/codext/blob/main/docs/superagent/README.md)。
 
 ## 已知限制
 
-- 不发布到 npm：npm 上的包名属于上游 codext。
+- 不发布到 npm。
 - 子 agent 一类的会话在后台被换号时，窗口要等下次打开它才对齐。用共享默认账号的会话，窗口没法切回默认账号。
-- 实验室里见过，Router 偶尔把"做到哪停"这类本该自己掌握的话转告给工作会话；不影响后面的等待和推进。
+- 实验室里见过，Router 偶尔把"做到哪停"这类本该自己掌握的话，转告给工作会话；不影响后面的等待和推进。
+- 起草者、项目 Router、引擎自动用卡都是这一版新加的。前两样已有测试，项目 Router 正在作者的日常环境里使用；起草者和自动用卡还没有在长时间运行中检验过。
