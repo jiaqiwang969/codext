@@ -54,8 +54,10 @@ After opting into `initialize.capabilities.experimentalApi`, call
 `superagent/status` with no parameters. The response is
 `{ "exitCode": 0, "status": { ... } }`. Status includes initialization, registered
 PMs and their project groups, open tickets, health, queued effects, questions
-waiting for a person, and the account moves the coordinator made for the Router
-and driven sessions (`accountMoves`). Exit codes are 0 (healthy), 2 (failed
+waiting for a person, the account moves the coordinator made for the Router
+and driven sessions (`accountMoves`), and every driven session (`drives`, in the
+shape of the lines the coordinator appends to `CODEX_HOME/superagent/events.jsonl`
+whenever a drive changes state, step or account). Exit codes are 0 (healthy), 2 (failed
 component or stalled ticket), and 3 (initialization or PM configuration
 incomplete). A disabled feature returns an RPC error. This status does not prove
 which account an upstream account gateway used for a model request.
@@ -81,7 +83,12 @@ retries alone do not qualify. Assignment/turn receipts and retry counts survive
 restarts, and changed ticket state or active work cancels delayed continuation.
 
 The coordinator runs in the managed daemon as well as in a dedicated
-`--listen unix://...` server. The threads it drives (PM threads and worker
+`--listen unix://...` server, never in an embedded app-server (`codex exec`, a TUI
+without a daemon) or a stdio server, which would open the same `CODEX_HOME` beside
+the daemon. Two servers on one home share it through `superagent/engine.lock`: the
+second waits until the first stops. A drive step handed to a session whose turn
+is still running joins that turn, and the host tells the coordinator so instead
+of reporting a new turn. The threads it drives (PM threads and worker
 threads of open tickets) are left to its own startup reconciliation: the daemon
 snapshot skips them, shutdown stops the coordinator's scheduling before the
 snapshot is taken, and a registered `AutomaticTurnArbiter` declines Goal and
