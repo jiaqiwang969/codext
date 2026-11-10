@@ -1037,7 +1037,7 @@ pub async fn run_main_with_transport_options(
                 PluginStartupTasks::Start
             )
             .then_some(plugin_startup_config),
-            superagent_host: managed_daemon,
+            superagent_host: matches!(&transport, AppServerTransport::UnixSocket { .. }),
         });
         processor.remote_control_processor.daemon_settings_file = daemon_settings_file;
         let processor = Arc::new(processor);

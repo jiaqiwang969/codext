@@ -293,10 +293,12 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) remote_control_handle: Option<RemoteControlHandle>,
     /// `None` skips startup tasks; otherwise preserve the initial config-loading path.
     pub(crate) plugin_startup_tasks: Option<PluginStartupConfig>,
-    /// Whether this process may run the Superagent engine when the feature is on: only the
-    /// managed daemon does. An embedded app-server (`codex exec`, a TUI without a daemon) or a
-    /// stdio app-server opens the same `CODEX_HOME` beside the daemon, and a second engine there
-    /// would take the daemon's driven sessions for interrupted and pause them.
+    /// Whether this process may run the Superagent engine when the feature is on: a unix-socket
+    /// server does (the managed daemon, or a dedicated `--listen unix://` server). An embedded
+    /// app-server (`codex exec`, a TUI without a daemon) or a stdio app-server opens the same
+    /// `CODEX_HOME` beside the daemon, and a second engine there would take the daemon's driven
+    /// sessions for interrupted and pause them. Two servers on one home share the engine through
+    /// its lock (`superagent/engine.lock`): the second waits.
     pub(crate) superagent_host: bool,
 }
 
