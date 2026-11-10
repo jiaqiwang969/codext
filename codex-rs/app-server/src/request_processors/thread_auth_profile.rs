@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::message_processor::ConnectionSessionState;
+use codex_app_server_protocol::ThreadAccountProfileUpdatedNotification;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::SessionSource;
 
@@ -85,7 +86,7 @@ impl ThreadRequestProcessor {
                     ));
                 }
             }
-            if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
+            let rebound = if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
                 ensure_direct_input_allowed(thread.as_ref()).await?;
                 if thread.config_snapshot().await.ephemeral {
                     return Err(invalid_request(
@@ -96,7 +97,8 @@ impl ThreadRequestProcessor {
                     .thread_manager
                     .auth_profile_id_for_thread(thread_id)
                     .await;
-                if current_profile.as_deref() != Some(params.name.as_str()) {
+                let rebound = current_profile.as_deref() != Some(params.name.as_str());
+                if rebound {
                     self.replace_thread_account_runtime(
                         request_id,
                         thread_id,
@@ -106,8 +108,8 @@ impl ThreadRequestProcessor {
                         app_server_client_version,
                     )
                     .await?;
-                    changed = true;
                 }
+                rebound
             } else {
                 // Select the account before cold resume loads any runtime or
                 // continues a goal. The previous account need not exist or log in.
@@ -133,19 +135,46 @@ impl ThreadRequestProcessor {
                         ));
                     }
                 }
-                changed |= self
-                    .account_profiles
+                self.account_profiles
                     .thread_profile(thread_id)
                     .map_err(internal_error)?
                     .as_deref()
-                    != Some(params.name.as_str());
-            }
+                    != Some(params.name.as_str())
+            };
+            changed |= rebound;
             // Acknowledge only after any live runtime and its next cold resume
             // select this account. The creator identity remains historical.
             self.account_profiles
                 .save_thread_profile(thread_id, &params.name)
                 .map_err(internal_error)?;
             tracing::info!(%thread_id, profile = %params.name, "switched thread authentication profile");
+            // Other windows on this thread read account state and quota through their own
+            // connection's profile; tell them it moved. This includes switches by the Superagent
+            // engine, whose pseudo-connection never subscribes. The requester has the response.
+            // An unloaded thread has no subscribers.
+            if rebound {
+                let subscribers: Vec<ConnectionId> = self
+                    .thread_state_manager
+                    .subscribed_connection_ids(thread_id)
+                    .await
+                    .into_iter()
+                    .filter(|connection_id| *connection_id != request_id.connection_id)
+                    .collect();
+                // An empty connection list would broadcast to every client.
+                if !subscribers.is_empty() {
+                    self.outgoing
+                        .send_server_notification_to_connections(
+                            &subscribers,
+                            ServerNotification::ThreadAccountProfileUpdated(
+                                ThreadAccountProfileUpdatedNotification {
+                                    thread_id: thread_id.to_string(),
+                                    account_profile: params.name.clone(),
+                                },
+                            ),
+                        )
+                        .await;
+                }
+            }
         }
         session.set_auth_profile_id(Some(params.name.clone())).await;
         let auth = auth_manager.auth_cached();

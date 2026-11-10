@@ -34,6 +34,15 @@ on `thread/list`, `thread/read`, and resume, so a shared
 daemon client can show which account owns each active task without changing the
 thread's work context.
 
+When `account/profile/switch` rebinds a loaded thread, the server sends
+`thread/accountProfile/updated` with `{ "threadId", "accountProfile" }` to every
+other connection subscribed to that thread, including when the organization
+coordinator moves it. The requesting connection relies on the response instead.
+A client that shows the thread and reads account state or quota through its
+connection default can follow the move by selecting the same profile without
+`threadId`. An unloaded thread has no subscribers, so nothing is sent; its next
+resume reports the binding in `thread.extra.accountProfile`.
+
 The account-pool status helper uses the internal CLI command
 `app-server daemon account-status <name> --timeout-ms 12000`. It opens a dedicated
 WebSocket connection to the local daemon, selects the profile without a
