@@ -69,8 +69,25 @@ outside the fork's shipped runtime. No override-manifest change was needed.
   needed no content change. Upstream direct-module-version warnings remain.
 - `cargo test -p codex-superagent-extension`: 209 passed, zero failures, using
   official locked dependencies.
-- Packaged daemon and live-drive results are recorded in laboratory evidence
-  for this candidate after packaging.
+- Canonical macOS arm64 package `0.169.1-cc60f08ee1`: built and installed in
+  the laboratory; its CLI SHA256 is
+  `a3f59d1e8e5471a030e8478e69c5f069f6da66fe8eae43997e12f7403a8e422e`.
+- Existing packaged-binary `drive_e2e.py`: passed simple and anchored drives,
+  grounded `say`, notifications, account failover and Router retry. Its two
+  logged errors are the expected rejected `say` inputs.
+- Dedicated real-model Router and worker: passed profile binding and subscriber
+  notification, in-flight steering, conclusion delivery, a grounded second step,
+  result readback and stopping the drive. The account passed the user's isolated
+  image check before selection. The first operational attempt lacked a worker
+  subscription in the driver; that driver was corrected, with both attempts
+  retained. The candidate executable was unchanged.
+- The original laboratory Router list is restored; test drives are released.
+  The daily daemon package path and CLI hash are unchanged. Laboratory quota
+  watching is disabled (`CODEXT_SUPERAGENT_QUOTA_WATCH_SECS=0`).
+
+Private local evidence: `~/242-superagent-codext-lab/tests/runs/rust-v0.169.1-cc60f08ee1/`.
+Multi-platform CI and manual TUI visual acceptance were not run. The validated
+artifact is the local macOS arm64 package, not a cross-platform release.
 
 The V8 dependency is the upstream-locked `90a65f887a0c0f048f3784afbcb320b373c8a2e0`.
 A temporary diagnostic path override was removed before final validation;
