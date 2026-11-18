@@ -1,0 +1,79 @@
+# 更新计划
+
+本 fork 有两类更新：跟上游 openai/codex 升级，以及更新 superagent 本身。两类都先在实验室测，用户同意后才进 `main`、发到日常。
+
+## 三层
+
+1. **上游**：openai/codex。只跟稳定版 tag `rust-vX.Y.Z`，不跟 alpha、beta、rc。
+2. **Codext 底座**：账号池和 `/profile`、状态栏、复制草稿、会话改名、额度恢复、过载重试等。需求清单是 [CHANGED.md](../../CHANGED.md)，0.167 的候选重做记录在 [reapply-0.167.0.md](../reapply-0.167.0.md)。
+3. **Superagent**：引擎 crate `codex-rs/ext/superagent/` 加上它在 codex 里的接入点（[seams.md](seams.md)）。
+
+底座直接从 openai/codex 的 tag 重做，不再等 Loongphy/codext。Loongphy 的分支只在它先做过同一处适配时拿来参考，不从它合并。
+
+## 分支
+
+- GitHub 上只留一个分支 `main`，它等于上游稳定版加底座加 superagent。日常仓库 `~/00-nixos-config/codext` 和实验室仓库都停在 `main`。
+- 改动先在临时分支上做：上游升级用 `feat/rust-vX.Y.Z`，superagent 的新功能用 `feat/router-*`。用户验收后合进 `main`，再把临时分支在本地和 GitHub 上都删掉。
+- 升级分支从上游 tag 起，不在旧 `main` 的历史上，所以 `main` 是整个换过去（强制推送），不是快进。换之前先给旧 `main` 打标签 `archive/rust-v<旧版本>` 并推上去，旧历史靠这个标签保留。已有的归档标签：`archive/rust-v0.166.0`（含 Router 的开发历史）、`archive/pre-0.166.0`、`archive/engineering-agent-definition-20261028`。
+- 提交前缀：引擎用 `superagent:`；接入点用所在 crate，例如 `app-server:`、`core:`；底座和其他改动照常写。
+
+## 跟上游升级一次
+
+1. **看有没有新版。**
+
+   ```sh
+   git ls-remote --tags --refs https://github.com/openai/codex.git 'rust-v*' \
+     | sed 's|.*refs/tags/||' | grep -E '^rust-v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1
+   ```
+
+   和 `CHANGED.md` 开头写的当前上游版本比，一样就不用升级。
+
+2. **重做底座。** 按 `.agents/skills/codex-upstream-reapply` 从新 tag 建 `feat/rust-vX.Y.Z`，逐条对照 `CHANGED.md` 在新代码上重做。上游已经做了的条目要删掉记录，不重做。
+3. **带上 superagent。** 把 `codex-rs/ext/superagent/` 整个拷过去（包括测试，内容不变），再按 [seams.md](seams.md) 逐个重接接入点。上游改了结构，就按新结构接同一个需求。
+4. **构建和测试。** 在 `codex-rs` 下：
+
+   ```sh
+   CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo build -p codex-cli
+   cargo test -p codex-superagent-extension
+   ```
+
+   两条都要通过。
+
+5. **在实验室试。**
+
+   ```sh
+   cd ~/242-superagent-codext-lab/codext && git fetch origin && git checkout feat/rust-vX.Y.Z
+   scripts/superagent/promote.sh build
+   scripts/superagent/promote.sh lab <实验室账号>
+   python3 -I ~/242-superagent-codext-lab/tests/scripts/drive_e2e.py ~/242-superagent-codext-lab/build/current/bin/codex
+   ```
+
+   端到端的事实要全部通过。之后再用真模型让实验室的 Router 推进一个小目标，确认通知、`say`、插话和换号都正常。
+
+   用 `codex-account-next list --home ~/242-superagent-codext-lab/.codex --binary ~/242-superagent-codext-lab/build/current/bin/codex` 查询实验室账号池；选重置最早、剩余额度至少 5%、且未冷却的付费账号，记录实际使用的账号。额度耗尽冷却到重置时间，模型满载冷却 15 分钟，然后按同一规则换号重试。
+
+   真模型验证使用专用测试 Router 和会话。现有引擎默认把推进通知送给 `pm-threads` 的首位：测试期间把专用 Router 临时放首位，结束后恢复原列表，不能仅追加在旧 Router 后面。`start` 即使指定已有会话，也要提供它的 `folder`。先核对可用检查手段；受系统代理等环境限制时，保留原始失败并给出可复核的替代验证。
+
+6. **用户验收后再发。** 去掉 `AGENTS.md` 里这次升级的临时说明；给旧 `main` 打标签 `archive/rust-v<旧版本>` 并推送，再把 `main` 强制推送到新分支，然后在本地和 GitHub 上删掉 `feat/rust-vX.Y.Z`。日常仓库和实验室仓库都把本地 `main` 重置到新的 `origin/main`，最后用 `PKG=<验收过的包> scripts/superagent/promote.sh daily` 发到日常。日常有会话正在做时，先等它这一步做完，或者请 Router 先暂停它。
+
+什么时候更新由用户决定：用户在 Router 里说要更新才开始，不定时自动更新。
+
+## 更新 superagent
+
+1. 从 `main` 开 `feat/router-<名字>`。只改引擎和必要的接入点；接入点有增减时，更新 [seams.md](seams.md)。
+2. 测试：引擎测试，实验室端到端，再用真模型试一次。
+3. 用户同意后快进 `main` 并推送，删掉 `feat/router-<名字>`（本地和 GitHub），再用 `promote.sh daily` 发到日常。
+
+## 发布
+
+- `rust-release.yml` 只能手动触发：Actions → rust-release → Run workflow。推送 `main` 不再自动构建五个平台。
+- 日常用的是本机构建的包，经 `promote.sh` 安装，不经过 GitHub Release。
+
+## 本地更新与剩余发布配置
+
+本 fork 的 TUI 已关闭自动更新提示，`codex update` 会指向这里的实验室验证和人工验收流程。`promote.sh build` 用 `0.167.0-<commit>` 形式标记本地候选包，包名与提交对应。
+
+以下发布配置仍保留原始命名，当前不触发发布：
+
+- npm 包名：`codex-cli/package.json`、`codex-cli/bin/codex.js`、`codex-cli/scripts/install_native_deps.py` 和 `rust-release.yml` 的 npm 发布都用 `@loongphy/codext`，本 fork 没有它的发布权限。
+- `rust-release.yml` 里的 `Loongphy/setup-zig` action。

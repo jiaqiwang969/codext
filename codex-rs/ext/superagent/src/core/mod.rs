@@ -1,0 +1,52 @@
+//! The coordination domain, ported from the prototype's `src/core`. No I/O of its own: the engine
+//! runs every command in one transaction of the store.
+
+pub mod assignments;
+pub mod engine;
+pub mod errors;
+pub mod evals;
+pub mod intake;
+pub mod model;
+pub mod policy;
+pub mod ports;
+pub mod reasons;
+pub mod replies;
+pub mod stage;
+pub mod thread_rules;
+pub mod tickets;
+
+pub use engine::Engine;
+pub use engine::EngineForExecutor;
+pub use engine::EngineForPeople;
+pub use engine::EngineForPm;
+pub use engine::EngineOptions;
+pub use engine::PrepareTicket;
+pub use engine::refusal;
+pub use engine::worker_thread_key;
+pub use errors::UserError;
+pub use errors::UserErrorCode;
+pub use model::*;
+pub use policy::CodextPolicy;
+pub use ports::AcceptOutcome;
+pub use ports::Candidate;
+pub use ports::DomainEvent;
+pub use ports::EngineHooks;
+pub use ports::Event;
+pub use ports::GateResult;
+pub use ports::ListenAll;
+pub use ports::NoHooks;
+pub use ports::Outcome;
+pub use ports::OutcomeReason;
+pub use ports::Policy;
+pub use ports::ReceiveResult;
+pub use ports::Reply;
+pub use ports::ReplyPurpose;
+pub use ports::ReplyRequest;
+pub use ports::ScopeResult;
+pub use ports::SourceScope;
+pub use ports::WorkerReport;
+pub use reasons::Reason;
+pub use reasons::reason_text;
+pub use stage::TicketStage;
+pub use stage::can_retry;
+pub use stage::ticket_stage;
