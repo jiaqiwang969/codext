@@ -54,6 +54,7 @@ from .v2_all import ServerRequestResolvedNotification
 from .v2_all import SkillsChangedNotification
 from .v2_all import StrictReviewRequiredNotification
 from .v2_all import TerminalInteractionNotification
+from .v2_all import ThreadAccountProfileUpdatedNotification
 from .v2_all import ThreadArchivedNotification
 from .v2_all import ThreadAttachmentUpdatedNotification
 from .v2_all import ThreadClosedNotification
@@ -140,6 +141,7 @@ KnownNotificationPayload: TypeAlias = (
     | SkillsChangedNotification
     | StrictReviewRequiredNotification
     | TerminalInteractionNotification
+    | ThreadAccountProfileUpdatedNotification
     | ThreadArchivedNotification
     | ThreadAttachmentUpdatedNotification
     | ThreadClosedNotification
@@ -226,6 +228,7 @@ NOTIFICATION_MODELS: dict[str, type[KnownNotificationPayload]] = {
     "remoteControl/status/changed": RemoteControlStatusChangedNotification,
     "serverRequest/resolved": ServerRequestResolvedNotification,
     "skills/changed": SkillsChangedNotification,
+    "thread/accountProfile/updated": ThreadAccountProfileUpdatedNotification,
     "thread/archived": ThreadArchivedNotification,
     "thread/attachment/updated": ThreadAttachmentUpdatedNotification,
     "thread/closed": ThreadClosedNotification,

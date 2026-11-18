@@ -22,6 +22,13 @@ use tracing::warn;
 
 const INITIAL_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(5);
 const MAX_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(60);
+const SERVER_OVERLOADED_RETRY_DELAYS: [Duration; 5] = [
+    Duration::from_secs(15),
+    Duration::from_secs(30),
+    Duration::from_secs(60),
+    Duration::from_secs(120),
+    Duration::from_secs(240),
+];
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResponsesStreamRequest {
@@ -86,7 +93,21 @@ pub(crate) async fn handle_response_stream_error(
         ResponsesStreamRequest::RemoteCompactionV2 => RetryOperation::RemoteCompactionV2,
     };
     let retry_count = retry_state.retries.saturating_add(1);
-    let Some(delay) = err.retry_delay(retry_count) else {
+    let retry_delay = if matches!(err.details(), CodexErrorDetails::ServerOverloaded) {
+        if !turn_context.config.tui_server_overloaded_resume {
+            return Err(err);
+        }
+        err.server_retry_delay().or_else(|| {
+            let index = retry_count
+                .saturating_sub(1)
+                .min((SERVER_OVERLOADED_RETRY_DELAYS.len() - 1) as u64)
+                as usize;
+            SERVER_OVERLOADED_RETRY_DELAYS.get(index).copied()
+        })
+    } else {
+        err.retry_delay(retry_count)
+    };
+    let Some(delay) = retry_delay else {
         return Err(err);
     };
     let retry_after = err.retry_after();

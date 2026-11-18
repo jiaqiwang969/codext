@@ -1,6 +1,6 @@
 # Changes in This Fork
 
-This file captures the fork-specific behavior reapplied on top of the current upstream tag, `rust-v0.167.0`. The reapply and release decisions are recorded in [docs/reapply-0.167.0.md](docs/reapply-0.167.0.md). Superagent's requirements are the last section; its seams into codex are listed in [docs/superagent/seams.md](docs/superagent/seams.md).
+This file captures the fork-specific behavior reapplied on top of the current upstream tag, `rust-v0.169.1`. The reapply and release decisions are recorded in [docs/reapply-0.169.1.md](docs/reapply-0.169.1.md). Superagent's requirements are the last section; its seams into codex are listed in [docs/superagent/seams.md](docs/superagent/seams.md).
 
 ## TUI composer draft clipboard shortcut
 
@@ -92,7 +92,7 @@ Implementation must follow the status-header skill .agents/skills/status-header/
 - `codex-account-next list` includes every profile, sorts paid accounts by their soonest quota reset (earliest window first, missing times after known times), and places free-plan accounts last. Exhausted paid accounts and unknown plans remain visible. Live queries share the daemon's profile credential managers and refresh locks; they never start independent app-server credential refreshers. An unavailable daemon produces explicit errors with local metadata, and `--local` works offline.
 - The list's `*` means the default account in the shared `auth.json`, matched by account/user identity rather than file equality. Token rotations preserve the marker, and the label makes clear that conversations may use other accounts. JSON adds `default` while retaining `active` as a compatibility alias.
 - The account-pool launchers share one entry point pinned to `~/.codex` for login, status, listing, and interactive sessions; inherited home variables cannot redirect credentials. The installer updates compatibility aliases together. Enabled profiles in the deadline ledger remain listed as `missing` if their main credential directory disappears.
-- Account-aware services belong to the live session and are inherited by internal workers, Guardian, and forked agents. The 0.166 shutdown-drain watch and conditional runtime removal keep delayed cleanup from removing a replacement session. Workspace-routing caches distinguish credential managers, even when profiles share a workspace.
+- Named-profile bindings follow the live session and its descendants through upstream provider-aware authentication, model, plugin and MCP startup. Runtime credentials and workspace-routing caches distinguish credential owners, even when profiles share a workspace.
 - Account switching changes credentials only. Sessions, memory, SQLite state, logs, and other shared `CODEX_HOME` data remain shared across the account pool.
 
 ## TUI exit resume command

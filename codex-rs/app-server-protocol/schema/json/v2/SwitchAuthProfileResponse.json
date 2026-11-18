@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "changed": {
+      "type": "boolean"
+    },
+    "name": {
+      "type": "string"
+    },
+    "threadId": {
+      "description": "The thread whose binding was switched, or null for a connection-only selection.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "changed",
+    "name"
+  ],
+  "title": "SwitchAuthProfileResponse",
+  "type": "object"
+}

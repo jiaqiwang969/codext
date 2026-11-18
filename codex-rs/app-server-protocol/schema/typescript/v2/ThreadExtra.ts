@@ -5,4 +5,12 @@
 /**
  * Extra app-server data for a thread.
  */
-export type ThreadExtra = Record<string, never>;
+export type ThreadExtra = {
+/**
+ * Account-pool profile captured by the live thread runtime, if selected.
+ */
+accountProfile: string | null,
+/**
+ * Provider account id recorded when the thread was created, if available.
+ */
+accountId: string | null, };

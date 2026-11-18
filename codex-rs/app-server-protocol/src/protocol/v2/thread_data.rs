@@ -165,7 +165,14 @@ impl From<ThreadSource> for CoreThreadSource {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase", export_to = "v2/")]
-pub struct ThreadExtra {}
+pub struct ThreadExtra {
+    /// Account-pool profile captured by the live thread runtime, if selected.
+    #[serde(default)]
+    pub account_profile: Option<String>,
+    /// Provider account id recorded when the thread was created, if available.
+    #[serde(default)]
+    pub account_id: Option<String>,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]

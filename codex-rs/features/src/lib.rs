@@ -135,6 +135,11 @@ pub enum Feature {
     /// Enable negotiated zstd compression for app-server WebSocket and UDS connections.
     AppServerWebSocketCompression,
 
+    /// Codext-only marker: the app-server implements `account/reload`, so the
+    /// TUI auth.json watcher can drive live account switching. Foreign daemons
+    /// that do not report this feature are treated as incompatible.
+    CodextAuthReload,
+
     // Experimental
     /// Advertise enabled environment-backed tools and their shell parameters before the
     /// executor is ready. Actual execution still requires a usable environment and its policy.
@@ -463,6 +468,8 @@ pub enum Feature {
     GuardianExt,
     /// Enable persisted thread goals and automatic goal continuation.
     Goals,
+    /// Enable the opt-in Superagent organization coordinator.
+    Superagent,
     /// Add current context-window metadata to model-visible context.
     TokenBudget,
     /// Enables experimental context management.
@@ -1164,6 +1171,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "app_server_websocket_compression",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::CodextAuthReload,
+        key: "codext_auth_reload",
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::TranscriptV2,
@@ -2221,6 +2234,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "goals",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::Superagent,
+        key: "superagent",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::TokenBudget,

@@ -8,6 +8,7 @@ impl AccountRequestProcessor {
     #[inline(never)]
     pub(super) fn backend_client<'a>(
         &'a self,
+        auth_manager: &'a Arc<AuthManager>,
         auth: &'a CodexAuth,
         http_client_factory: codex_http_client::HttpClientFactory,
     ) -> BoxFuture<'a, Result<BackendClient, JSONRPCErrorError>> {
@@ -15,7 +16,7 @@ impl AccountRequestProcessor {
             let config = self.load_latest_config().await;
             let runtime = self
                 .thread_manager
-                .runtime_auth_for_config(&config)
+                .runtime_auth_for_account(&config, Arc::clone(auth_manager))
                 .map_err(|error| internal_error(error.to_string()))?;
             BackendClient::from_auth_with_runtime(
                 config.chatgpt_base_url.clone(),

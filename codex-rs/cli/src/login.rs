@@ -30,6 +30,7 @@ use codex_utils_cli::CliConfigOverrides;
 use std::fs::OpenOptions;
 use std::io::IsTerminal;
 use std::io::Read;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use tracing_appender::non_blocking;
@@ -49,6 +50,8 @@ const LOGIN_SUCCESS_MESSAGE: &str = "Successfully logged in";
 const API_KEY_AUTHENTICATION_NOTICE: &str = "Authentication is checked when you send a request.";
 const DEFAULT_LOGIN_LOG_FILTER: &str =
     "codex_cli=info,codex_core=info,codex_login=info,codex_otel::auth_storage=warn";
+
+mod profile;
 
 /// Installs a small file-backed tracing layer for direct `codex login` flows.
 ///
@@ -177,6 +180,7 @@ async fn sign_in_to_config_server_and_reload_config(
     config: &mut Config,
     cli_config_overrides: &CliConfigOverrides,
 ) -> std::io::Result<()> {
+    let credential_home = config.codex_home.clone();
     let requirements = config.config_layer_stack.requirements_toml();
     let network = codex_app_server::in_process::EmbeddedNetworkPolicy::load(
         &codex_config::LoaderOverrides::default(),
@@ -188,18 +192,20 @@ async fn sign_in_to_config_server_and_reload_config(
     *config = crate::cloud_config::load_config(cli_config_overrides, Default::default())
         .await
         .map_err(|error| std::io::Error::other(format!("{error:#}")))?;
+    if std::env::var_os("CODEX_ACCOUNT_PROFILE").is_some_and(|profile| !profile.is_empty()) {
+        config.codex_home = credential_home;
+        config.cli_auth_credentials_store_mode = AuthCredentialsStoreMode::File;
+    }
     network.activate(config);
     config.application_auth_route_config = Some(auth_route_config);
     Ok(())
 }
 
-fn finish_login(result: std::io::Result<()>) -> ! {
+fn finish_login(result: std::io::Result<()>, profile_login: Option<profile::ProfileLogin>) -> ! {
     match result {
-        Ok(_) => {
-            eprintln!("{LOGIN_SUCCESS_MESSAGE}");
-            std::process::exit(0);
-        }
+        Ok(_) => profile::finish_or_exit(profile_login, LOGIN_SUCCESS_MESSAGE),
         Err(e) => {
+            drop(profile_login);
             eprintln!("Error logging in: {e}");
             std::process::exit(1);
         }
@@ -214,19 +220,20 @@ where
     F: std::future::Future<Output = std::io::Result<()>>,
 {
     let mut config = load_config_or_exit(cli_config_overrides.clone()).await;
+    let profile_login = profile::prepare_or_exit(&mut config);
     if !config
         .config_layer_stack
         .requirements_toml()
         .requires_remote_config()
     {
         let _login_log_guard = init_login_file_logging(&config);
-        finish_login(chatgpt_login(config).await);
+        finish_login(chatgpt_login(config).await, profile_login);
     }
 
     let result =
         sign_in_to_config_server_and_reload_config(&mut config, &cli_config_overrides).await;
     let _login_log_guard = init_login_file_logging(&config);
-    finish_login(result)
+    finish_login(result, profile_login)
 }
 
 pub async fn run_login_with_browser(cli_config_overrides: CliConfigOverrides) -> ! {
@@ -258,7 +265,7 @@ pub async fn run_login_with_api_key(
     cli_config_overrides: CliConfigOverrides,
     api_key: String,
 ) -> ! {
-    let config = load_managed_login_config_or_exit(cli_config_overrides).await;
+    let (config, profile_login) = load_managed_login_config_or_exit(cli_config_overrides).await;
     let _login_log_guard = init_login_file_logging(&config);
     tracing::info!("starting api key login flow");
 
@@ -277,10 +284,13 @@ pub async fn run_login_with_api_key(
         config.auth_keyring_backend_kind(),
     ) {
         Ok(_) => {
-            eprintln!("API key saved. {API_KEY_AUTHENTICATION_NOTICE}");
-            std::process::exit(0);
+            profile::finish_or_exit(
+                profile_login,
+                &format!("API key saved. {API_KEY_AUTHENTICATION_NOTICE}"),
+            );
         }
         Err(e) => {
+            drop(profile_login);
             eprintln!("Error logging in: {e}");
             std::process::exit(1);
         }
@@ -291,7 +301,7 @@ pub async fn run_login_with_access_token(
     cli_config_overrides: CliConfigOverrides,
     access_token: String,
 ) -> ! {
-    let config = load_managed_login_config_or_exit(cli_config_overrides).await;
+    let (config, profile_login) = load_managed_login_config_or_exit(cli_config_overrides).await;
     let _login_log_guard = init_login_file_logging(&config);
     tracing::info!("starting access token login flow");
 
@@ -317,10 +327,10 @@ pub async fn run_login_with_access_token(
     .await
     {
         Ok(_) => {
-            eprintln!("{LOGIN_SUCCESS_MESSAGE}");
-            std::process::exit(0);
+            profile::finish_or_exit(profile_login, LOGIN_SUCCESS_MESSAGE);
         }
         Err(e) => {
+            drop(profile_login);
             eprintln!("Error logging in with access token: {e}");
             std::process::exit(1);
         }
@@ -417,7 +427,7 @@ pub async fn run_login_with_device_code_fallback_to_browser(
     issuer_base_url: Option<String>,
     client_id: Option<String>,
 ) -> ! {
-    let config = load_config_or_exit(cli_config_overrides).await;
+    let mut config = load_config_or_exit(cli_config_overrides).await;
     let _login_log_guard = init_login_file_logging(&config);
     tracing::info!("starting login flow with device code fallback");
     if !config
@@ -427,6 +437,7 @@ pub async fn run_login_with_device_code_fallback_to_browser(
         eprintln!("{CHATGPT_LOGIN_DISABLED_MESSAGE}");
         std::process::exit(1);
     }
+    let profile_login = profile::prepare_or_exit(&mut config);
     let auth_route_config = config.auth_route_config();
     clear_existing_auth_before_login(
         &config.codex_home,
@@ -452,8 +463,7 @@ pub async fn run_login_with_device_code_fallback_to_browser(
 
     match run_device_code_login(opts.clone()).await {
         Ok(()) => {
-            eprintln!("{LOGIN_SUCCESS_MESSAGE}");
-            std::process::exit(0);
+            profile::finish_or_exit(profile_login, LOGIN_SUCCESS_MESSAGE);
         }
         Err(e) => {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -463,21 +473,23 @@ pub async fn run_login_with_device_code_fallback_to_browser(
                         print_login_server_start(server.actual_port, &server.auth_url);
                         match server.block_until_done().await {
                             Ok(()) => {
-                                eprintln!("{LOGIN_SUCCESS_MESSAGE}");
-                                std::process::exit(0);
+                                profile::finish_or_exit(profile_login, LOGIN_SUCCESS_MESSAGE);
                             }
                             Err(e) => {
+                                drop(profile_login);
                                 eprintln!("Error logging in: {e}");
                                 std::process::exit(1);
                             }
                         }
                     }
                     Err(e) => {
+                        drop(profile_login);
                         eprintln!("Error logging in: {e}");
                         std::process::exit(1);
                     }
                 }
             } else {
+                drop(profile_login);
                 eprintln!("Error logging in with device code: {e}");
                 std::process::exit(1);
             }
@@ -656,8 +668,11 @@ pub async fn run_logout(cli_config_overrides: CliConfigOverrides) -> ! {
     std::process::exit(0);
 }
 
-async fn load_managed_login_config_or_exit(cli_config_overrides: CliConfigOverrides) -> Config {
+async fn load_managed_login_config_or_exit(
+    cli_config_overrides: CliConfigOverrides,
+) -> (Config, Option<profile::ProfileLogin>) {
     let mut config = load_config_or_exit(cli_config_overrides.clone()).await;
+    let profile_login = profile::prepare_or_exit(&mut config);
     if config
         .config_layer_stack
         .requirements_toml()
@@ -665,9 +680,9 @@ async fn load_managed_login_config_or_exit(cli_config_overrides: CliConfigOverri
         && let Err(error) =
             sign_in_to_config_server_and_reload_config(&mut config, &cli_config_overrides).await
     {
-        finish_login(Err(error));
+        finish_login(Err(error), profile_login);
     }
-    config
+    (config, profile_login)
 }
 
 async fn load_config_or_exit(cli_config_overrides: CliConfigOverrides) -> Config {
@@ -679,14 +694,30 @@ async fn load_config_or_exit(cli_config_overrides: CliConfigOverrides) -> Config
         }
     };
 
-    match Config::load_with_cli_overrides(cli_overrides).await {
-        Ok(config) => match config.auth_config().validate() {
-            Ok(()) => config,
-            Err(e) => {
-                eprintln!("Error loading configuration: {e}");
-                std::process::exit(1);
-            }
-        },
+    let mut config = match Config::load_with_cli_overrides(cli_overrides).await {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Error loading configuration: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // Load shared settings first, then scope only these credential commands to
+    // the same file-backed account selected by the TUI connection.
+    if let Some(profile) = std::env::var_os("CODEX_ACCOUNT_PROFILE")
+        && !profile.is_empty()
+    {
+        let mut components = Path::new(&profile).components();
+        if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+            eprintln!("CODEX_ACCOUNT_PROFILE must be a single directory name");
+            std::process::exit(1);
+        }
+        config.codex_home = config.codex_home.join("accounts").join(profile);
+        config.cli_auth_credentials_store_mode = AuthCredentialsStoreMode::File;
+    }
+
+    match config.auth_config().validate() {
+        Ok(()) => config,
         Err(e) => {
             eprintln!("Error loading configuration: {e}");
             std::process::exit(1);

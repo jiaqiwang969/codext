@@ -830,6 +830,23 @@ pub(crate) enum AppEvent {
     /// Request app-server account logout, then exit after it succeeds.
     Logout,
 
+    /// Select an account-pool credential profile for this app-server connection.
+    SwitchAuthProfile {
+        name: String,
+    },
+
+    /// Open the account-pool profile picker from the agents command center.
+    OpenAuthProfilePicker,
+
+    /// The shown thread runs on `profile`: select it as this connection's default, without
+    /// rebinding the thread, so the header's account and quota follow the thread. Sent when
+    /// another client or the Superagent engine moves the shown thread, and when a restored blank
+    /// task skips the resume that would align it.
+    AlignAccountProfile {
+        thread_id: ThreadId,
+        profile: String,
+    },
+
     /// Request to exit the application due to a fatal error.
     #[allow(dead_code)]
     FatalExitRequest(String),
@@ -865,6 +882,19 @@ pub(crate) enum AppEvent {
         thread_id: ThreadId,
         query: String,
         matches: Vec<crate::task_mentions::TaskMention>,
+    },
+
+    /// `CODEX_HOME/auth.json` changed on disk; reload auth from storage.
+    AuthFileChanged,
+    /// Retry a deferred auth reload after a previous attempt failed.
+    AuthFileChangedRetry {
+        attempt: u8,
+    },
+
+    /// Background Git-status poller for the status header produced a new summary.
+    StatusHeaderGitStatusUpdated {
+        cwd: std::path::PathBuf,
+        summary: Option<crate::git_status::GitStatusSummary>,
     },
 
     /// Refresh account rate limits in the background.

@@ -42,7 +42,7 @@ impl SessionStartAction {
         match self {
             Self::Resume(settings, permissions) => {
                 app_server
-                    .resume_thread_with_permission_overrides(
+                    .resume_thread_from_cli(
                         local_settings,
                         config.clone(),
                         target.thread_id,

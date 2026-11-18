@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "A thread now runs on another account-pool profile. Sent after `account/profile/switch` rebinds a loaded thread, to every connection subscribed to it except the one that asked for the switch; that connection learns it from the response.",
+  "properties": {
+    "accountProfile": {
+      "description": "The profile's directory name under `CODEX_HOME/accounts`, as `thread.extra.accountProfile` reports it.",
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "accountProfile",
+    "threadId"
+  ],
+  "title": "ThreadAccountProfileUpdatedNotification",
+  "type": "object"
+}

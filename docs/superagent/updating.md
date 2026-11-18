@@ -5,7 +5,7 @@
 ## 三层
 
 1. **上游**：openai/codex。只跟稳定版 tag `rust-vX.Y.Z`，不跟 alpha、beta、rc。
-2. **Codext 底座**：账号池和 `/profile`、状态栏、复制草稿、会话改名、额度恢复、过载重试等。需求清单是 [CHANGED.md](../../CHANGED.md)，0.167 的候选重做记录在 [reapply-0.167.0.md](../reapply-0.167.0.md)。
+2. **Codext 底座**：账号池和 `/profile`、状态栏、复制草稿、会话改名、额度恢复、过载重试等。需求清单是 [CHANGED.md](../../CHANGED.md)，0.169.1 的候选重做记录在 [reapply-0.169.1.md](../reapply-0.169.1.md)。
 3. **Superagent**：引擎 crate `codex-rs/ext/superagent/` 加上它在 codex 里的接入点（[seams.md](seams.md)）。
 
 底座直接从 openai/codex 的 tag 重做，不再等 Loongphy/codext。Loongphy 的分支只在它先做过同一处适配时拿来参考，不从它合并。
@@ -71,7 +71,7 @@
 
 ## 本地更新与剩余发布配置
 
-本 fork 的 TUI 已关闭自动更新提示，`codex update` 会指向这里的实验室验证和人工验收流程。`promote.sh build` 用 `0.167.0-<commit>` 形式标记本地候选包，包名与提交对应。
+本 fork 的 TUI 已关闭自动更新提示，`codex update` 会指向这里的实验室验证和人工验收流程。`promote.sh build` 用 `<上游版本>-<commit>` 形式标记本地候选包，包名与提交对应。
 
 以下发布配置仍保留原始命名，当前不触发发布：
 

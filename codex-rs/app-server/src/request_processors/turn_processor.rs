@@ -91,8 +91,12 @@ pub(crate) struct TurnRequestProcessor {
     pending_thread_unloads: PendingThreadUnloads,
     thread_state_manager: ThreadStateManager,
     thread_watch_manager: ThreadWatchManager,
+    /// Serializes auth reloads against turn starts so an in-flight `turn/start`
+    /// never observes a half-applied auth transition.
+    auth_transition_lock: Arc<Mutex<()>>,
     skills_watcher: Arc<SkillsWatcher>,
     turn_cost_worker: Option<crate::turn_cost_worker::TurnCostWorkerHandle>,
+    pub(crate) superagent: Option<Arc<codex_superagent_extension::SuperagentService>>,
 }
 
 fn map_additional_context(
@@ -149,6 +153,7 @@ impl TurnRequestProcessor {
         pending_thread_unloads: PendingThreadUnloads,
         thread_state_manager: ThreadStateManager,
         thread_watch_manager: ThreadWatchManager,
+        auth_transition_lock: Arc<Mutex<()>>,
         skills_watcher: Arc<SkillsWatcher>,
         turn_cost_worker: Option<crate::turn_cost_worker::TurnCostWorkerHandle>,
     ) -> Self {
@@ -161,8 +166,10 @@ impl TurnRequestProcessor {
             pending_thread_unloads,
             thread_state_manager,
             thread_watch_manager,
+            auth_transition_lock,
             skills_watcher,
             turn_cost_worker,
+            superagent: None,
         }
     }
 
@@ -579,6 +586,7 @@ impl TurnRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
     ) -> Result<TurnStartResponse, JSONRPCErrorError> {
+        let _auth_transition_guard = self.auth_transition_lock.lock().await;
         let (thread_id, thread) =
             self.load_thread(&params.thread_id)
                 .await
@@ -587,6 +595,21 @@ impl TurnRequestProcessor {
                 })?;
         self.ensure_direct_input_allowed(&request_id, thread.as_ref())
             .await?;
+        let auth_manager = self
+            .thread_manager
+            .auth_manager_for_thread(thread_id)
+            .await
+            .unwrap_or_else(|| self.thread_manager.auth_manager());
+        reload_auth_from_storage_if_idle(
+            &auth_manager,
+            &self.thread_manager,
+            &self.config_manager,
+            &self.config,
+            &self.outgoing,
+            &self.thread_watch_manager,
+            "turn/start",
+        )
+        .await;
         self.config_manager
             .check_thread_model_provider(thread.config().await.as_ref())
             .await
@@ -655,6 +678,7 @@ impl TurnRequestProcessor {
             resolve_turn_environment_requests(self.thread_manager.as_ref(), params.environments)?;
 
         let turn_has_input = !params.input.is_empty();
+        let steered_text = super::superagent::v2_text(&params.input);
         let input = if let Some(tool_output) = params.tool_output {
             let item = ResponseItem::FunctionCallOutput {
                 id: None,
@@ -768,6 +792,13 @@ impl TurnRequestProcessor {
                 return Err(error);
             }
         };
+        if !started && turn_has_input {
+            self.note_steered_input(&thread_id.to_string(), &turn_id, &steered_text)
+                .await;
+        }
+        self.thread_watch_manager
+            .note_turn_started(&thread_id.to_string())
+            .await;
 
         if turn_has_input && started {
             let config_snapshot = thread.config_snapshot().await;
@@ -1141,6 +1172,7 @@ impl TurnRequestProcessor {
             return Err(error);
         }
 
+        let steered_text = super::superagent::v2_text(&params.input);
         let mapped_items: Vec<CoreInputItem> = params
             .input
             .into_iter()
@@ -1169,7 +1201,11 @@ impl TurnRequestProcessor {
                 error
             })?;
         let turn_id = match submission {
-            SteerSubmission::Steered { turn_id } => turn_id,
+            SteerSubmission::Steered { turn_id } => {
+                self.note_steered_input(&params.thread_id, &turn_id, &steered_text)
+                    .await;
+                turn_id
+            }
             SteerSubmission::NotSubmitted { reason } => {
                 let (message, data, error_type) = match reason {
                     NotSubmittedReason::ServerDraining => {
@@ -1236,6 +1272,7 @@ impl TurnRequestProcessor {
                     ),
                     NotSubmittedReason::PendingTriggerTurn
                     | NotSubmittedReason::PlanMode
+                    | NotSubmittedReason::DeclinedByDriver
                     | NotSubmittedReason::Superseded => (
                         "no active turn to steer".to_string(),
                         None,

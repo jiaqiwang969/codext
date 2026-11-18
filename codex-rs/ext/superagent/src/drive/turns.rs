@@ -73,6 +73,7 @@ pub(super) fn kind_name(error: &CodexErrorInfo) -> &'static str {
         CodexErrorInfo::BioPolicy => "bioPolicy",
         CodexErrorInfo::MisalignmentPolicyViolation => "misalignmentPolicyViolation",
         CodexErrorInfo::TooManyDenials => "tooManyDenials",
+        CodexErrorInfo::InferenceHookDenied => "inferenceHookDenied",
         CodexErrorInfo::HttpConnectionFailed { .. } => "httpConnectionFailed",
         CodexErrorInfo::ResponseStreamConnectionFailed { .. } => "responseStreamConnectionFailed",
         CodexErrorInfo::InternalServerError => "internalServerError",

@@ -45,6 +45,7 @@ impl AccountRequestProcessor {
     pub(crate) async fn consume_account_rate_limit_reset_credit(
         &self,
         params: ConsumeAccountRateLimitResetCreditParams,
+        auth_profile_id: Option<String>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         if params.idempotency_key.is_empty() {
             return Err(invalid_request("idempotencyKey must not be empty"));
@@ -53,7 +54,9 @@ impl AccountRequestProcessor {
             return Err(invalid_request("creditId must not be empty"));
         }
 
-        let client = self.rate_limit_reset_backend_client().await?;
+        let client = self
+            .rate_limit_reset_backend_client(auth_profile_id.as_deref())
+            .await?;
         let request_timeout = RATE_LIMIT_RESET_REQUEST_TIMEOUT;
         #[cfg(debug_assertions)]
         let request_timeout = std::env::var(RATE_LIMIT_RESET_REQUEST_TIMEOUT_ENV_VAR)
@@ -97,9 +100,71 @@ impl AccountRequestProcessor {
         ))
     }
 
-    async fn rate_limit_reset_backend_client(&self) -> Result<BackendClient, JSONRPCErrorError> {
-        let Some((auth, http_client_factory)) =
-            self.auth_manager.auth_with_http_client_factory().await
+    /// The reset cards of the account `profile`, for the Superagent engine, which uses one when
+    /// no account in the pool can take a session (off unless the person allows it).
+    pub(crate) async fn superagent_reset_cards(
+        &self,
+        profile: &str,
+    ) -> anyhow::Result<Vec<codex_superagent_extension::host::ResetCard>> {
+        let client = self
+            .rate_limit_reset_backend_client(Some(profile))
+            .await
+            .map_err(|err| anyhow::anyhow!("{}", err.message))?;
+        let details = tokio::time::timeout(
+            RATE_LIMIT_RESET_DETAILS_REQUEST_TIMEOUT,
+            client.list_rate_limit_reset_credits(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("listing the reset cards of {profile} timed out"))?
+        .map_err(|err| anyhow::anyhow!("listing the reset cards of {profile} failed: {err}"))?;
+        Ok(details
+            .credits
+            .into_iter()
+            .map(|credit| codex_superagent_extension::host::ResetCard {
+                available: credit.status == "available",
+                expires_at: credit
+                    .expires_at
+                    .as_deref()
+                    .and_then(|at| rate_limit_reset_credit_timestamp(at).ok()),
+                id: credit.id,
+            })
+            .collect())
+    }
+
+    /// Uses the reset card `card` on the account `profile` for the Superagent engine; `key`
+    /// makes a repeated request use it once.
+    pub(crate) async fn superagent_use_reset_card(
+        &self,
+        profile: &str,
+        card: &str,
+        key: &str,
+    ) -> anyhow::Result<codex_superagent_extension::host::ResetOutcome> {
+        use codex_superagent_extension::host::ResetOutcome;
+        let client = self
+            .rate_limit_reset_backend_client(Some(profile))
+            .await
+            .map_err(|err| anyhow::anyhow!("{}", err.message))?;
+        let response = tokio::time::timeout(
+            RATE_LIMIT_RESET_REQUEST_TIMEOUT,
+            client.consume_rate_limit_reset_credit_by_id(key, card),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("using the reset card {card} of {profile} timed out"))?
+        .map_err(|err| anyhow::anyhow!("using the reset card {card} of {profile} failed: {err}"))?;
+        Ok(match response.code {
+            BackendConsumeRateLimitResetCreditCode::Reset => ResetOutcome::Reset,
+            BackendConsumeRateLimitResetCreditCode::NothingToReset => ResetOutcome::NothingToReset,
+            BackendConsumeRateLimitResetCreditCode::NoCredit => ResetOutcome::NoCard,
+            BackendConsumeRateLimitResetCreditCode::AlreadyRedeemed => ResetOutcome::AlreadyUsed,
+        })
+    }
+
+    async fn rate_limit_reset_backend_client(
+        &self,
+        auth_profile_id: Option<&str>,
+    ) -> Result<BackendClient, JSONRPCErrorError> {
+        let auth_manager = self.auth_manager_for_profile(auth_profile_id).await?;
+        let Some((auth, http_client_factory)) = auth_manager.auth_with_http_client_factory().await
         else {
             return Err(invalid_request(
                 "codex account authentication required for rate limit reset credits",
@@ -111,7 +176,7 @@ impl AccountRequestProcessor {
             ));
         }
 
-        self.backend_client(&auth, http_client_factory).await
+        self.backend_client(&auth_manager, &auth, http_client_factory).await
     }
 }
 

@@ -195,6 +195,7 @@ pub use thread_manager::StartThreadOptions;
 pub use thread_manager::StartupModels;
 pub use thread_manager::ThreadManager;
 pub use thread_manager::ThreadRegistration;
+pub use thread_manager::ThreadRuntime;
 pub use thread_manager::ThreadShutdownReport;
 pub use thread_manager::build_models_manager;
 pub use thread_manager::build_startup_models;

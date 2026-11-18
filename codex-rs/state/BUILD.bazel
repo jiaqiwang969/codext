@@ -8,6 +8,7 @@ codex_rust_crate(
         "memory_migrations/**",
         "migrations/**",
         "queue_migrations/**",
+        "superagent_migrations/**",
         "thread_history_migrations/**",
     ]),
     crate_name = "codex_state",

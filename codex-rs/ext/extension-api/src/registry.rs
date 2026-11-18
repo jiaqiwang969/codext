@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use crate::ApprovalReviewContributor;
+use crate::AutomaticTurnArbiter;
+use crate::AutomaticTurnInput;
 use crate::ConfigContributor;
 use crate::ContextContributor;
 use crate::ExtensionEventSink;
@@ -29,6 +31,7 @@ impl<C: Sync> Default for ExtensionRegistryBuilder<C> {
             registry: ExtensionRegistry {
                 event_sink: Arc::new(NoopExtensionEventSink),
                 turn_start_admission: None,
+                automatic_turn_arbiters: Vec::new(),
                 thread_lifecycle_contributors: Vec::new(),
                 turn_lifecycle_contributors: Vec::new(),
                 config_contributors: Vec::new(),
@@ -69,6 +72,11 @@ impl<C: Sync> ExtensionRegistryBuilder<C> {
     /// Installs the host gate for turn-input submissions that start a new turn.
     pub fn turn_start_admission(&mut self, admission: Arc<dyn TurnStartAdmission>) {
         self.registry.turn_start_admission = Some(admission);
+    }
+
+    /// Registers one arbiter consulted before automatic turn starts.
+    pub fn automatic_turn_arbiter(&mut self, arbiter: Arc<dyn AutomaticTurnArbiter>) {
+        self.registry.automatic_turn_arbiters.push(arbiter);
     }
 
     /// Registers one approval-review contributor.
@@ -161,6 +169,7 @@ impl<C: Sync> ExtensionRegistryBuilder<C> {
 pub struct ExtensionRegistry<C: Sync> {
     event_sink: Arc<dyn ExtensionEventSink>,
     turn_start_admission: Option<Arc<dyn TurnStartAdmission>>,
+    automatic_turn_arbiters: Vec<Arc<dyn AutomaticTurnArbiter>>,
     thread_lifecycle_contributors: Vec<Arc<dyn ThreadLifecycleContributor<C>>>,
     turn_lifecycle_contributors: Vec<Arc<dyn TurnLifecycleContributor>>,
     config_contributors: Vec<Arc<dyn ConfigContributor<C>>>,
@@ -184,6 +193,7 @@ impl<C: Sync> ExtensionRegistry<C> {
             registry: Self {
                 event_sink: self.event_sink.clone(),
                 turn_start_admission: self.turn_start_admission.clone(),
+                automatic_turn_arbiters: self.automatic_turn_arbiters.clone(),
                 thread_lifecycle_contributors: self.thread_lifecycle_contributors.clone(),
                 turn_lifecycle_contributors: self.turn_lifecycle_contributors.clone(),
                 config_contributors: self.config_contributors.clone(),
@@ -209,6 +219,16 @@ impl<C: Sync> ExtensionRegistry<C> {
             Some(admission) => admission.admit_turn_start(),
             None => Some(Box::new(())),
         }
+    }
+
+    /// Whether every registered arbiter admits this automatic turn start.
+    pub async fn admit_automatic_turn(&self, input: AutomaticTurnInput<'_>) -> bool {
+        for arbiter in &self.automatic_turn_arbiters {
+            if !arbiter.admit_automatic_turn(input).await {
+                return false;
+            }
+        }
+        true
     }
 
     /// Returns the host event sink retained by this registry.

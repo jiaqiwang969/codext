@@ -129,6 +129,7 @@ jobs:
         if: ${{ contains(matrix.target, 'unknown-linux-musl') }}
         env:
           TARGET: ${{ matrix.target }}
+          CODEX_MUSL_RELEASE_LINK_FLAGS: "1"
         shell: bash
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/install-musl-build-tools.sh"
 
@@ -164,7 +165,12 @@ jobs:
           target_no_jitter="AWS_LC_SYS_NO_JITTER_ENTROPY_${{ matrix.target }}"
           target_no_jitter="${target_no_jitter//-/_}"
           echo "${target_no_jitter}=1" >> "$GITHUB_ENV"
-          echo "RUSTFLAGS=" >> "$GITHUB_ENV"
+          # Retain only the upstream x86-64 release linker flags after clearing sanitizer flags.
+          release_rustflags=""
+          if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]]; then
+            release_rustflags="-Cllvm-args=--addrsig -Clink-arg=-fuse-ld=lld -Clink-arg=-Wl,--icf=safe,-z,pack-relative-relocs"
+          fi
+          echo "RUSTFLAGS=${release_rustflags}" >> "$GITHUB_ENV"
           echo "CARGO_ENCODED_RUSTFLAGS=" >> "$GITHUB_ENV"
           echo "RUSTDOCFLAGS=" >> "$GITHUB_ENV"
           echo "CARGO_BUILD_RUSTFLAGS=" >> "$GITHUB_ENV"
@@ -463,23 +469,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release edit "${RELEASE_TAG}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --title "codext ${RELEASE_NAME}" \
-              --notes-file "${RELEASE_NOTES}" \
-              --latest
-          else
-            gh release create "${RELEASE_TAG}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --title "codext ${RELEASE_NAME}" \
-              --notes-file "${RELEASE_NOTES}" \
-              --latest
+          # A failed lookup must abort instead of creating a second release.
+          exists="$(gh api graphql \
+            -f query='query($owner:String!,$repo:String!,$tag:String!){repository(owner:$owner,name:$repo){release(tagName:$tag){databaseId}}}' \
+            -f owner="$GITHUB_REPOSITORY_OWNER" \
+            -f repo="${GITHUB_REPOSITORY#*/}" -f tag="$RELEASE_TAG" \
+            --jq '.data.repository.release != null')"
+          if [[ "$exists" == false ]]; then
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --title "codext $RELEASE_NAME" \
+              --notes-file "$RELEASE_NOTES" --draft --latest=false
           fi
-
-          gh release upload "${RELEASE_TAG}" dist/release/* \
-            --repo "${GITHUB_REPOSITORY}" \
-            --clobber
+          gh release upload "$RELEASE_TAG" dist/release/* \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --title "codext $RELEASE_NAME" --notes-file "$RELEASE_NOTES" \
+            --draft=false --latest
 
   publish-npm:
     if: ${{ inputs.publish_npm }}

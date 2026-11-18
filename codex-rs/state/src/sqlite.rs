@@ -52,6 +52,7 @@ const MEMORIES_DB_FILENAME: &str = "memories_1.sqlite";
 const QUEUE_DB_FILENAME: &str = "queue_1.sqlite";
 const STATE_DB_FILENAME: &str = "state_5.sqlite";
 const THREAD_HISTORY_DB_FILENAME: &str = "thread_history_1.sqlite";
+const SUPERAGENT_DB_FILENAME: &str = "superagent_1.sqlite";
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum RecoveryMode {
@@ -151,7 +152,18 @@ const THREAD_HISTORY_DB: RuntimeDbSpec = RuntimeDbSpec {
     recovery: RecoveryMode::Unavailable,
 };
 
-const RUNTIME_DBS: [RuntimeDbSpec; 7] = [
+// Organization records cannot be reconstructed from rollouts: report corruption without rebuilding.
+const SUPERAGENT_DB: RuntimeDbSpec = RuntimeDbSpec {
+    label: "superagent DB",
+    filename: SUPERAGENT_DB_FILENAME,
+    kind: DbKind::Superagent,
+    open_phase: "open_superagent",
+    migrate_phase: "migrate_superagent",
+    background_reclamation: false,
+    recovery: RecoveryMode::Unavailable,
+};
+
+const RUNTIME_DBS: [RuntimeDbSpec; 8] = [
     STATE_DB,
     LOGS_DB,
     GOALS_DB,
@@ -159,6 +171,7 @@ const RUNTIME_DBS: [RuntimeDbSpec; 7] = [
     MEMORIES_V2_DB,
     QUEUE_DB,
     THREAD_HISTORY_DB,
+    SUPERAGENT_DB,
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -279,6 +292,11 @@ impl SqliteConfig {
         GOALS_DB.path(self)
     }
 
+    /// Return the path to the organization ledger database.
+    pub fn superagent_db_path(&self) -> PathBuf {
+        SUPERAGENT_DB.path(self)
+    }
+
     /// Return the path to the memories database.
     pub fn memories_db_path(&self) -> PathBuf {
         MEMORIES_DB.path(self)
@@ -385,6 +403,14 @@ impl SqliteConfig {
         telemetry_override: Option<&dyn DbTelemetry>,
     ) -> anyhow::Result<SqlitePool> {
         self.open_runtime_db(THREAD_HISTORY_DB, migrator, telemetry_override)
+            .await
+    }
+
+    pub(super) async fn open_superagent_db(
+        &self,
+        migrator: &Migrator,
+    ) -> anyhow::Result<SqlitePool> {
+        self.open_runtime_db(SUPERAGENT_DB, migrator, /*telemetry_override*/ None)
             .await
     }
 

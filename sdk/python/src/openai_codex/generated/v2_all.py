@@ -5338,6 +5338,23 @@ class SubagentMigration(BaseModel):
     name: str
 
 
+class SwitchAuthProfileParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    name: str
+    thread_id: Annotated[str | None, Field(alias='threadId', description='Also switch this thread, persisting the selection before cold resume when unloaded. Omission only selects the connection default.')] = None
+
+
+class SwitchAuthProfileResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    changed: bool
+    name: str
+    thread_id: Annotated[str | None, Field(alias='threadId', description='The thread whose binding was switched, or null for a connection-only selection.')] = None
+
+
 class TerminalInteractionNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -5384,6 +5401,14 @@ class TextRange(BaseModel):
     )
     end: TextPosition
     start: TextPosition
+
+
+class ThreadAccountProfileUpdatedNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    account_profile: Annotated[str, Field(alias='accountProfile', description="The profile's directory name under `CODEX_HOME/accounts`, as `thread.extra.accountProfile` reports it.")]
+    thread_id: Annotated[str, Field(alias='threadId')]
 
 
 class ThreadActiveFlag(Enum):
@@ -5601,6 +5626,8 @@ class ThreadExtra(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    account_id: Annotated[str | None, Field(alias='accountId', description='Provider account id recorded when the thread was created, if available.')] = None
+    account_profile: Annotated[str | None, Field(alias='accountProfile', description='Account-pool profile captured by the live thread runtime, if selected.')] = None
 
 
 class ThreadGoalClearResponse(BaseModel):
@@ -8219,6 +8246,15 @@ class AccountSecuritySetupReadRequest(BaseModel):
     params: Annotated[None, Field(None)] = None
 
 
+class AccountProfileSwitchRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[Literal['account/profile/switch'], Field(title='Account/profile/switchRequestMethod')]
+    params: SwitchAuthProfileParams
+
+
 class AccountRateLimitsReadRequest(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -8355,6 +8391,15 @@ class AccountReadRequest(BaseModel):
     id: RequestId
     method: Annotated[Literal["account/read"], Field(title="Account/readRequestMethod")]
     params: GetAccountParams
+
+
+class AccountReloadRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[Literal['account/reload'], Field(title='Account/reloadRequestMethod')]
+    params: Annotated[None, Field(None)] = None
 
 
 class FuzzyFileSearchRequest(BaseModel):
@@ -9883,6 +9928,16 @@ class RawResponseCompletedNotification(BaseModel):
     usage_metadata: Annotated[ResponseUsageMetadata | None, Field(alias="usageMetadata")] = None
 
 
+class ReloadAccountResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    account: Account | None = None
+    auth_changed: Annotated[bool, Field(alias='authChanged', description='Whether this request reloaded a different auth snapshot from storage.')]
+    auth_reload_skipped: Annotated[bool | None, Field(alias='authReloadSkipped', description='Whether the storage reload was skipped because a turn is running somewhere on this (possibly shared) app-server. When true, `account` and `auth_changed` reflect the previously cached auth, not storage.')] = False
+    requires_openai_auth: Annotated[bool, Field(alias='requiresOpenaiAuth')]
+
+
 class MessageResponseItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -10205,6 +10260,15 @@ class ThreadProjectUpdatedServerNotification(BaseModel):
         Literal["thread/project/updated"], Field(title="Thread/project/updatedNotificationMethod")
     ]
     params: ThreadProjectUpdatedNotification
+
+
+class ThreadAccountProfileUpdatedServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[int | None, Field(alias='emittedAtMs', description='Unix timestamp (in milliseconds) when app-server emitted this notification.')] = None
+    method: Annotated[Literal['thread/accountProfile/updated'], Field(title='Thread/accountProfile/updatedNotificationMethod')]
+    params: ThreadAccountProfileUpdatedNotification
 
 
 class HookStartedServerNotification(BaseModel):
@@ -13793,6 +13857,7 @@ class ClientRequest(
         | AccountLoginCancelRequest
         | AccountLogoutRequest
         | AccountSecuritySetupReadRequest
+        | AccountProfileSwitchRequest
         | AccountRateLimitsReadRequest
         | AccountRateLimitResetCreditConsumeRequest
         | AccountUsageReadRequest
@@ -13813,6 +13878,7 @@ class ClientRequest(
         | ConfigBatchWriteRequest
         | ConfigRequirementsReadRequest
         | AccountReadRequest
+        | AccountReloadRequest
         | FuzzyFileSearchRequest
     ]
 ):
@@ -13905,6 +13971,7 @@ class ClientRequest(
         | AccountLoginCancelRequest
         | AccountLogoutRequest
         | AccountSecuritySetupReadRequest
+        | AccountProfileSwitchRequest
         | AccountRateLimitsReadRequest
         | AccountRateLimitResetCreditConsumeRequest
         | AccountUsageReadRequest
@@ -13925,6 +13992,7 @@ class ClientRequest(
         | ConfigBatchWriteRequest
         | ConfigRequirementsReadRequest
         | AccountReadRequest
+        | AccountReloadRequest
         | FuzzyFileSearchRequest,
         Field(description="Request from the client to the server.", title="ClientRequest"),
     ]
@@ -14124,6 +14192,7 @@ class ServerNotification(
         | ThreadEnvironmentConnectedServerNotification
         | ThreadEnvironmentDisconnectedServerNotification
         | ThreadSettingsUpdatedServerNotification
+        | ThreadAccountProfileUpdatedServerNotification
         | ThreadTokenUsageUpdatedServerNotification
         | TurnStartedServerNotification
         | HookStartedServerNotification
@@ -14213,6 +14282,7 @@ class ServerNotification(
         | ThreadEnvironmentConnectedServerNotification
         | ThreadEnvironmentDisconnectedServerNotification
         | ThreadSettingsUpdatedServerNotification
+        | ThreadAccountProfileUpdatedServerNotification
         | ThreadTokenUsageUpdatedServerNotification
         | TurnStartedServerNotification
         | HookStartedServerNotification
