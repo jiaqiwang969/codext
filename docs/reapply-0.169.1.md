@@ -93,5 +93,8 @@ The V8 dependency is the upstream-locked `90a65f887a0c0f048f3784afbcb320b373c8a2
 A temporary diagnostic path override was removed before final validation;
 matching local submodule caches were verified against their gitlinks.
 
-`main` and the daily daemon stay on the previous version until user acceptance.
-Promotion uses the accepted package, following [updating.md](superagent/updating.md).
+The user accepted this candidate on November 17, 2026. Main-line promotion
+uses the same validated `0.169.1-cc60f08ee1` package; subsequent commits only
+record acceptance and remove the temporary reapply guardrails. The previous
+main is preserved by `archive/rust-v0.167.0`. See
+[updating.md](superagent/updating.md) for the promotion procedure.

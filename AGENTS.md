@@ -1,15 +1,5 @@
 # Rust/codex-rs
 
-<!-- codex-upstream-reapply:start -->
-## Temporary Reapply Guardrails (`rust-v0.169.1`)
-
-- Current work on this branch is an upstream reapply / re-implementation for `rust-v0.169.1`.
-- Only implementation code and necessary docs may change for this task. Do not add or modify tests or snapshot files. Carrying `codex-rs/ext/superagent/` (with its tests) and the seam tests in `docs/superagent/seams.md` over unchanged is allowed.
-- Do not run lint / format / auto-fix commands for this reapply, including `cargo fmt`, `just fmt`, `cargo clippy`, `cargo clippy --fix`, and `just fix`.
-- Acceptance for this reapply is limited to the `codex-upstream-reapply` skill criteria, including `cd codex-rs && CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo build -p codex-cli` (minimal-disk build) and `cargo test -p codex-superagent-extension`.
-- Push work to this reapply branch only. After the user accepts, archive the old `main` as tag `archive/rust-v<old version>`, move `main` to this branch, and delete the branch (see `docs/superagent/updating.md`).
-<!-- codex-upstream-reapply:end -->
-
 
 In the codex-rs folder where the rust code lives:
 
