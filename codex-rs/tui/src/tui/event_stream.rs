@@ -18,6 +18,7 @@
 //!
 //! See https://ratatui.rs/recipes/apps/spawn-vim/ and https://www.reddit.com/r/rust/comments/1f3o33u/myterious_crossterm_input_after_running_vim for more details.
 
+use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -27,6 +28,8 @@ use std::task::Context;
 use std::task::Poll;
 
 use crossterm::event::Event;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
 use tokio::sync::broadcast;
 use tokio::sync::watch;
 use tokio_stream::Stream;
@@ -58,18 +61,57 @@ pub struct EventBroker<S: EventSource = CrosstermEventSource> {
 
 /// Tracks state of underlying [`EventSource`].
 enum EventBrokerState<S: EventSource> {
-    Paused,     // Underlying event source (i.e., crossterm EventStream) dropped
-    Start,      // A new event source will be created on next poll
-    Running(S), // Event source is currently running
+    Paused, // Underlying event source (i.e., crossterm EventStream) dropped
+    Start,  // A new event source will be created on next poll
+    Running(BufferedEventSource<S>),
+}
+
+/// Keep lookahead with the shared source so a nested screen sees the next input.
+/// Pending, EOF and errors retain their normal stream semantics.
+#[derive(Default)]
+struct BufferedEventSource<S> {
+    source: S,
+    ready: VecDeque<Option<EventResult>>,
+}
+
+impl<S: EventSource + Unpin> BufferedEventSource<S> {
+    fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Option<EventResult>> {
+        let first = match self.ready.pop_front() {
+            Some(next) => Poll::Ready(next),
+            None => Pin::new(&mut self.source).poll_next(cx),
+        };
+        if self.ready.is_empty()
+            && let Poll::Ready(Some(Ok(Event::Mouse(wheel)))) = &first
+            && matches!(
+                wheel.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            )
+        {
+            // Use the reader's real waker and never wait for a second tick. Cap the
+            // batch so input cannot starve a frame or an app-server notification.
+            const MAX_WHEEL_BATCH: usize = 32;
+            for _ in 1..MAX_WHEEL_BATCH {
+                let Poll::Ready(next) = Pin::new(&mut self.source).poll_next(cx) else {
+                    break;
+                };
+                let repeat = matches!(&next, Some(Ok(Event::Mouse(mouse))) if mouse == wheel);
+                self.ready.push_back(next);
+                if !repeat {
+                    break;
+                }
+            }
+        }
+        first
+    }
 }
 
 impl<S: EventSource + Default> EventBrokerState<S> {
     /// Return the running event source, starting it if needed; None when paused.
-    fn active_event_source_mut(&mut self) -> Option<&mut S> {
+    fn active_event_source_mut(&mut self) -> Option<&mut BufferedEventSource<S>> {
         match self {
             EventBrokerState::Paused => None,
             EventBrokerState::Start => {
-                *self = EventBrokerState::Running(S::default());
+                *self = EventBrokerState::Running(BufferedEventSource::default());
                 match self {
                     EventBrokerState::Running(events) => Some(events),
                     EventBrokerState::Paused | EventBrokerState::Start => unreachable!(),
@@ -88,6 +130,22 @@ impl<S: EventSource + Default> EventBroker<S> {
             resume_events_tx,
             size_monitor: None,
         }
+    }
+
+    /// Consume only an identical, already buffered wheel event. Other input must
+    /// pass through normal dispatch, including after changing screens.
+    pub(crate) fn take_ready_wheel_repeat(&self, wheel: MouseEvent) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let EventBrokerState::Running(input) = &mut *state else {
+            return false;
+        };
+        input
+            .ready
+            .pop_front_if(|next| matches!(next, Some(Ok(Event::Mouse(mouse))) if *mouse == wheel))
+            .is_some()
     }
 
     /// Drop the underlying event source
@@ -232,7 +290,7 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
                         }
                     }
                 };
-                match Pin::new(events).poll_next(cx) {
+                match events.poll_next(cx) {
                     Poll::Ready(Some(Ok(event))) => Some(event),
                     Poll::Ready(Some(Err(_))) | Poll::Ready(None) => {
                         *state = EventBrokerState::Start;
@@ -399,10 +457,10 @@ mod tests {
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let Some(source) = state.active_event_source_mut() else {
+            let Some(input) = state.active_event_source_mut() else {
                 return;
             };
-            let _ = source.tx.send(event);
+            let _ = input.source.tx.send(event);
         }
     }
 
@@ -437,14 +495,93 @@ mod tests {
     );
 
     fn setup() -> SetupState {
-        let source = FakeEventSource::new();
         let broker = Arc::new(EventBroker::new());
-        *broker.state.lock().unwrap() = EventBrokerState::Running(source);
         let handle = FakeEventSourceHandle::new(broker.clone());
 
         let (draw_tx, draw_rx) = broadcast::channel(1);
         let terminal_focused = Arc::new(AtomicBool::new(true));
         (broker, handle, draw_tx, draw_rx, terminal_focused)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wheel_batch_preserves_other_targets_and_input_across_screens() {
+        let (broker, handle, draw_tx, draw_rx, focused) = setup();
+        let mut first = make_stream(broker.clone(), draw_rx, focused.clone());
+        let wheel = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 9,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        };
+        let boundaries = [
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                ..wheel
+            },
+            MouseEvent {
+                column: 10,
+                ..wheel
+            },
+            MouseEvent { row: 4, ..wheel },
+            MouseEvent {
+                modifiers: KeyModifiers::SHIFT,
+                ..wheel
+            },
+            MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                ..wheel
+            },
+        ];
+        let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        for mouse in [wheel, wheel].into_iter().chain(boundaries) {
+            handle.send(Ok(Event::Mouse(mouse)));
+        }
+        handle.send(Ok(Event::Key(key)));
+
+        assert!(matches!(first.next().await, Some(TuiEvent::Mouse(m)) if m == wheel));
+        assert!(broker.take_ready_wheel_repeat(wheel));
+        assert!(!broker.take_ready_wheel_repeat(wheel));
+        drop(first);
+        let mut next = make_stream(broker.clone(), draw_tx.subscribe(), focused);
+        for boundary in boundaries {
+            assert!(matches!(next.next().await, Some(TuiEvent::Mouse(m)) if m == boundary));
+            assert!(!broker.take_ready_wheel_repeat(boundary));
+        }
+        assert!(matches!(next.next().await, Some(TuiEvent::Key(k)) if k == key));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn long_wheel_bursts_yield_to_draws_and_keep_every_tick() {
+        let (broker, handle, draw_tx, draw_rx, focused) = setup();
+        let mut stream = make_stream(broker.clone(), draw_rx, focused);
+        let wheel = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        for _ in 0..96 {
+            handle.send(Ok(Event::Mouse(wheel)));
+        }
+        let mut ticks = 0;
+        let mut draw_at = None;
+        while ticks < 96 {
+            match stream.next().await {
+                Some(TuiEvent::Mouse(m)) if m == wheel => {
+                    if ticks == 0 {
+                        draw_tx.send(()).unwrap();
+                    }
+                    ticks += 1;
+                    while broker.take_ready_wheel_repeat(wheel) {
+                        ticks += 1;
+                    }
+                }
+                Some(TuiEvent::Draw) => draw_at = Some(ticks),
+                other => panic!("unexpected input {other:?}"),
+            }
+        }
+        assert_eq!(ticks, 96);
+        assert!(matches!(draw_at, Some(2..96)));
     }
 
     #[tokio::test(flavor = "current_thread")]

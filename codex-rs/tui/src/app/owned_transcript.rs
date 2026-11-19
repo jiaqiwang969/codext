@@ -1115,9 +1115,24 @@ impl App {
                     self.chat_widget.current_patch_approval(),
                 )
             }
-            TuiEvent::Mouse(mouse) => self
-                .transcript_view
-                .handle_mouse(*mouse, &self.transcript_cells),
+            TuiEvent::Mouse(mouse) => {
+                let view = &mut self.transcript_view;
+                let was_following = view.is_following();
+                let action = view.handle_mouse(*mouse, &self.transcript_cells);
+                if is_vertical_wheel && matches!(action, Some(ViewAction::Changed)) {
+                    // Each tick keeps its fractional displacement. Repaint when the
+                    // follow controls change, and let paging run as soon as needed.
+                    while view.is_following() == was_following
+                        && !(mouse.kind == MouseEventKind::ScrollUp
+                            && self.scrollback_has_older_history
+                            && view.needs_history(&self.transcript_cells))
+                        && tui.event_broker.take_ready_wheel_repeat(*mouse)
+                    {
+                        let _ = view.handle_mouse(*mouse, &self.transcript_cells);
+                    }
+                }
+                action
+            }
             TuiEvent::Paste(text) => {
                 if self.transcript_view.is_select_mode()
                     && !self.transcript_view.is_search_editing()
